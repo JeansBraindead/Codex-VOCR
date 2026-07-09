@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from vocr.graph.graphify import GraphStore, RepoGraphBuilder
+from vocr.config.env_file import provider_from_env, read_env_file, redact_env, update_env_file
 from vocr.guardrails.scope_guard import ScopeGuard
 from vocr.guardrails.secrets import scan_diff_for_secrets
 from vocr.memory.ledger import sanitize_payload
@@ -141,6 +142,23 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("vocr_plan", tool_names)
         self.assertIn("vocr_review", tool_names)
         self.assertIn("vocr_promote_preview", tool_names)
+
+    def test_env_file_helpers_configure_local_model_without_printing_secret(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            update_env_file(
+                {
+                    "OPENAI_BASE_URL": "http://localhost:1234/v1",
+                    "OPENAI_MODEL": "local-model",
+                    "OPENAI_API_KEY": "lm-studio",
+                },
+                env_path,
+            )
+            values = read_env_file(env_path)
+
+        self.assertEqual(provider_from_env(values), "local-openai-compatible")
+        self.assertEqual(values["OPENAI_MODEL"], "local-model")
+        self.assertEqual(redact_env(values)["OPENAI_API_KEY"], "[set]")
 
 
 if __name__ == "__main__":

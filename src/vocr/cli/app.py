@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import subprocess
+import urllib.error
+import urllib.request
 from pathlib import Path
 from shutil import which
 
@@ -17,6 +20,7 @@ from vocr.agents.runtime import create_live_task_plan, create_live_vision, live_
 from vocr.bus.bus import MessageBus
 from vocr.codex.config import codex_available, write_mcp_config
 from vocr.codex.mcp_client import CodexMcpClient
+from vocr.config.env_file import provider_from_env, read_env_file, redact_env, update_env_file
 from vocr.git.worktrees import GitWorktreeError, GitWorktreeManager
 from vocr.graph.graphify import GraphStore, RepoGraphBuilder
 from vocr.guardrails.scope_guard import ScopeGuard
@@ -46,6 +50,8 @@ from vocr.orchestration.workflow import (
 from vocr.orchestration.readiness import assess_request_readiness
 
 app = typer.Typer(help="VOCR: Vision / Organize / Code / Review")
+model_app = typer.Typer(help="Configure local or cloud LLMs without editing files.")
+app.add_typer(model_app, name="model")
 console = Console()
 
 
@@ -66,6 +72,10 @@ def graph_store() -> GraphStore:
 
 def refresh_graph() -> None:
     graph_store().refresh(".")
+
+
+def env_path() -> Path:
+    return Path(".env")
 
 
 def estimate_tokens(text: str) -> int:
@@ -263,6 +273,104 @@ def codex_config() -> None:
     path = write_mcp_config(ledger().root / "codex-mcp.json")
     console.print(f"[green]Codex MCP config written[/green] {path}")
     console.print("Worker default: codex exec - --cd <worktree> --sandbox workspace-write")
+
+
+@model_app.command("status")
+def model_status() -> None:
+    values = read_env_file(env_path())
+    redacted = redact_env(values)
+    table = Table(title="VOCR Model Config")
+    table.add_column("Setting")
+    table.add_column("Value")
+    table.add_row("Provider", provider_from_env(values))
+    table.add_row("OPENAI_BASE_URL", redacted.get("OPENAI_BASE_URL", "-") or "-")
+    table.add_row("OPENAI_MODEL", redacted.get("OPENAI_MODEL", "-") or "-")
+    table.add_row("OPENAI_API_KEY", redacted.get("OPENAI_API_KEY", "-") or "-")
+    console.print(table)
+
+
+@model_app.command("local")
+def model_local(
+    model: str = typer.Option(..., "--model", "-m", help="Model id loaded in LM Studio."),
+    base_url: str = typer.Option(
+        "http://localhost:1234/v1",
+        "--base-url",
+        help="OpenAI-compatible local server URL.",
+    ),
+    api_key: str = typer.Option(
+        "lm-studio",
+        "--api-key",
+        help="Local placeholder key; not a real secret for LM Studio.",
+    ),
+) -> None:
+    update_env_file(
+        {
+            "OPENAI_BASE_URL": base_url.rstrip("/"),
+            "OPENAI_MODEL": model,
+            "OPENAI_API_KEY": api_key,
+        },
+        env_path(),
+    )
+    console.print("[green]Local OpenAI-compatible model configured[/green]")
+    console.print(f"Base URL: {base_url.rstrip('/')}")
+    console.print(f"Model: {safe_text(model)}")
+    console.print("API key: [set]")
+
+
+@model_app.command("lmstudio")
+def model_lmstudio(
+    model: str = typer.Option(..., "--model", "-m", help="Model id loaded in LM Studio."),
+    port: int = typer.Option(1234, "--port", help="LM Studio local server port."),
+) -> None:
+    model_local(model=model, base_url=f"http://localhost:{port}/v1", api_key="lm-studio")
+
+
+@model_app.command("openai")
+def model_openai(
+    model: str = typer.Option("gpt-4.1-mini", "--model", "-m", help="OpenAI model id."),
+    api_key: str = typer.Option(..., "--api-key", prompt=True, hide_input=True, help="OpenAI API key."),
+) -> None:
+    update_env_file(
+        {
+            "OPENAI_BASE_URL": None,
+            "OPENAI_MODEL": model,
+            "OPENAI_API_KEY": api_key,
+        },
+        env_path(),
+    )
+    console.print("[green]OpenAI model configured[/green]")
+    console.print(f"Model: {safe_text(model)}")
+    console.print("API key: [set]")
+
+
+@model_app.command("off")
+def model_off(
+    keep_api_key: bool = typer.Option(False, "--keep-api-key", help="Keep OPENAI_API_KEY while clearing model routing."),
+) -> None:
+    updates: dict[str, str | None] = {"OPENAI_BASE_URL": None, "OPENAI_MODEL": None}
+    if not keep_api_key:
+        updates["OPENAI_API_KEY"] = None
+    update_env_file(updates, env_path())
+    console.print("[yellow]Live model config cleared[/yellow]")
+
+
+@model_app.command("list")
+def model_list(
+    base_url: str | None = typer.Option(None, "--base-url", help="Override local OpenAI-compatible base URL."),
+) -> None:
+    values = read_env_file(env_path())
+    url = (base_url or values.get("OPENAI_BASE_URL") or "http://localhost:1234/v1").rstrip("/")
+    try:
+        with urllib.request.urlopen(f"{url}/models", timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise typer.BadParameter(f"Could not list models from {url}: {exc}") from exc
+    table = Table(title=f"Models at {url}")
+    table.add_column("Model ID")
+    for item in payload.get("data", []):
+        model_id = item.get("id") if isinstance(item, dict) else str(item)
+        table.add_row(safe_text(str(model_id)))
+    console.print(table)
 
 
 @app.command("serve-mcp")
@@ -784,5 +892,6 @@ def doctor() -> None:
     table.add_row("Worktree root", git_status["worktree_root"])
     table.add_row("Approve-all grants", str(len(store.permission_grants())))
     table.add_row("Codex CLI", "yes" if codex_available() else "missing")
+    table.add_row("Live model provider", provider_from_env(read_env_file(env_path())))
     table.add_row("Codex MCP config", str(store.root / "codex-mcp.json"))
     console.print(table)

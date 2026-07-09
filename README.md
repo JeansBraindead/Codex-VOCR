@@ -15,7 +15,22 @@ pip install -e .
 vocr setup
 ```
 
-Optional: `.env.example` nach `.env` kopieren und `OPENAI_API_KEY` setzen, wenn die Agents live ueber OpenAI genutzt werden sollen. Fuer LM Studio, llama.cpp, vLLM oder andere OpenAI-kompatible lokale Server kann stattdessen `OPENAI_BASE_URL` gesetzt werden, z.B. `http://localhost:1234/v1`, plus `OPENAI_MODEL` und eine lokale Dummy-API-Key-Konfiguration, falls der Server sie erwartet. VOCR bleibt dabei Codex-first: lokale Modelle helfen Vision/Organizer-Pfaden, aber Codex-Worker, Scope, Review und Promote bleiben die Sicherheitslinie.
+Optional kann VOCR lokale oder Cloud-Modelle fuer den Live-Agent-Pfad nutzen. Der User muss dafuer nicht in `.env` schreiben:
+
+```powershell
+vocr model lmstudio --model "dein-lm-studio-modell"
+vocr model list
+vocr model status
+vocr model off
+```
+
+Fuer OpenAI:
+
+```powershell
+vocr model openai --model gpt-4.1-mini
+```
+
+VOCR schreibt die noetigen Werte in `.env`, zeigt Secrets aber nur als `[set]`. VOCR bleibt Codex-first: lokale Modelle helfen Vision/Organizer-Pfaden, aber Codex-Worker, Scope, Review und Promote bleiben die Sicherheitslinie.
 
 Optional kann `VOCR_CODEX_COMMAND` gesetzt werden. Dann startet `vocr work <task-id>` diesen echten Worker-Befehl im isolierten Worktree und uebergibt den Task-Prompt ueber stdin. Ohne `VOCR_CODEX_COMMAND` nutzt VOCR, wenn vorhanden, `codex exec - --cd <worktree> --sandbox workspace-write`. Bei `approve_all` wird `--ask-for-approval never` gesetzt. Unsandboxed-Ausfuehrung gibt es nur explizit mit `VOCR_CODEX_UNSANDBOXED=true`.
 
@@ -27,6 +42,8 @@ Der User spricht nur mit dem Visionaer:
 
 ```powershell
 vocr setup
+vocr model lmstudio --model "dein-lokales-modell"
+vocr model status
 vocr ask "Ziel: Baue eine Healthcheck-API im Backend. Arbeitsbereich: FastAPI-App und Tests. Akzeptanz: GET /health liefert 200 und JSON status=ok. Verifikation: pytest oder Syntax-Check. Nicht-Ziele: keine Auth, keine Deployment-Aenderungen. Ausfuehrung: nur planen, Review vor Promote."
 vocr ask "Ziel: Baue eine Healthcheck-API im Backend. Arbeitsbereich: FastAPI-App und Tests. Akzeptanz: GET /health liefert 200 und JSON status=ok. Verifikation: pytest oder Syntax-Check. Nicht-Ziele: keine Auth, keine Deployment-Aenderungen. Ausfuehrung: mit go Worktree vorbereiten, Review vor Promote." --go
 vocr ask "Ziel: Baue eine Healthcheck-API im Backend. Arbeitsbereich: FastAPI-App und Tests. Akzeptanz: GET /health liefert 200 und JSON status=ok. Verifikation: pytest oder Syntax-Check. Nicht-Ziele: keine Auth, keine Deployment-Aenderungen. Ausfuehrung: mit go Worktree vorbereiten, Review vor Promote." --go --live-agent
@@ -57,6 +74,11 @@ Diese Kommandos sind fuer Inspektion, Reparatur und manuelle Eingriffe gedacht, 
 
 ```powershell
 vocr graphify
+vocr model status
+vocr model list
+vocr model local --model "dein-modell" --base-url http://localhost:1234/v1
+vocr model openai --model gpt-4.1-mini
+vocr model off
 vocr context --limit 20
 vocr context "git worktree review" --limit 10
 vocr go global --all --reason "AFK run approved"
