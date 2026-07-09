@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
 import math
+import subprocess
 import re
+from pathlib import Path
+from shutil import which
 
 from vocr.models import SecretFinding, SecretScanResult
 
@@ -18,7 +22,7 @@ KNOWN_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
 HIGH_ENTROPY_RE = re.compile(r"['\"]?([A-Za-z0-9+/=_-]{32,})['\"]?")
 
 
-def scan_diff_for_secrets(diff_text: str) -> SecretScanResult:
+def scan_diff_for_secrets(diff_text: str, *, repo_root: Path | str | None = None) -> SecretScanResult:
     findings: list[SecretFinding] = []
     current_path: str | None = None
     new_line = 0
@@ -42,7 +46,59 @@ def scan_diff_for_secrets(diff_text: str) -> SecretScanResult:
         elif new_line:
             new_line += 1
 
-    return SecretScanResult(findings=_dedupe_findings(findings))
+    scanners = ["vocr-minimal"]
+    if repo_root is not None:
+        gitleaks_findings = run_gitleaks_scan(Path(repo_root))
+        if gitleaks_findings is not None:
+            scanners.append("gitleaks")
+            findings.extend(gitleaks_findings)
+
+    return SecretScanResult(findings=_dedupe_findings(findings), scanners=scanners)
+
+
+def run_gitleaks_scan(repo_root: Path) -> list[SecretFinding] | None:
+    if which("gitleaks") is None:
+        return None
+    result = subprocess.run(
+        ["gitleaks", "detect", "--no-banner", "--redact", "--source", str(repo_root), "--report-format", "json"],
+        cwd=repo_root,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    output = result.stdout.strip()
+    if result.returncode == 0:
+        return []
+    if result.returncode not in {1, 2} or not output:
+        return [
+            SecretFinding(
+                rule_id="gitleaks_error",
+                summary="gitleaks failed to scan cleanly; review scanner output locally.",
+                severity="medium",
+            )
+        ]
+    try:
+        payload = json.loads(output)
+    except json.JSONDecodeError:
+        return [
+            SecretFinding(
+                rule_id="gitleaks_unparseable",
+                summary="gitleaks returned unparseable output; review scanner output locally.",
+                severity="medium",
+            )
+        ]
+    findings: list[SecretFinding] = []
+    for item in payload if isinstance(payload, list) else []:
+        findings.append(
+            SecretFinding(
+                rule_id=str(item.get("RuleID") or item.get("Rule") or "gitleaks"),
+                path=item.get("File"),
+                line=item.get("StartLine"),
+                summary="gitleaks detected a potential secret in the diff or repository.",
+            )
+        )
+    return findings
 
 
 def _scan_added_line(line: str, path: str | None, line_no: int | None) -> list[SecretFinding]:

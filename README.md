@@ -104,6 +104,7 @@ vocr doctor
 - Der Pre-Commit Secret-Scanner prueft Diffs inklusive neuer untracked Dateien auf Keyword-Secrets, bekannte Token-Muster und Entropie-Hinweise. Treffer blockieren den Commit ohne Secret-Werte auszugeben.
 - `vocr review` sammelt lokale Git-Signale aus dem Worktree und akzeptiert nur mit expliziter Entscheidung.
 - `vocr review` erzeugt einfache Diff-Kommentare fuer geaenderte Dateien und riskante Added-Lines.
+- `vocr review --export-comments review.md` schreibt Review-Kommentare als Markdown; `--post-pr-comments` postet optional einen PR-Kommentar via GitHub CLI.
 - `vocr review` fuehrt sichere automatische Checks aus, z.B. Syntax-Check. Unbekannte Checks werden als manuell markiert, nicht blind gestartet.
 - `vocr work` fuehrt den echten Worker aus und erstellt bei Erfolg automatisch einen Task-Commit, wenn Aenderungen vorhanden sind und der Scope Guard keine Verletzung findet.
 - `vocr work --fix --max-retries 2` erlaubt begrenzte Nachbesserungen bis `review_ready`; Promote bleibt trotzdem manuell und review-gated.
@@ -112,7 +113,7 @@ vocr doctor
 - `vocr promote` fuehrt vor dem Merge einen Preflight aus und blockiert ohne akzeptiertes Review.
 - `vocr log`, `vocr diff`, `vocr clean` und `vocr abort` sind Housekeeping-Kommandos fuer Timeline, Task-Diff, verwaiste Worktrees und kontrollierten Abbruch.
 - `vocr usage` zeigt geschaetzte Token-/Provider-Telemetrie pro Task/Slice.
-- `vocr serve-mcp` startet einen minimalen plan-only MCP-Server fuer Status, Graphify-Kontext und VOCR-Planung.
+- `vocr serve-mcp` startet einen minimalen MCP-Server fuer Status, Graphify-Kontext, VOCR-Planung, Review und Promote-Preview. MCP merged nicht.
 
 ## Tests
 
@@ -153,8 +154,8 @@ Das Ziel ist: neue Agents bekommen eine Repo-Karte und nur die naechsten relevan
 
 ## Naechste Schritte
 
-1. Secret-Scanner optional gitleaks-kompatibel machen.
-2. Reviewer Agent mit optionalen PR-Review-Kommentaren erweitern.
+1. Secret-Scanner gitleaks-Konfiguration und Baseline-Dateien unterstuetzen.
+2. Reviewer Agent mit echten inline PR-Review-Kommentaren erweitern.
 3. Echte Token-Usage aus Agents SDK/Codex auslesen, sobald stabil verfuegbar.
 4. Task-DAG um explizite parallele Dispatch-Gruppen ausbauen.
-5. MCP-Server um review/promote Tools erweitern, weiterhin streng gate-gesteuert.
+5. MCP-Server um explizit bestaetigte Promote-Aktionen erweitern, weiterhin streng gate-gesteuert.

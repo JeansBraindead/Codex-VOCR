@@ -5,10 +5,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from vocr.git.worktrees import GitWorktreeManager
 from vocr.graph.graphify import GraphStore
 from vocr.memory.ledger import MemoryLedger
+from vocr.models import ReviewDecision
 from vocr.orchestration.readiness import assess_request_readiness
-from vocr.orchestration.workflow import create_vision, organize_slice, render_task_template
+from vocr.orchestration.workflow import create_vision, organize_slice, render_review_markdown, render_task_template, review_task
 
 
 SERVER_INFO = {"name": "vocr", "version": "0.1.0"}
@@ -39,6 +41,30 @@ TOOLS = [
             "type": "object",
             "properties": {"request": {"type": "string"}},
             "required": ["request"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "vocr_review",
+        "description": "Run a gated VOCR review for a task. Does not promote.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string"},
+                "decision": {"type": "string", "enum": ["needs_changes", "blocked", "accepted"]},
+                "summary": {"type": "string"},
+            },
+            "required": ["task_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "vocr_promote_preview",
+        "description": "Show merge/PR preview for an accepted task. Never merges.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"task_id": {"type": "string"}},
+            "required": ["task_id"],
             "additionalProperties": False,
         },
     },
@@ -139,6 +165,22 @@ class VocrMcpServer:
             tasks = organize_slice(vision, vocr_home=str(self.vocr_home))
             task_text = "\n\n".join(render_task_template(task) for task in tasks)
             return self._text_result(f"Vision: {vision.goal}\n\n{task_text}")
+        if name == "vocr_review":
+            task_id = str(arguments.get("task_id", ""))
+            decision_value = arguments.get("decision")
+            decision = ReviewDecision(decision_value) if decision_value else None
+            summary = arguments.get("summary")
+            review = review_task(MemoryLedger(self.vocr_home), task_id, decision=decision, summary=summary)
+            return self._text_result(render_review_markdown(review))
+        if name == "vocr_promote_preview":
+            task_id = str(arguments.get("task_id", ""))
+            ledger = MemoryLedger(self.vocr_home)
+            task = ledger.get_task(task_id)
+            if task is None:
+                return self._text_result(f"Task not found: {task_id}")
+            if not task.branch_name:
+                return self._text_result("Task has no branch to promote.")
+            return self._text_result(GitWorktreeManager().merge_preview(task.branch_name))
         raise ValueError(f"Unknown VOCR tool: {name}")
 
     def _status_text(self) -> str:

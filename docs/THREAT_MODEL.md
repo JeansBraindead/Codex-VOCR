@@ -28,6 +28,8 @@ only after gates pass."
   before writing events.
 - Pre-commit secret scanning: worker diffs, including new untracked text files,
   are scanned before `git add` and `git commit`.
+- Optional gitleaks integration: if `gitleaks` is installed, VOCR runs it with
+  redacted output in addition to the minimal scanner.
 
 ## Prompt-Injection Risks
 
@@ -53,13 +55,19 @@ Current scanner order:
 1. Keyword keys: `api_key`, `token`, `secret`, `password`, `credential`.
 2. Known patterns: OpenAI-style `sk-...`, GitHub tokens, private key headers.
 3. Entropy heuristic for high-entropy values in added lines.
-4. Later: optional gitleaks-compatible scanner integration.
+4. Optional gitleaks scan when the binary is available.
 
 Expected behavior:
 
 - If the diff contains likely secrets, VOCR blocks commit.
 - The task becomes `needs_changes`.
 - The finding is reported without printing the secret value.
+
+## MCP Surface
+
+`vocr serve-mcp` exposes status, context, plan, review, and promote-preview
+tools. MCP promote is preview-only in this MVP. Actual merge/promotion remains
+behind the normal accepted-review gate and explicit CLI command.
 
 ## ATT&CK-Aligned Notes
 

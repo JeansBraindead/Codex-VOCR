@@ -51,30 +51,35 @@ def organize_slice(slice_item: VisionSlice, *, vocr_home: str = ".vocr") -> list
     scope = _split_items(sections.get("arbeitsbereich", ""))
     non_goals = _split_items(sections.get("nicht_ziele", ""))
     tests = _split_items(sections.get("verifikation", ""))
-    task_items = _split_items(sections.get("tasks", ""))
-    if not task_items:
-        task_items = ["Implement first scoped slice"]
+    task_groups = _split_task_groups(sections.get("tasks", ""))
+    if not task_groups:
+        task_groups = [["Implement first scoped slice"]]
 
     tasks: list[VocrTask] = []
-    previous_task_id: str | None = None
-    for index, task_item in enumerate(task_items, start=1):
-        task = VocrTask(
-            slice_id=slice_item.id,
-            title=task_item,
-            summary=f"Implement task {index} for: {slice_item.goal}",
-            scope=scope or [
-                "Use only the explicitly requested repo area.",
-                "Keep changes inside the task worktree.",
-            ],
-            non_goals=non_goals or ["Do not expand beyond the accepted VisionSlice."],
-            acceptance_criteria=slice_item.acceptance_criteria,
-            tests=tests or ["Run the verification explicitly approved in the VisionSlice."],
-            dependencies=[previous_task_id] if previous_task_id else [],
-            context_query=context_query,
-            context_pack=context_pack,
-        )
-        tasks.append(task)
-        previous_task_id = task.id
+    previous_group_ids: list[str] = []
+    index = 0
+    for group in task_groups:
+        current_group_ids: list[str] = []
+        for task_item in group:
+            index += 1
+            task = VocrTask(
+                slice_id=slice_item.id,
+                title=task_item,
+                summary=f"Implement task {index} for: {slice_item.goal}",
+                scope=scope or [
+                    "Use only the explicitly requested repo area.",
+                    "Keep changes inside the task worktree.",
+                ],
+                non_goals=non_goals or ["Do not expand beyond the accepted VisionSlice."],
+                acceptance_criteria=slice_item.acceptance_criteria,
+                tests=tests or ["Run the verification explicitly approved in the VisionSlice."],
+                dependencies=previous_group_ids,
+                context_query=context_query,
+                context_pack=context_pack,
+            )
+            tasks.append(task)
+            current_group_ids.append(task.id)
+        previous_group_ids = current_group_ids
     return tasks
 
 
@@ -86,6 +91,17 @@ def _split_items(text: str) -> list[str]:
     for chunk in normalized.split(";"):
         raw_items.extend(part.strip() for part in chunk.split(" / "))
     return [item.strip(" -.,") for item in raw_items if item.strip(" -.,")]
+
+
+def _split_task_groups(text: str) -> list[list[str]]:
+    if not text.strip():
+        return []
+    groups: list[list[str]] = []
+    for group_text in text.replace("\n", ";").split(";"):
+        items = [item.strip(" -.,") for item in group_text.split("||") if item.strip(" -.,")]
+        if items:
+            groups.append(items)
+    return groups
 
 
 def infer_context_query(text: str) -> str:
@@ -215,7 +231,7 @@ def review_task(
         diff_summary = f"Committed diff:\n{committed_diff}\n\nUncommitted diff:\n{uncommitted_diff}"
         changed_files = sorted(set(worktree_git.changed_files() + worktree_git.branch_diff_files()))
         issues.extend(ScopeGuard().validate_changed_files(task, changed_files))
-        secret_scan = scan_diff_for_secrets(full_diff)
+        secret_scan = scan_diff_for_secrets(full_diff, repo_root=worktree_git.repo_root)
         if secret_scan.blocked:
             for finding in secret_scan.findings:
                 issues.append(
@@ -264,6 +280,37 @@ def review_task(
     )
     ledger.append(LedgerEventType.review_recorded, review)
     return review
+
+
+def render_review_markdown(review: ReviewResult) -> str:
+    lines = [
+        f"# VOCR Review {review.task_id}",
+        "",
+        f"Decision: `{review.decision.value}`",
+        "",
+        review.summary,
+        "",
+        "## Required Changes",
+    ]
+    if review.required_changes:
+        lines.extend(f"- {item}" for item in review.required_changes)
+    else:
+        lines.append("- none")
+    lines.extend(["", "## Tests"])
+    if review.test_results:
+        lines.extend(f"- `{item.command}`: {item.status}" for item in review.test_results)
+    else:
+        lines.append("- none")
+    lines.extend(["", "## Diff Comments"])
+    if review.comments:
+        for comment in review.comments:
+            location = ""
+            if comment.path:
+                location = f" `{comment.path}{':' + str(comment.line) if comment.line else ''}`"
+            lines.append(f"- **{comment.source}**{location}: {comment.body}")
+    else:
+        lines.append("- none")
+    return "\n".join(lines)
 
 
 def _diff_review_comments(changed_files: list[str], issues: list[str], diff_text: str) -> list[ReviewComment]:

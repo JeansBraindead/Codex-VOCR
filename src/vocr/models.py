@@ -138,6 +138,7 @@ class SecretFinding(BaseModel):
 
 class SecretScanResult(BaseModel):
     findings: list[SecretFinding] = Field(default_factory=list)
+    scanners: list[str] = Field(default_factory=list)
 
     @property
     def blocked(self) -> bool:

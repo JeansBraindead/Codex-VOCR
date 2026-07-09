@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 from pathlib import Path
+from shutil import which
 
 import typer
 from dotenv import load_dotenv
@@ -37,6 +39,7 @@ from vocr.orchestration.workflow import (
     dispatch_task,
     organize_slice,
     promote_task,
+    render_review_markdown,
     review_task,
     render_task_template,
 )
@@ -463,7 +466,7 @@ def run_worker(
                         raise typer.BadParameter("Scope guard blocked commit: " + "; ".join(scope_issues))
                     extra_prompt = retry_prompt(attempt + 1, scope_issues, worktree_git.diff(), task.scope)
                     continue
-                secret_scan = scan_diff_for_secrets(worktree_git.diff_for_scan())
+                secret_scan = scan_diff_for_secrets(worktree_git.diff_for_scan(), repo_root=worktree_git.repo_root)
                 if secret_scan.blocked:
                     issues = [
                         f"{finding.rule_id}: {finding.path or 'unknown'}:{finding.line or '?'} {finding.summary}"
@@ -538,6 +541,8 @@ def review(
     summary: str | None = typer.Option(None, "--summary", "-s", help="Short review summary."),
     codex_review: bool = typer.Option(False, "--codex-review", help="Run codex exec review when available."),
     base_ref: str | None = typer.Option(None, "--base", help="Base branch/ref for Codex review."),
+    export_comments: Path | None = typer.Option(None, "--export-comments", help="Write review comments as Markdown."),
+    post_pr_comments: bool = typer.Option(False, "--post-pr-comments", help="Post one PR comment with review markdown via gh."),
 ) -> None:
     result = review_task(
         ledger(),
@@ -567,9 +572,30 @@ def review(
             console.print(f"- {safe_text(path)}")
     if result.diff_summary:
         console.print(f"[cyan]Diff summary:[/cyan] {safe_text(result.diff_summary)}")
+    if export_comments:
+        export_comments.parent.mkdir(parents=True, exist_ok=True)
+        export_comments.write_text(render_review_markdown(result), encoding="utf-8")
+        console.print(f"[green]Review comments written[/green] {export_comments}")
+    if post_pr_comments:
+        post_review_comment(result)
 
 
 app.command("check")(review)
+
+
+def post_review_comment(result: ReviewResult) -> None:
+    if which("gh") is None:
+        raise typer.BadParameter("GitHub CLI `gh` is not available.")
+    body = render_review_markdown(result)
+    completed = subprocess.run(
+        ["gh", "pr", "comment", "--body", body],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise typer.BadParameter(completed.stderr.strip() or completed.stdout.strip())
+    console.print("[green]Posted PR review comment[/green]")
 
 
 @app.command()

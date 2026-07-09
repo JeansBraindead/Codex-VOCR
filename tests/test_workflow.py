@@ -95,6 +95,7 @@ class WorkflowTests(unittest.TestCase):
         result = scan_diff_for_secrets(diff)
 
         self.assertTrue(result.blocked)
+        self.assertIn("vocr-minimal", result.scanners)
         self.assertTrue(any(finding.rule_id == "keyword_assignment" for finding in result.findings))
 
     def test_organize_slice_creates_sequential_task_dependencies(self) -> None:
@@ -113,6 +114,22 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(tasks[1].dependencies, [tasks[0].id])
         self.assertEqual(tasks[2].dependencies, [tasks[1].id])
 
+    def test_organize_slice_supports_parallel_task_groups(self) -> None:
+        request = (
+            GOOD_REQUEST
+            + " Tasks: Backend API || Backend Tests; README Update."
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            store = GraphStore(Path(tmp) / ".vocr")
+            store.save(RepoGraphBuilder(".").build())
+            vision = create_vision(request)
+            tasks = organize_slice(vision, vocr_home=str(Path(tmp) / ".vocr"))
+
+        self.assertEqual([task.title for task in tasks], ["Backend API", "Backend Tests", "README Update"])
+        self.assertEqual(tasks[0].dependencies, [])
+        self.assertEqual(tasks[1].dependencies, [])
+        self.assertEqual(set(tasks[2].dependencies), {tasks[0].id, tasks[1].id})
+
     def test_mcp_server_lists_vocr_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             server = VocrMcpServer(Path(tmp) / ".vocr")
@@ -122,6 +139,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("vocr_status", tool_names)
         self.assertIn("vocr_context", tool_names)
         self.assertIn("vocr_plan", tool_names)
+        self.assertIn("vocr_review", tool_names)
+        self.assertIn("vocr_promote_preview", tool_names)
 
 
 if __name__ == "__main__":
