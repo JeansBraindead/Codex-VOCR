@@ -1,0 +1,1 @@
+"""VOCR CLI package."""
