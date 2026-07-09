@@ -19,6 +19,10 @@ dependencies = [
 [project.scripts]
 vocr = "vocr.main:main"
 
+[project.urls]
+Repository = "https://github.com/JeansBraindead/Codex-VOCR"
+"Reference: VOIT" = "https://github.com/yesitsfebreeze/voit"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

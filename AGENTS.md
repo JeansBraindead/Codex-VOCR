@@ -2,6 +2,10 @@
 
 This repo contains the VOCR MVP: Vision / Organize / Code / Review.
 
+Reference architecture: VOCR is inspired by `yesitsfebreeze/voit` at
+https://github.com/yesitsfebreeze/voit. Do not copy VOIT code or assets into
+this repo without explicit license review and attribution in the touched files.
+
 - Keep changes small and reviewable.
 - The user-facing contact point is the Visionary flow: `vocr vision`.
 - Treat `graphify`, `context`, `organize`, and `dispatch` as internal/debug commands unless the user explicitly asks for them.

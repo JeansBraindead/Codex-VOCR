@@ -2,6 +2,8 @@
 
 VOCR ist ein lokaler Python-MVP nach dem Muster **Vision / Organize / Code / Review**.
 
+VOCR ist architektonisch von [VOIT](https://github.com/yesitsfebreeze/voit) inspiriert, insbesondere vom Gedanken, Arbeit ueber klare Phasen, isolierte Worktrees, Scope-Regeln, Review-Gates und Promote-Flows zu strukturieren. VOCR ist eine eigenstaendige Python/Codex-Umsetzung dieser Ideen und kein Fork oder vendored Copy von VOIT.
+
 Der Visionary Agent ist der Single Contact Point fuer den User. Er nimmt Nutzerwuensche entgegen, baut automatisch einen tokenarmen Graphify-Kontext, haelt Ziel und Akzeptanzkriterien fest, zerlegt Arbeit in kleine Tasks, dispatcht bei `--go` in isolierte Git-Worktrees und promotet Aenderungen erst nach Review.
 
 ## Setup
@@ -123,6 +125,12 @@ Vor jeder neuen Agent-Runde:
 Das Ziel ist: neue Agents bekommen eine Repo-Karte und nur die naechsten relevanten Dateien, nicht den kompletten Codebestand.
 - Der Standard-Ort fuer isolierte Task-Worktrees liegt neben dem Repo: `<repo>.vocr-worktrees/`.
 - `src/vocr/codex/mcp_client.py` ist nur die Adapter-Grenze fuer spaetere Codex-CLI/MCP-Anbindung.
+
+## Referenz und Attribution
+
+- Referenzarchitektur: [yesitsfebreeze/voit](https://github.com/yesitsfebreeze/voit)
+- VOCR uebernimmt keine VOIT-Dateien, sondern nutzt VOIT als Architektur-Inspiration fuer Vision/Organize/Worker/Review/Promote-artige Abläufe.
+- Falls VOCR spaeter VOIT-Code oder Assets uebernimmt, muss die jeweilige Lizenz und Attribution separat im betroffenen Codepfad dokumentiert werden.
 
 ## Naechste Schritte
 
