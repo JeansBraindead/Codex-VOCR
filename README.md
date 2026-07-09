@@ -8,6 +8,11 @@ Der Visionary Agent ist der Single Contact Point fuer den User. Er nimmt Nutzerw
 
 ## Setup
 
+Sehr genaue Anleitungen:
+
+- [Installationsanleitung](docs/INSTALLATION.md)
+- [Testanleitung](docs/TESTING.md)
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
