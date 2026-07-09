@@ -8,6 +8,7 @@ from typing import Iterable
 from pydantic import BaseModel
 
 from vocr.models import (
+    ClarificationSession,
     LedgerEvent,
     LedgerEventType,
     PermissionGrant,
@@ -110,6 +111,22 @@ class MemoryLedger:
             for event in self.events()
             if event.type == LedgerEventType.review_recorded
         ]
+
+    def clarification_sessions(self) -> list[ClarificationSession]:
+        sessions: dict[str, ClarificationSession] = {}
+        for event in self.events():
+            if event.type == LedgerEventType.clarification_requested:
+                session = ClarificationSession.model_validate(event.payload)
+                sessions[session.id] = session
+            elif event.type == LedgerEventType.clarification_answered:
+                session_id = event.payload.get("session_id")
+                answer = event.payload.get("answer")
+                if session_id in sessions and answer:
+                    sessions[session_id].answers.append(str(answer))
+        return list(sessions.values())
+
+    def get_clarification(self, session_id: str) -> ClarificationSession | None:
+        return next((item for item in self.clarification_sessions() if item.id == session_id), None)
 
     def permission_grants(self) -> list[PermissionGrant]:
         return [

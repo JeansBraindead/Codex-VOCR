@@ -40,6 +40,7 @@ class PermissionMode(str, Enum):
 class LedgerEventType(str, Enum):
     setup = "setup"
     clarification_requested = "clarification_requested"
+    clarification_answered = "clarification_answered"
     vision_created = "vision_created"
     task_created = "task_created"
     task_dispatched = "task_dispatched"
@@ -69,6 +70,14 @@ class ReadinessReport(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+class ClarificationSession(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("clarify"))
+    request: str
+    report: ReadinessReport
+    answers: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class VisionSlice(BaseModel):
     id: str = Field(default_factory=lambda: new_id("slice"))
     request: str
@@ -96,6 +105,13 @@ class VocrTask(BaseModel):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class TestRunResult(BaseModel):
+    command: str
+    status: str
+    exit_code: int | None = None
+    output: str = ""
+
+
 class ReviewResult(BaseModel):
     task_id: str
     decision: ReviewDecision
@@ -103,6 +119,7 @@ class ReviewResult(BaseModel):
     risks: list[str] = Field(default_factory=list)
     required_changes: list[str] = Field(default_factory=list)
     tests_reviewed: list[str] = Field(default_factory=list)
+    test_results: list["TestRunResult"] = Field(default_factory=list)
     git_status: str | None = None
     diff_summary: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
@@ -126,6 +143,15 @@ class ScopePolicy(BaseModel):
 
 class TaskPlan(BaseModel):
     tasks: list[VocrTask] = Field(default_factory=list)
+
+
+class CodexRunResult(BaseModel):
+    task_id: str
+    command: list[str]
+    exit_code: int
+    stdout: str = ""
+    stderr: str = ""
+    created_at: datetime = Field(default_factory=utc_now)
 
 
 class LedgerEvent(BaseModel):

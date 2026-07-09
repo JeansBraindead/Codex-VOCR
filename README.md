@@ -15,6 +15,8 @@ vocr setup
 
 Optional: `.env.example` nach `.env` kopieren und `OPENAI_API_KEY` setzen, wenn die Agents live genutzt werden sollen. Mit `VOCR_HOME` kann der lokale Ledger-Pfad angepasst werden. Der aktuelle MVP kann ohne API-Key seine lokale Struktur, Ledger-Operationen und Worktree-Kommandos verwenden.
 
+Optional kann `VOCR_CODEX_COMMAND` gesetzt werden. Dann startet `vocr run <task-id>` diesen echten Worker-Befehl im isolierten Worktree und uebergibt den Task-Prompt ueber stdin. Ohne `VOCR_CODEX_COMMAND` wird kein Worker-Erfolg erfunden.
+
 ## Normaler Ablauf
 
 Der User spricht nur mit dem Visionaer:
@@ -27,6 +29,12 @@ vocr vision "Ziel: Baue eine Healthcheck-API im Backend. Arbeitsbereich: FastAPI
 ```
 
 Wenn Informationen fehlen, legt der Visionaer nicht los. Er fragt stattdessen konkret nach und erstellt keine Tasks, keine Worktrees und keine Dispatches. Der Request muss Zielbild, Arbeitsbereich, Akzeptanzkriterien, Verifikation, Nicht-Ziele und Ausfuehrungsgrenzen ausreichend klar machen.
+
+Antworten auf Rueckfragen laufen weiter ueber den Visionaer:
+
+```powershell
+vocr answer <clarification-id> "Ziel: ... Arbeitsbereich: ... Akzeptanz: ... Verifikation: ... Nicht-Ziele: ... Ausfuehrung: ..." --go
+```
 
 Was `vocr vision` intern macht:
 
@@ -51,6 +59,7 @@ vocr go global --all --reason "AFK run approved"
 vocr organize <slice-id>
 vocr organize <slice-id> --live-agent
 vocr dispatch <task-id>
+vocr run <task-id>
 vocr status
 vocr review <task-id>
 vocr review <task-id> --decision accepted --summary "Manual review passed"
@@ -79,7 +88,15 @@ vocr doctor
 - `vocr dispatch` erzeugt im isolierten Worktree `.vocr/VOCR_TASK.md` mit Task, Context-Pack und Permission-Modus.
 - `vocr dispatch` erzeugt ausserdem `.vocr/scope.json` als maschinenlesbare Scope-Policy fuer Worker und spaetere Hooks.
 - `vocr review` sammelt lokale Git-Signale aus dem Worktree und akzeptiert nur mit expliziter Entscheidung.
+- `vocr review` fuehrt sichere automatische Checks aus, z.B. Syntax-Check. Unbekannte Checks werden als manuell markiert, nicht blind gestartet.
 - `vocr promote` fuehrt vor dem Merge einen Preflight aus und blockiert ohne akzeptiertes Review.
+
+## Tests
+
+```powershell
+python -m compileall src tests
+$env:PYTHONPATH="src"; python -m unittest discover -s tests
+```
 
 ## Speicherorte
 
@@ -103,8 +120,8 @@ Das Ziel ist: neue Agents bekommen eine Repo-Karte und nur die naechsten relevan
 
 ## Naechste Schritte
 
-1. Codex CLI als MCP-Server hinter `CodexMcpClient.run_task()` anschliessen.
-2. Reviewer Agent mit echten Testausfuehrungen und Diff-Kommentaren fuettern.
-3. Scope Guard als harte Schreibschutz-Schicht fuer Worker erweitern.
+1. Codex CLI als MCP-Server konkret konfigurieren und `VOCR_CODEX_COMMAND` darauf zeigen lassen.
+2. Reviewer Agent mit Diff-Kommentaren und optionalen PR-Reviews erweitern.
+3. Scope Guard als harte Pre-Write-Schicht fuer Worker erweitern.
 4. Promote Gate mit optionalem PR-Modus ausbauen.
 5. Graphify um inkrementelle Updates und semantische Summaries erweitern.

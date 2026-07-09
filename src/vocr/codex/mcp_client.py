@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import os
+import shlex
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from vocr.models import PermissionGrant, PermissionMode, VocrTask
+from vocr.models import CodexRunResult, PermissionGrant, PermissionMode, VocrTask
 from vocr.orchestration.workflow import render_task_template
 
 
@@ -18,6 +21,9 @@ class CodexDispatchPayload:
 
 class CodexMcpClient:
     """Adapter boundary for the future Codex CLI MCP server."""
+
+    def __init__(self, command: str | None = None) -> None:
+        self.command = command if command is not None else os.getenv("VOCR_CODEX_COMMAND")
 
     def build_payload(
         self,
@@ -60,5 +66,34 @@ class CodexMcpClient:
         )
         return target
 
-    async def run_task(self, task: VocrTask) -> None:
-        raise NotImplementedError("TODO: connect Codex CLI MCP server here.")
+    def run_task(
+        self,
+        task: VocrTask,
+        permission: PermissionGrant | None = None,
+        timeout_seconds: int = 3600,
+    ) -> CodexRunResult:
+        if not self.command:
+            raise RuntimeError(
+                "VOCR_CODEX_COMMAND is not set. Configure the real Codex CLI/MCP worker command first."
+            )
+        payload = self.build_payload(task, permission=permission)
+        command = shlex.split(self.command)
+        if not command:
+            raise RuntimeError("VOCR_CODEX_COMMAND is empty.")
+
+        completed = subprocess.run(
+            command,
+            cwd=payload.worktree_path,
+            input=payload.prompt,
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+        return CodexRunResult(
+            task_id=task.id,
+            command=command,
+            exit_code=completed.returncode,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+        )

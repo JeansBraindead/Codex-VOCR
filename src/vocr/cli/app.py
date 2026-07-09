@@ -17,7 +17,14 @@ from vocr.git.worktrees import GitWorktreeError, GitWorktreeManager
 from vocr.graph.graphify import GraphStore, RepoGraphBuilder
 from vocr.guardrails.scope_guard import ScopeGuard
 from vocr.memory.ledger import MemoryLedger, sanitize_payload
-from vocr.models import LedgerEventType, PermissionGrant, PermissionMode, ReviewDecision, TaskStatus
+from vocr.models import (
+    ClarificationSession,
+    LedgerEventType,
+    PermissionGrant,
+    PermissionMode,
+    ReviewDecision,
+    TaskStatus,
+)
 from vocr.orchestration.workflow import (
     create_vision,
     dispatch_task,
@@ -73,6 +80,89 @@ def write_dispatch_handoff(store: MemoryLedger, task_id: str) -> None:
     console.print(f"[cyan]Task manifest:[/cyan] {manifest_path}")
     console.print(f"[cyan]Scope policy:[/cyan] {scope_path}")
     console.print("Codex MCP execution is prepared but not implemented yet.")
+
+
+def request_clarification(store: MemoryLedger, request: str) -> bool:
+    readiness = assess_request_readiness(request)
+    if readiness.ready:
+        return False
+
+    session = ClarificationSession(request=request, report=readiness)
+    store.append(LedgerEventType.clarification_requested, session)
+    console.print("[yellow]Der Visionaer braucht noch Informationen, bevor er loslegt.[/yellow]")
+    console.print(f"Clarification ID: {session.id}")
+    console.print(f"Readiness: {readiness.confidence:.0%}")
+    for index, question in enumerate(readiness.questions, start=1):
+        console.print(f"{index}. [bold]{safe_text(question.topic)}[/bold]: {safe_text(question.question)}")
+        console.print(f"   Warum: {safe_text(question.why_needed)}")
+    console.print(
+        "\nAntworte mit `vocr answer "
+        f"{session.id} \"<deine Details>\"`. VOCR legt bis dahin keine Tasks und keine Worktrees an."
+    )
+    return True
+
+
+def run_vision_pipeline(
+    request: str,
+    *,
+    go: bool,
+    live_agent: bool,
+    auto: bool,
+    dispatch_workers: bool,
+) -> None:
+    store = ledger()
+    store.init()
+    if request_clarification(store, request):
+        return
+
+    if auto:
+        refresh_graph()
+        console.print("[green]Graphify complete[/green] Visionary will use token-efficient context.")
+
+    item = create_vision(request)
+    if live_agent and live_agents_available():
+        try:
+            item = asyncio.run(create_live_vision(request))
+        except Exception as exc:
+            console.print(f"[yellow]Live agent failed, using local fallback:[/yellow] {safe_text(str(exc))}")
+    elif live_agent:
+        console.print("[yellow]OPENAI_API_KEY is missing, using local fallback.[/yellow]")
+    store.append(LedgerEventType.vision_created, item)
+    if go:
+        grant = PermissionGrant(mode=PermissionMode.approve_all, scope=item.id)
+        store.append(LedgerEventType.permission_granted, grant)
+    console.print(f"[green]Created slice[/green] {item.id}")
+    console.print(f"Goal: {safe_text(item.goal)}")
+    if go:
+        console.print("[yellow]Approve-all is active for this slice.[/yellow]")
+
+    if not auto:
+        console.print("[yellow]Plan-only mode:[/yellow] run organize/dispatch manually if needed.")
+        return
+
+    tasks = organize_slice(item, vocr_home=str(store.root))
+    if live_agent and live_agents_available():
+        try:
+            context_pack = graph_store().context_pack(query=item.goal, limit=12)
+            plan = asyncio.run(create_live_task_plan(item, context_pack))
+            tasks = plan.tasks or tasks
+            for task in tasks:
+                if not task.context_pack:
+                    task.context_query = task.context_query or item.goal
+                    task.context_pack = graph_store().context_pack(query=task.context_query, limit=12)
+        except Exception as exc:
+            console.print(f"[yellow]Live organizer failed, using local fallback:[/yellow] {safe_text(str(exc))}")
+
+    persist_tasks(store, tasks)
+
+    if go and dispatch_workers:
+        for task in tasks:
+            try:
+                write_dispatch_handoff(store, task.id)
+            except (GitWorktreeError, ValueError) as exc:
+                console.print(f"[yellow]Dispatch skipped for {task.id}:[/yellow] {safe_text(str(exc))}")
+    elif not go:
+        console.print("[yellow]Dispatch paused:[/yellow] pass --go when the Visionary should continue unattended.")
 
 
 @app.command()
@@ -132,70 +222,43 @@ def vision(
         help="With --go, dispatch generated tasks to isolated worktrees.",
     ),
 ) -> None:
+    run_vision_pipeline(
+        request,
+        go=go,
+        live_agent=live_agent,
+        auto=auto,
+        dispatch_workers=dispatch_workers,
+    )
+
+
+@app.command()
+def answer(
+    clarification_id: str,
+    details: str,
+    go: bool = typer.Option(
+        False,
+        "--go",
+        help="Give this clarified slice approve-all permission for unattended VOCR execution.",
+    ),
+    live_agent: bool = typer.Option(False, "--live-agent", help="Use OpenAI Agents SDK when available."),
+    dispatch_workers: bool = typer.Option(True, "--dispatch/--no-dispatch"),
+) -> None:
     store = ledger()
-    store.init()
-    readiness = assess_request_readiness(request)
-    if not readiness.ready:
-        store.append(LedgerEventType.clarification_requested, readiness)
-        console.print("[yellow]Der Visionaer braucht noch Informationen, bevor er loslegt.[/yellow]")
-        console.print(f"Readiness: {readiness.confidence:.0%}")
-        for index, question in enumerate(readiness.questions, start=1):
-            console.print(f"{index}. [bold]{safe_text(question.topic)}[/bold]: {safe_text(question.question)}")
-            console.print(f"   Warum: {safe_text(question.why_needed)}")
-        console.print(
-            "\nBitte starte `vocr vision` erneut mit diesen Antworten im Request. "
-            "VOCR legt bis dahin keine Tasks und keine Worktrees an."
-        )
-        return
-
-    if auto:
-        refresh_graph()
-        console.print("[green]Graphify complete[/green] Visionary will use token-efficient context.")
-
-    item = create_vision(request)
-    if live_agent and live_agents_available():
-        try:
-            item = asyncio.run(create_live_vision(request))
-        except Exception as exc:
-            console.print(f"[yellow]Live agent failed, using local fallback:[/yellow] {safe_text(str(exc))}")
-    elif live_agent:
-        console.print("[yellow]OPENAI_API_KEY is missing, using local fallback.[/yellow]")
-    store.append(LedgerEventType.vision_created, item)
-    if go:
-        grant = PermissionGrant(mode=PermissionMode.approve_all, scope=item.id)
-        store.append(LedgerEventType.permission_granted, grant)
-    console.print(f"[green]Created slice[/green] {item.id}")
-    console.print(f"Goal: {safe_text(item.goal)}")
-    if go:
-        console.print("[yellow]Approve-all is active for this slice.[/yellow]")
-
-    if not auto:
-        console.print("[yellow]Plan-only mode:[/yellow] run organize/dispatch manually if needed.")
-        return
-
-    tasks = organize_slice(item, vocr_home=str(store.root))
-    if live_agent and live_agents_available():
-        try:
-            context_pack = graph_store().context_pack(query=item.goal, limit=12)
-            plan = asyncio.run(create_live_task_plan(item, context_pack))
-            tasks = plan.tasks or tasks
-            for task in tasks:
-                if not task.context_pack:
-                    task.context_query = task.context_query or item.goal
-                    task.context_pack = graph_store().context_pack(query=task.context_query, limit=12)
-        except Exception as exc:
-            console.print(f"[yellow]Live organizer failed, using local fallback:[/yellow] {safe_text(str(exc))}")
-
-    persist_tasks(store, tasks)
-
-    if go and dispatch_workers:
-        for task in tasks:
-            try:
-                write_dispatch_handoff(store, task.id)
-            except (GitWorktreeError, ValueError) as exc:
-                console.print(f"[yellow]Dispatch skipped for {task.id}:[/yellow] {safe_text(str(exc))}")
-    elif not go:
-        console.print("[yellow]Dispatch paused:[/yellow] pass --go when the Visionary should continue unattended.")
+    session = store.get_clarification(clarification_id)
+    if session is None:
+        raise typer.BadParameter(f"Unknown clarification id: {clarification_id}")
+    store.append(
+        LedgerEventType.clarification_answered,
+        {"session_id": clarification_id, "answer": details},
+    )
+    combined = "\n".join([session.request, *session.answers, details])
+    run_vision_pipeline(
+        combined,
+        go=go,
+        live_agent=live_agent,
+        auto=True,
+        dispatch_workers=dispatch_workers,
+    )
 
 
 @app.command("go")
@@ -258,6 +321,27 @@ def dispatch(task_id: str) -> None:
         raise typer.BadParameter(str(exc)) from exc
 
 
+@app.command("run")
+def run_worker(
+    task_id: str,
+    timeout_seconds: int = typer.Option(3600, "--timeout", help="Worker timeout in seconds."),
+) -> None:
+    store = ledger()
+    task = store.get_task(task_id)
+    if task is None:
+        raise typer.BadParameter(f"Unknown task id: {task_id}")
+    permission = store.active_permission(task.slice_id) or store.active_permission("global")
+    try:
+        result = CodexMcpClient().run_task(task, permission=permission, timeout_seconds=timeout_seconds)
+    except (RuntimeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print(f"[green]Worker finished[/green] exit={result.exit_code}")
+    if result.stdout:
+        console.print(safe_text(result.stdout[-2000:]))
+    if result.stderr:
+        console.print(f"[yellow]{safe_text(result.stderr[-2000:])}[/yellow]")
+
+
 @app.command()
 def status() -> None:
     store = ledger()
@@ -299,6 +383,10 @@ def review(
     console.print(result.summary)
     for change in result.required_changes:
         console.print(f"- {change}")
+    for test in result.test_results:
+        console.print(f"[cyan]Check:[/cyan] {safe_text(test.command)} -> {test.status}")
+        if test.output:
+            console.print(safe_text(test.output))
     if result.git_status:
         console.print(f"[cyan]Git status:[/cyan] {safe_text(result.git_status)}")
     if result.diff_summary:

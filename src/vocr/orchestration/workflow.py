@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import subprocess
+import sys
+
 from vocr.guardrails.scope_guard import ScopeGuard
 from vocr.git.worktrees import GitWorktreeManager
 from vocr.graph.graphify import GraphStore, RepoGraphBuilder
@@ -10,6 +13,7 @@ from vocr.models import (
     ReviewDecision,
     ReviewResult,
     TaskStatus,
+    TestRunResult,
     VisionSlice,
     VocrTask,
 )
@@ -165,10 +169,17 @@ def review_task(
     git_status = None
     diff_summary = None
     if task.worktree_path:
-        git_status = GitWorktreeManager(task.worktree_path).status_porcelain()
-        diff_summary = GitWorktreeManager(task.worktree_path).diff_stat()
+        worktree_git = GitWorktreeManager(task.worktree_path)
+        git_status = worktree_git.status_porcelain()
+        diff_summary = worktree_git.diff_stat()
+        issues.extend(ScopeGuard().validate_changed_files(task, worktree_git.changed_files()))
         if decision == ReviewDecision.accepted and git_status != "clean":
             issues.append("Worktree has uncommitted changes; commit or discard them before accepted review.")
+
+    test_results = run_task_checks(task)
+    failed_checks = [result for result in test_results if result.status == "failed"]
+    if failed_checks:
+        issues.extend(f"Check failed: {result.command}" for result in failed_checks)
 
     if decision is None:
         decision = ReviewDecision.needs_changes
@@ -189,6 +200,7 @@ def review_task(
         risks=issues,
         required_changes=issues,
         tests_reviewed=task.tests,
+        test_results=test_results,
         git_status=git_status,
         diff_summary=diff_summary,
     )
@@ -209,3 +221,46 @@ def promote_task(ledger: MemoryLedger, manager: GitWorktreeManager, task_id: str
         raise ValueError("Promote preflight failed: " + "; ".join(preflight_issues))
     manager.merge_task_branch(task.branch_name)
     ledger.append(LedgerEventType.task_promoted, {"task_id": task.id, "branch_name": task.branch_name})
+
+
+def run_task_checks(task: VocrTask) -> list[TestRunResult]:
+    results: list[TestRunResult] = []
+    cwd = task.worktree_path
+    for check in task.tests:
+        command = normalize_check_command(check)
+        if command is None:
+            results.append(
+                TestRunResult(
+                    command=check,
+                    status="manual",
+                    output="No safe automatic command mapped for this check.",
+                )
+            )
+            continue
+        completed = subprocess.run(
+            command,
+            cwd=cwd,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=300,
+        )
+        output = "\n".join(part for part in [completed.stdout.strip(), completed.stderr.strip()] if part)
+        results.append(
+            TestRunResult(
+                command=" ".join(command),
+                status="passed" if completed.returncode == 0 else "failed",
+                exit_code=completed.returncode,
+                output=output[-2000:],
+            )
+        )
+    return results
+
+
+def normalize_check_command(check: str) -> list[str] | None:
+    lowered = check.lower()
+    if "compile" in lowered or "syntax" in lowered:
+        return [sys.executable, "-m", "compileall", "src"]
+    if lowered.strip() in {"pytest", "python -m pytest"} or "pytest" in lowered:
+        return [sys.executable, "-m", "pytest"]
+    return None

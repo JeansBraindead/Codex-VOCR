@@ -43,3 +43,14 @@ class ScopeGuard:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(self.build_worker_policy(task).model_dump_json(indent=2), encoding="utf-8")
         return target
+
+    def validate_changed_files(self, task: VocrTask, changed_files: list[str]) -> list[str]:
+        policy = self.build_worker_policy(task)
+        issues: list[str] = []
+        denied = [item.replace("\\", "/").rstrip("/") for item in policy.denied_roots]
+        for changed in changed_files:
+            normalized = changed.replace("\\", "/").lstrip("/")
+            for denied_root in denied:
+                if normalized == denied_root or normalized.startswith(f"{denied_root}/"):
+                    issues.append(f"Changed file is denied by scope policy: {normalized}")
+        return issues

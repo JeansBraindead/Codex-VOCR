@@ -67,6 +67,20 @@ class GitWorktreeManager:
             return result.stderr.strip() or result.stdout.strip()
         return result.stdout.strip() or "no uncommitted diff"
 
+    def changed_files(self) -> list[str]:
+        result = self._git("status", "--porcelain")
+        if result.returncode != 0:
+            return []
+        files: list[str] = []
+        for line in result.stdout.splitlines():
+            if not line.strip():
+                continue
+            path = line[3:].strip()
+            if " -> " in path:
+                path = path.split(" -> ", 1)[1]
+            files.append(path.replace("\\", "/"))
+        return files
+
     def branch_exists(self, branch_name: str) -> bool:
         result = self._git("rev-parse", "--verify", branch_name)
         return result.returncode == 0
