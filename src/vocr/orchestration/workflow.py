@@ -17,6 +17,7 @@ from vocr.models import (
     VisionSlice,
     VocrTask,
 )
+from vocr.orchestration.codex_review import run_codex_review
 from vocr.orchestration.readiness import parse_request_sections
 
 
@@ -150,6 +151,8 @@ def review_task(
     *,
     decision: ReviewDecision | None = None,
     summary: str | None = None,
+    codex_review: bool = False,
+    base_ref: str | None = None,
 ) -> ReviewResult:
     task = ledger.get_task(task_id)
     if task is None:
@@ -191,6 +194,12 @@ def review_task(
     if decision == ReviewDecision.accepted and issues:
         decision = ReviewDecision.needs_changes
 
+    comments = []
+    if codex_review:
+        comment = run_codex_review(task, base_ref=base_ref)
+        if comment:
+            comments.append(comment)
+
     review_summary = summary or (
         "Manual review accepted the task."
         if decision == ReviewDecision.accepted
@@ -204,6 +213,7 @@ def review_task(
         required_changes=issues,
         tests_reviewed=task.tests,
         test_results=test_results,
+        comments=comments,
         git_status=git_status,
         diff_summary=diff_summary,
         diff_files=changed_files if task.worktree_path else [],

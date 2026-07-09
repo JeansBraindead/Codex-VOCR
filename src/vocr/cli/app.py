@@ -12,6 +12,7 @@ from rich.table import Table
 
 from vocr.agents.runtime import create_live_task_plan, create_live_vision, live_agents_available
 from vocr.bus.bus import MessageBus
+from vocr.codex.config import codex_available, write_mcp_config
 from vocr.codex.mcp_client import CodexMcpClient
 from vocr.git.worktrees import GitWorktreeError, GitWorktreeManager
 from vocr.graph.graphify import GraphStore, RepoGraphBuilder
@@ -55,7 +56,7 @@ def graph_store() -> GraphStore:
 
 
 def refresh_graph() -> None:
-    graph_store().save(RepoGraphBuilder(".").build())
+    graph_store().refresh(".")
 
 
 def persist_tasks(store: MemoryLedger, tasks: list, *, print_tasks: bool = True) -> None:
@@ -71,7 +72,9 @@ def write_dispatch_handoff(store: MemoryLedger, task_id: str) -> None:
     MessageBus(store).publish("dispatch", "vocr", f"Task {task.id} dispatched to {task.worktree_path}")
     permission = store.active_permission(task.slice_id) or store.active_permission("global")
     manifest_path = CodexMcpClient().write_manifest(task, permission=permission)
-    scope_path = ScopeGuard().write_worker_policy(task)
+    guard = ScopeGuard()
+    scope_path = guard.write_worker_policy(task)
+    agents_path = guard.write_worker_agents_file(task)
     console.print(f"[green]Dispatched[/green] {task.id} to {task.worktree_path}")
     if permission:
         console.print(f"[yellow]Permission mode:[/yellow] {permission.mode.value} ({permission.scope})")
@@ -79,6 +82,7 @@ def write_dispatch_handoff(store: MemoryLedger, task_id: str) -> None:
         console.print("[yellow]Permission mode:[/yellow] ask_each_time")
     console.print(f"[cyan]Task manifest:[/cyan] {manifest_path}")
     console.print(f"[cyan]Scope policy:[/cyan] {scope_path}")
+    console.print(f"[cyan]Worker guidance:[/cyan] {agents_path}")
     console.print("Codex MCP execution is prepared but not implemented yet.")
 
 
@@ -170,15 +174,23 @@ def setup() -> None:
     store = ledger()
     store.init()
     GitWorktreeManager().worktree_root.mkdir(parents=True, exist_ok=True)
+    mcp_path = write_mcp_config(store.root / "codex-mcp.json")
     store.append(LedgerEventType.setup, {"message": "VOCR workspace initialized."})
     console.print(f"[green]VOCR workspace initialized at {store.root}[/green]")
+    console.print(f"[green]Codex MCP config written[/green] {mcp_path}")
+
+
+@app.command("codex-config")
+def codex_config() -> None:
+    path = write_mcp_config(ledger().root / "codex-mcp.json")
+    console.print(f"[green]Codex MCP config written[/green] {path}")
+    console.print("Worker default: codex exec - --cd <worktree> --sandbox workspace-write")
 
 
 @app.command()
 def graphify() -> None:
-    graph = RepoGraphBuilder(".").build()
     store = graph_store()
-    store.save(graph)
+    graph = store.refresh(".")
     console.print(f"[green]Graph written[/green] {store.path}")
     console.print(f"Files indexed: {len(graph.nodes)}")
     console.print(f"Edges indexed: {len(graph.edges)}")
@@ -344,6 +356,10 @@ def run_worker(
         raise typer.BadParameter(str(exc)) from exc
     if result.exit_code == 0 and commit:
         worktree_git = GitWorktreeManager(task.worktree_path or ".")
+        scope_issues = ScopeGuard().validate_changed_files(task, worktree_git.changed_files())
+        if scope_issues:
+            store.append(LedgerEventType.task_worker_ran, result)
+            raise typer.BadParameter("Scope guard blocked commit: " + "; ".join(scope_issues))
         if worktree_git.has_changes():
             sha = worktree_git.commit_all(f"VOCR task {task.id}: {task.title}")
             result.committed = True
@@ -399,8 +415,17 @@ def review(
         help="Explicit manual review decision: accepted, needs_changes, or blocked.",
     ),
     summary: str | None = typer.Option(None, "--summary", "-s", help="Short review summary."),
+    codex_review: bool = typer.Option(False, "--codex-review", help="Run codex exec review when available."),
+    base_ref: str | None = typer.Option(None, "--base", help="Base branch/ref for Codex review."),
 ) -> None:
-    result = review_task(ledger(), task_id, decision=decision, summary=summary)
+    result = review_task(
+        ledger(),
+        task_id,
+        decision=decision,
+        summary=summary,
+        codex_review=codex_review,
+        base_ref=base_ref,
+    )
     color = "green" if result.decision == ReviewDecision.accepted else "yellow"
     console.print(f"[{color}]Review: {result.decision.value}[/{color}]")
     console.print(result.summary)
@@ -410,6 +435,9 @@ def review(
         console.print(f"[cyan]Check:[/cyan] {safe_text(test.command)} -> {test.status}")
         if test.output:
             console.print(safe_text(test.output))
+    for comment in result.comments:
+        console.print(f"[cyan]Reviewer comment ({safe_text(comment.source)}):[/cyan]")
+        console.print(safe_text(comment.body))
     if result.git_status:
         console.print(f"[cyan]Git status:[/cyan] {safe_text(result.git_status)}")
     if result.diff_files:
@@ -424,15 +452,34 @@ app.command("check")(review)
 
 
 @app.command()
-def promote(task_id: str) -> None:
+def promote(
+    task_id: str,
+    pr: bool = typer.Option(False, "--pr", help="Create a draft PR instead of merging locally."),
+    preview: bool = typer.Option(False, "--preview", help="Show merge/PR preview and exit."),
+) -> None:
     store = ledger()
     task = store.get_task(task_id)
     if task is None:
         raise typer.BadParameter(f"Unknown task id: {task_id}")
+    manager = GitWorktreeManager()
+    if not task.branch_name:
+        raise typer.BadParameter("Task has no branch to promote.")
+    if preview:
+        console.print(manager.merge_preview(task.branch_name))
+        return
     if task.status != TaskStatus.accepted:
         raise typer.BadParameter("Task must have an accepted review before promote.")
     try:
-        promote_task(store, GitWorktreeManager(), task_id)
+        if pr:
+            url = manager.create_pull_request(
+                task.branch_name,
+                title=f"VOCR: {task.title}",
+                body=render_task_template(task),
+                draft=True,
+            )
+            console.print(f"[green]Draft PR created[/green] {url}")
+            return
+        promote_task(store, manager, task_id)
     except (GitWorktreeError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
     console.print(f"[green]Promoted[/green] {task_id}")
@@ -468,5 +515,6 @@ def doctor() -> None:
     table.add_row("Git repository", git_status["git_repo"])
     table.add_row("Worktree root", git_status["worktree_root"])
     table.add_row("Approve-all grants", str(len(store.permission_grants())))
-    table.add_row("Codex MCP", "adapter only; TODO")
+    table.add_row("Codex CLI", "yes" if codex_available() else "missing")
+    table.add_row("Codex MCP config", str(store.root / "codex-mcp.json"))
     console.print(table)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from shutil import which
 
 
 class GitWorktreeError(RuntimeError):
@@ -54,6 +55,33 @@ class GitWorktreeManager:
         result = self._git("merge", "--no-ff", branch_name)
         if result.returncode != 0:
             raise GitWorktreeError(result.stderr.strip() or result.stdout.strip())
+
+    def merge_preview(self, branch_name: str) -> str:
+        self.ensure_git_repo()
+        stat = self._git("diff", "--stat", f"HEAD...{branch_name}")
+        log = self._git("log", "--oneline", f"HEAD..{branch_name}")
+        return "\n".join(
+            part
+            for part in [
+                "Commits:",
+                log.stdout.strip() or "no new commits",
+                "",
+                "Diff stat:",
+                stat.stdout.strip() or "no diff",
+            ]
+            if part is not None
+        )
+
+    def create_pull_request(self, branch_name: str, title: str, body: str, draft: bool = True) -> str:
+        if which("gh") is None:
+            raise GitWorktreeError("GitHub CLI `gh` is not available for PR creation.")
+        command = ["gh", "pr", "create", "--head", branch_name, "--title", title, "--body", body]
+        if draft:
+            command.append("--draft")
+        result = subprocess.run(command, cwd=self.repo_root, text=True, capture_output=True, check=False)
+        if result.returncode != 0:
+            raise GitWorktreeError(result.stderr.strip() or result.stdout.strip())
+        return result.stdout.strip()
 
     def status_porcelain(self) -> str:
         result = self._git("status", "--porcelain")

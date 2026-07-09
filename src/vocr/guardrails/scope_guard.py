@@ -44,6 +44,31 @@ class ScopeGuard:
         target.write_text(self.build_worker_policy(task).model_dump_json(indent=2), encoding="utf-8")
         return target
 
+    def write_worker_agents_file(self, task: VocrTask, filename: str = ".vocr/AGENTS.md") -> Path:
+        if task.worktree_path is None:
+            raise ValueError("Task must have a worktree before writing worker guidance.")
+        target = task.worktree_path / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            "\n".join(
+                [
+                    "# VOCR Worker Scope",
+                    "",
+                    "You are working inside an isolated VOCR task worktree.",
+                    "Do not read broadly. Start with `.vocr/VOCR_TASK.md` and `.vocr/scope.json`.",
+                    "Write only changes required by the task scope.",
+                    "Do not edit `.git`, `.venv`, `.vocr/ledger.jsonl`, secrets, or unrelated files.",
+                    "If the task is unclear, stop and report the missing information.",
+                    "",
+                    f"Task ID: {task.id}",
+                    f"Scope: {task.scope}",
+                    f"Non-goals: {task.non_goals}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return target
+
     def validate_changed_files(self, task: VocrTask, changed_files: list[str]) -> list[str]:
         policy = self.build_worker_policy(task)
         issues: list[str] = []

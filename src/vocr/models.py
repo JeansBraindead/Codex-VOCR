@@ -114,6 +114,13 @@ class TestRunResult(BaseModel):
     output: str = ""
 
 
+class ReviewComment(BaseModel):
+    source: str
+    body: str
+    path: str | None = None
+    line: int | None = None
+
+
 class ReviewResult(BaseModel):
     task_id: str
     decision: ReviewDecision
@@ -122,6 +129,7 @@ class ReviewResult(BaseModel):
     required_changes: list[str] = Field(default_factory=list)
     tests_reviewed: list[str] = Field(default_factory=list)
     test_results: list["TestRunResult"] = Field(default_factory=list)
+    comments: list[ReviewComment] = Field(default_factory=list)
     git_status: str | None = None
     diff_summary: str | None = None
     diff_files: list[str] = Field(default_factory=list)

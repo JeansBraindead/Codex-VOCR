@@ -31,6 +31,12 @@ class GraphStore:
         self.vocr_home.mkdir(parents=True, exist_ok=True)
         self.path.write_text(graph.model_dump_json(indent=2), encoding="utf-8")
 
+    def refresh(self, root: Path | str = ".") -> RepoGraph:
+        previous = self.load() if self.exists() else None
+        graph = RepoGraphBuilder(root, previous=previous).build()
+        self.save(graph)
+        return graph
+
     def load(self) -> RepoGraph:
         return RepoGraph.model_validate_json(self.path.read_text(encoding="utf-8"))
 
@@ -42,8 +48,9 @@ class GraphStore:
 
 
 class RepoGraphBuilder:
-    def __init__(self, root: Path | str = ".") -> None:
+    def __init__(self, root: Path | str = ".", previous: RepoGraph | None = None) -> None:
         self.root = Path(root).resolve()
+        self.previous = previous
 
     def build(self) -> RepoGraph:
         nodes: list[GraphNode] = []
@@ -52,7 +59,7 @@ class RepoGraphBuilder:
 
         for path in self._iter_files():
             rel = path.relative_to(self.root).as_posix()
-            node = self._build_node(path, rel)
+            node = self._build_node_incremental(path, rel)
             nodes.append(node)
             if path.suffix == ".py":
                 module_to_path[self._module_name(path)] = rel
@@ -64,6 +71,17 @@ class RepoGraphBuilder:
                     edges.append(GraphEdge(source=node.path, target=target, relation="imports"))
 
         return RepoGraph(root=str(self.root), nodes=sorted(nodes, key=lambda item: item.path), edges=edges)
+
+    def _build_node_incremental(self, path: Path, rel: str) -> GraphNode:
+        if self.previous:
+            stat = path.stat()
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            content_hash = hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
+            for node in self.previous.nodes:
+                if node.path == rel and node.content_hash == content_hash and node.size_bytes == stat.st_size:
+                    return node
+            return self._build_node_from_text(path, rel, text, stat.st_size)
+        return self._build_node(path, rel)
 
     def _iter_files(self) -> list[Path]:
         files: list[Path] = []
@@ -82,6 +100,9 @@ class RepoGraphBuilder:
     def _build_node(self, path: Path, rel: str) -> GraphNode:
         stat = path.stat()
         text = path.read_text(encoding="utf-8", errors="ignore")
+        return self._build_node_from_text(path, rel, text, stat.st_size)
+
+    def _build_node_from_text(self, path: Path, rel: str, text: str, size_bytes: int) -> GraphNode:
         lines = text.splitlines()
         imports: list[str] = []
         symbols: list[str] = []
@@ -92,7 +113,7 @@ class RepoGraphBuilder:
         return GraphNode(
             path=rel,
             kind=path.suffix.lstrip(".") or path.name,
-            size_bytes=stat.st_size,
+            size_bytes=size_bytes,
             line_count=len(lines),
             content_hash=hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest(),
             summary=self._summarize(path, lines, symbols),
@@ -121,13 +142,32 @@ class RepoGraphBuilder:
         return sorted(set(imports)), symbols
 
     def _summarize(self, path: Path, lines: list[str], symbols: list[str]) -> str:
+        if path.suffix == ".py":
+            doc_summary = self._python_doc_summary(path)
+            if doc_summary:
+                return doc_summary
         if path.suffix == ".py" and symbols:
-            return f"Python module with {len(symbols)} top-level or nested symbols"
+            return f"Python module: {', '.join(symbols[:8])}"
+        if path.suffix == ".md":
+            for line in lines:
+                stripped = line.strip()
+                if stripped.startswith("#"):
+                    return stripped.strip("# ").strip()[:160]
         for line in lines:
             stripped = line.strip("# ").strip()
             if stripped:
                 return stripped[:160]
         return "Empty file"
+
+    def _python_doc_summary(self, path: Path) -> str | None:
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
+        except SyntaxError:
+            return None
+        doc = ast.get_docstring(tree)
+        if doc:
+            return doc.splitlines()[0][:160]
+        return None
 
     def _module_name(self, path: Path) -> str:
         rel = path.relative_to(self.root).with_suffix("")

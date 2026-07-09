@@ -7,6 +7,7 @@ from shutil import which
 from dataclasses import dataclass
 from pathlib import Path
 
+from vocr.codex.config import codex_available
 from vocr.models import CodexRunResult, PermissionGrant, PermissionMode, VocrTask
 from vocr.orchestration.workflow import render_task_template
 
@@ -104,7 +105,7 @@ class CodexMcpClient:
     ) -> list[str]:
         if self.command:
             return shlex.split(self.command)
-        if which("codex") is None:
+        if not codex_available():
             return []
 
         command = [
