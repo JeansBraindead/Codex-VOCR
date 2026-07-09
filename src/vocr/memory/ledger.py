@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from vocr.models import (
     ClarificationSession,
+    CompactResult,
     LedgerEvent,
     LedgerEventType,
     PermissionGrant,
@@ -22,6 +23,15 @@ from vocr.models import (
 
 
 SECRET_KEYWORDS = {"api_key", "apikey", "secret", "token", "password", "credential"}
+SAFE_KEYWORDS = {
+    "token_usage",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "estimated_tokens",
+    "prompt_tokens_estimate",
+    "completion_tokens_estimate",
+}
 SECRET_PATTERNS = [
     re.compile(r"sk-[A-Za-z0-9_-]{12,}"),
 ]
@@ -32,7 +42,9 @@ def sanitize_payload(value: object) -> object:
         sanitized: dict[str, object] = {}
         for key, item in value.items():
             lowered = key.lower().replace("-", "_")
-            if any(keyword in lowered for keyword in SECRET_KEYWORDS):
+            if lowered in SAFE_KEYWORDS:
+                sanitized[key] = sanitize_payload(item)
+            elif any(keyword in lowered for keyword in SECRET_KEYWORDS):
                 sanitized[key] = "[redacted]"
             else:
                 sanitized[key] = sanitize_payload(item)
@@ -172,3 +184,31 @@ class MemoryLedger:
 
     def dump_json(self) -> str:
         return json.dumps([event.model_dump(mode="json") for event in self.events()], indent=2)
+
+    def compact(self, *, keep_last: int = 200) -> CompactResult:
+        self.init()
+        events = list(self.events())
+        if len(events) <= keep_last:
+            return CompactResult(
+                original_events=len(events),
+                kept_events=len(events),
+                archived_events=0,
+            )
+
+        archive_dir = self.root / "archive"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        archive_path = archive_dir / f"ledger-{events[0].created_at.strftime('%Y%m%d%H%M%S')}-{events[-keep_last - 1].created_at.strftime('%Y%m%d%H%M%S')}.jsonl"
+        archived = events[:-keep_last]
+        kept = events[-keep_last:]
+        with archive_path.open("w", encoding="utf-8") as handle:
+            for event in archived:
+                handle.write(event.model_dump_json() + "\n")
+        with self.path.open("w", encoding="utf-8") as handle:
+            for event in kept:
+                handle.write(event.model_dump_json() + "\n")
+        return CompactResult(
+            original_events=len(events),
+            kept_events=len(kept),
+            archived_events=len(archived),
+            archive_path=str(archive_path),
+        )

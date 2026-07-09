@@ -26,6 +26,7 @@ from vocr.graph.graphify import GraphStore, RepoGraphBuilder
 from vocr.guardrails.scope_guard import ScopeGuard
 from vocr.guardrails.secrets import scan_diff_for_secrets
 from vocr.memory.ledger import MemoryLedger, sanitize_payload
+from vocr.memory.learning import LearningStore
 from vocr.mcp.server import serve_stdio
 from vocr.models import (
     ClarificationSession,
@@ -68,6 +69,11 @@ def ledger() -> MemoryLedger:
 def graph_store() -> GraphStore:
     load_dotenv()
     return GraphStore(Path(os.getenv("VOCR_HOME", ".vocr")))
+
+
+def learning_store() -> LearningStore:
+    load_dotenv()
+    return LearningStore(Path(os.getenv("VOCR_HOME", ".vocr")))
 
 
 def refresh_graph() -> None:
@@ -394,11 +400,15 @@ def context(
         help="Optional search terms for a smaller context pack.",
     ),
     limit: int = typer.Option(20, "--limit", "-n", help="Maximum files in the brief."),
+    learning: bool = typer.Option(False, "--learning", help="Include compact local learning signals."),
 ) -> None:
     store = graph_store()
     if not store.exists():
         raise typer.BadParameter("No graph found. Run 'vocr graphify' first.")
     console.print(store.context_pack(query=query, limit=limit))
+    if learning:
+        console.print("")
+        console.print(learning_store().brief(query=query, limit=limit))
 
 
 @app.command()
@@ -830,6 +840,38 @@ def show_usage(
         )
     console.print(table)
     console.print(f"[cyan]Estimated total tokens:[/cyan] {total}")
+
+
+@app.command("learn")
+def learn(
+    query: str | None = typer.Argument(None, help="Optional query for the learning brief."),
+    refresh: bool = typer.Option(True, "--refresh/--no-refresh", help="Rebuild learning.json from ledger first."),
+    limit: int = typer.Option(10, "--limit", "-n", help="Maximum learning entries to show."),
+) -> None:
+    store = learning_store()
+    if refresh:
+        snapshot = store.refresh(ledger())
+        console.print(f"[green]Learning updated[/green] {store.path}")
+        console.print(
+            f"Signals: scopes={len(snapshot.scopes)}, tasks={len(snapshot.task_titles)}, files={len(snapshot.files)}"
+        )
+    elif not store.exists():
+        raise typer.BadParameter("No learning snapshot found. Run 'vocr learn' first.")
+    console.print(store.brief(query=query, limit=limit))
+
+
+@app.command("compact")
+def compact(
+    keep_last: int = typer.Option(200, "--keep-last", min=20, help="Keep the newest N ledger events hot."),
+) -> None:
+    learn(refresh=True, query=None, limit=5)
+    result = ledger().compact(keep_last=keep_last)
+    console.print("[green]Ledger compacted[/green]")
+    console.print(f"Original events: {result.original_events}")
+    console.print(f"Kept events: {result.kept_events}")
+    console.print(f"Archived events: {result.archived_events}")
+    if result.archive_path:
+        console.print(f"Archive: {result.archive_path}")
 
 
 @app.command("clean")

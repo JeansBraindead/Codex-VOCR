@@ -9,6 +9,7 @@ from vocr.guardrails.secrets import scan_diff_for_secrets
 from vocr.git.worktrees import GitWorktreeManager
 from vocr.graph.graphify import GraphStore, RepoGraphBuilder
 from vocr.memory.ledger import MemoryLedger
+from vocr.memory.learning import LearningStore
 from vocr.models import (
     AcceptanceCriterion,
     LedgerEventType,
@@ -121,7 +122,11 @@ def build_context_pack(query: str, *, limit: int = 12, vocr_home: str = ".vocr")
     store = GraphStore(vocr_home)
     if not store.exists():
         store.save(RepoGraphBuilder(".").build())
-    return store.context_pack(query=query, limit=limit)
+    parts = [store.context_pack(query=query, limit=limit)]
+    learning = LearningStore(vocr_home)
+    if learning.exists():
+        parts.append(learning.brief(query=query, limit=6))
+    return "\n\n".join(parts)
 
 
 def render_task_template(task: VocrTask) -> str:

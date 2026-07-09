@@ -91,6 +91,9 @@ vocr log --limit 30
 vocr diff <task-id>
 vocr diff <task-id> --full
 vocr usage
+vocr learn
+vocr context "scope review" --learning --limit 10
+vocr compact --keep-last 200
 vocr clean
 vocr abort <task-id> --reason "Nicht mehr benoetigt"
 vocr serve-mcp
@@ -135,6 +138,8 @@ vocr doctor
 - `vocr promote` fuehrt vor dem Merge einen Preflight aus und blockiert ohne akzeptiertes Review.
 - `vocr log`, `vocr diff`, `vocr clean` und `vocr abort` sind Housekeeping-Kommandos fuer Timeline, Task-Diff, verwaiste Worktrees und kontrollierten Abbruch.
 - `vocr usage` zeigt geschaetzte Token-/Provider-Telemetrie pro Task/Slice.
+- `vocr learn` verdichtet lokale Ledger-, Review- und Telemetrie-Signale in `.vocr/learning.json`.
+- `vocr compact` aktualisiert Learning und archiviert alte Ledger-Events unter `.vocr/archive/`, damit `.vocr/ledger.jsonl` klein bleibt.
 - `vocr serve-mcp` startet einen minimalen MCP-Server fuer Status, Graphify-Kontext, VOCR-Planung, Review und Promote-Preview. MCP merged nicht.
 
 ## Tests
@@ -149,6 +154,8 @@ $env:PYTHONPATH="src"; python -m unittest discover -s tests
 - `.vocr/ledger.jsonl` speichert Events, Slices, Tasks und Reviews.
 - `.vocr/ledger.jsonl` bleibt im Repo als lokaler Ablauf-Speicher.
 - `.vocr/graph.json` speichert den kompakten Graphify-Index fuer tokenarme Agent-Kontexte.
+- `.vocr/learning.json` speichert verdichtete lokale Signale statt Rohprompts oder grosser Diffs.
+- `.vocr/archive/` enthaelt kompaktierte alte Ledger-Segmente.
 - Telemetrie-Events protokollieren Provider, Modell, Slice/Task und geschaetzte Token pro Worker-Lauf.
 - `docs/THREAT_MODEL.md` beschreibt Prompt-Injection-Grenzen, Scope Guard und Secret-Scanning.
 
@@ -158,11 +165,12 @@ Vor jeder neuen Agent-Runde:
 
 1. `vocr vision` aktualisiert Graphify automatisch.
 2. Graphify rankt per BM25, zieht 1-Hop-Import-Nachbarn relevanter Dateien dazu und nutzt vorhandene Content-Hashes fuer inkrementelle Rebuilds.
-3. Der Visionaer erzeugt daraus taskbezogene Context-Packs.
-4. Worker-Tasks bekommen ihren Context-Pack automatisch im Task-Template.
-5. Context-Packs sind als untrusted Repo-Inhalt markiert und duerfen keine Instruktionen ueberschreiben.
-6. Debug-Agenten sollen `vocr context "<suchbegriffe>" --limit 10` verwenden, statt breit Dateien zu lesen.
-7. Erst danach werden gezielt die wenigen Dateien gelesen, die der Context-Pack nennt.
+3. Optionales Learning-Overlay boostet bekannte Scope/Datei/Test-Signale aus frueheren Reviews.
+4. Der Visionaer erzeugt daraus taskbezogene Context-Packs.
+5. Worker-Tasks bekommen ihren Context-Pack automatisch im Task-Template.
+6. Context-Packs sind als untrusted Repo-Inhalt markiert und duerfen keine Instruktionen ueberschreiben.
+7. Debug-Agenten sollen `vocr context "<suchbegriffe>" --learning --limit 10` verwenden, statt breit Dateien zu lesen.
+8. Erst danach werden gezielt die wenigen Dateien gelesen, die der Context-Pack nennt.
 
 Das Ziel ist: neue Agents bekommen eine Repo-Karte und nur die naechsten relevanten Dateien, nicht den kompletten Codebestand.
 - Der Standard-Ort fuer isolierte Task-Worktrees liegt neben dem Repo: `<repo>.vocr-worktrees/`.
@@ -176,8 +184,8 @@ Das Ziel ist: neue Agents bekommen eine Repo-Karte und nur die naechsten relevan
 
 ## Naechste Schritte
 
-1. Secret-Scanner gitleaks-Konfiguration und Baseline-Dateien unterstuetzen.
-2. Reviewer Agent mit echten inline PR-Review-Kommentaren erweitern.
-3. Echte Token-Usage aus Agents SDK/Codex auslesen, sobald stabil verfuegbar.
-4. Task-DAG um explizite parallele Dispatch-Gruppen ausbauen.
+1. Learning-Ranking direkt in Graphify-Scores einrechnen statt nur als Brief anzufuegen.
+2. Secret-Scanner gitleaks-Konfiguration und Baseline-Dateien unterstuetzen.
+3. Reviewer Agent mit echten inline PR-Review-Kommentaren erweitern.
+4. Echte Token-Usage aus Agents SDK/Codex auslesen, sobald stabil verfuegbar.
 5. MCP-Server um explizit bestaetigte Promote-Aktionen erweitern, weiterhin streng gate-gesteuert.

@@ -212,6 +212,32 @@ class RunTelemetry(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class LearningEntry(BaseModel):
+    key: str
+    count: int = 0
+    files: dict[str, int] = Field(default_factory=dict)
+    tests: dict[str, int] = Field(default_factory=dict)
+    decisions: dict[str, int] = Field(default_factory=dict)
+    risks: dict[str, int] = Field(default_factory=dict)
+    estimated_tokens: int = 0
+
+
+class LearningSnapshot(BaseModel):
+    version: int = 1
+    scopes: dict[str, LearningEntry] = Field(default_factory=dict)
+    task_titles: dict[str, LearningEntry] = Field(default_factory=dict)
+    files: dict[str, LearningEntry] = Field(default_factory=dict)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class CompactResult(BaseModel):
+    original_events: int
+    kept_events: int
+    archived_events: int
+    archive_path: str | None = None
+    learning_path: str | None = None
+
+
 class LedgerEvent(BaseModel):
     id: str = Field(default_factory=lambda: new_id("evt"))
     type: LedgerEventType

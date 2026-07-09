@@ -9,8 +9,10 @@ from vocr.config.env_file import provider_from_env, read_env_file, redact_env, u
 from vocr.guardrails.scope_guard import ScopeGuard
 from vocr.guardrails.secrets import scan_diff_for_secrets
 from vocr.memory.ledger import sanitize_payload
+from vocr.memory.ledger import MemoryLedger
+from vocr.memory.learning import LearningStore
 from vocr.mcp.server import VocrMcpServer
-from vocr.models import AcceptanceCriterion, VocrTask
+from vocr.models import AcceptanceCriterion, LedgerEventType, ReviewDecision, ReviewResult, RunTelemetry, TokenUsage, VocrTask
 from vocr.orchestration.workflow import create_vision, organize_slice
 
 GOOD_REQUEST = (
@@ -159,6 +161,61 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(provider_from_env(values), "local-openai-compatible")
         self.assertEqual(values["OPENAI_MODEL"], "local-model")
         self.assertEqual(redact_env(values)["OPENAI_API_KEY"], "[set]")
+
+    def test_learning_store_aggregates_reviews_without_raw_diff(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / ".vocr"
+            ledger = MemoryLedger(root)
+            task = VocrTask(
+                id="task-learn",
+                slice_id="slice-learn",
+                title="Docs update",
+                summary="Update docs",
+                scope=["docs"],
+                acceptance_criteria=[AcceptanceCriterion(text="Docs updated")],
+                tests=["Syntax-Check"],
+            )
+            ledger.append(LedgerEventType.task_created, task)
+            ledger.append(
+                LedgerEventType.telemetry_recorded,
+                RunTelemetry(
+                    provider="codex-cli",
+                    task_id=task.id,
+                    slice_id=task.slice_id,
+                    agent="codex-worker",
+                    token_usage=TokenUsage(total_tokens=42),
+                ),
+            )
+            ledger.append(
+                LedgerEventType.review_recorded,
+                ReviewResult(
+                    task_id=task.id,
+                    decision=ReviewDecision.needs_changes,
+                    summary="Needs docs fix",
+                    required_changes=["Clarify setup"],
+                    tests_reviewed=["Syntax-Check"],
+                    diff_files=["README.md"],
+                ),
+            )
+            learning = LearningStore(root)
+            snapshot = learning.refresh(ledger)
+
+        self.assertIn("scope:docs", snapshot.scopes)
+        self.assertEqual(snapshot.scopes["scope:docs"].files["README.md"], 1)
+        self.assertEqual(snapshot.scopes["scope:docs"].estimated_tokens, 42)
+
+    def test_ledger_compact_archives_old_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = MemoryLedger(Path(tmp) / ".vocr")
+            for index in range(30):
+                ledger.append(LedgerEventType.message, {"message": f"event {index}"})
+            result = ledger.compact(keep_last=20)
+
+            remaining = list(ledger.events())
+
+        self.assertEqual(result.archived_events, 10)
+        self.assertEqual(len(remaining), 20)
+        self.assertIsNotNone(result.archive_path)
 
 
 if __name__ == "__main__":
