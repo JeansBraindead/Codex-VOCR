@@ -55,6 +55,7 @@ Antworten auf Rueckfragen laufen weiter ueber den Visionaer:
 
 ```powershell
 vocr reply <clarification-id> "Ziel: ... Arbeitsbereich: ... Akzeptanz: ... Verifikation: ... Nicht-Ziele: ... Ausfuehrung: ..." --go
+vocr reply "Ziel: ... Arbeitsbereich: ... Akzeptanz: ... Verifikation: ... Nicht-Ziele: ... Ausfuehrung: ..." --go
 ```
 
 Was `vocr vision` intern macht:
@@ -85,8 +86,13 @@ vocr go global --all --reason "AFK run approved"
 vocr organize <slice-id>
 vocr organize <slice-id> --live-agent
 vocr dispatch <task-id>
+vocr dispatch-ready
 vocr work <task-id>
 vocr work <task-id> --fix --max-retries 2
+vocr work-ready --fix
+vocr worker doctor
+vocr worker profile safe
+vocr worker profile unattended
 vocr log --limit 30
 vocr diff <task-id>
 vocr diff <task-id> --full
@@ -95,7 +101,9 @@ vocr learn
 vocr context "scope review" --learning --limit 10
 vocr compact --keep-last 200
 vocr secrets scan
+vocr test
 vocr clean
+vocr clean --artifacts --older-than-days 30
 vocr abort <task-id> --reason "Nicht mehr benoetigt"
 vocr serve-mcp
 vocr codex-config
@@ -132,9 +140,12 @@ vocr doctor
 - `vocr review` sammelt lokale Git-Signale aus dem Worktree und akzeptiert nur mit expliziter Entscheidung.
 - `vocr review` erzeugt einfache Diff-Kommentare fuer geaenderte Dateien und riskante Added-Lines.
 - `vocr review --export-comments review.md` schreibt Review-Kommentare als Markdown; `--post-pr-comments` postet optional einen PR-Kommentar via GitHub CLI.
+- `vocr review` schreibt standardmaessig ein Artefakt nach `.vocr/artifacts/<task-id>/review.md`.
 - `vocr review` fuehrt sichere automatische Checks aus, z.B. Syntax-Check. Unbekannte Checks werden als manuell markiert, nicht blind gestartet.
 - `vocr work` fuehrt den echten Worker aus und erstellt bei Erfolg automatisch einen Task-Commit, wenn Aenderungen vorhanden sind und der Scope Guard keine Verletzung findet.
 - `vocr work --fix --max-retries 2` erlaubt begrenzte Nachbesserungen bis `review_ready`; Promote bleibt trotzdem manuell und review-gated.
+- `vocr dispatch-ready` und `vocr work-ready` bedienen vorbereitete DAG-Tasks, deren Dependencies erfuellt sind.
+- `vocr worker doctor` und `vocr worker profile ...` konfigurieren Codex-Worker ohne Dateiedits.
 - `vocr check --codex-review` kann zusaetzlich `codex exec review` als Review-Signal ausfuehren.
 - `vocr ship --preview` zeigt Merge-Preview, `vocr ship --pr` erstellt optional eine Draft-PR via GitHub CLI.
 - `vocr promote` fuehrt vor dem Merge einen Preflight aus und blockiert ohne akzeptiertes Review.
@@ -142,6 +153,7 @@ vocr doctor
 - `vocr usage` zeigt geschaetzte Token-/Provider-Telemetrie pro Task/Slice.
 - `vocr learn` verdichtet lokale Ledger-, Review- und Telemetrie-Signale in `.vocr/learning.json`.
 - `vocr compact` aktualisiert Learning und archiviert alte Ledger-Events unter `.vocr/archive/`, damit `.vocr/ledger.jsonl` klein bleibt.
+- `vocr test` fuehrt Syntax- und Unit-Test-Smoke lokal aus.
 - `vocr serve-mcp` startet einen minimalen MCP-Server fuer Status, Graphify-Kontext, VOCR-Planung, Review und Promote-Preview. MCP merged nicht.
 
 ## Tests

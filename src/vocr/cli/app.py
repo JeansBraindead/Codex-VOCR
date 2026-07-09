@@ -4,8 +4,10 @@ import asyncio
 import json
 import os
 import subprocess
+import sys
 import urllib.error
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from shutil import which
 
@@ -53,8 +55,10 @@ from vocr.orchestration.readiness import assess_request_readiness
 app = typer.Typer(help="VOCR: Vision / Organize / Code / Review")
 model_app = typer.Typer(help="Configure local or cloud LLMs without editing files.")
 secrets_app = typer.Typer(help="Scan diffs for secrets without printing secret values.")
+worker_app = typer.Typer(help="Configure and diagnose Codex worker execution.")
 app.add_typer(model_app, name="model")
 app.add_typer(secrets_app, name="secrets")
+app.add_typer(worker_app, name="worker")
 console = Console()
 
 
@@ -84,6 +88,10 @@ def refresh_graph() -> None:
 
 def env_path() -> Path:
     return Path(".env")
+
+
+def artifacts_root() -> Path:
+    return ledger().root / "artifacts"
 
 
 def estimate_tokens(text: str) -> int:
@@ -405,6 +413,40 @@ def secrets_scan() -> None:
         raise typer.Exit(code=1)
 
 
+@worker_app.command("doctor")
+def worker_doctor() -> None:
+    values = read_env_file(env_path())
+    profile = values.get("VOCR_CODEX_PROFILE") or os.getenv("VOCR_CODEX_PROFILE") or "safe"
+    command = values.get("VOCR_CODEX_COMMAND") or os.getenv("VOCR_CODEX_COMMAND") or "codex exec -"
+    table = Table(title="VOCR Worker Doctor")
+    table.add_column("Check")
+    table.add_column("Result")
+    table.add_row("Codex CLI", "yes" if codex_available() else "missing")
+    table.add_row("Profile", safe_text(profile))
+    table.add_row("Command", safe_text(command))
+    table.add_row("Unsandboxed", str(values.get("VOCR_CODEX_UNSANDBOXED") or os.getenv("VOCR_CODEX_UNSANDBOXED") or "false"))
+    table.add_row("Worktree root", GitWorktreeManager().doctor()["worktree_root"])
+    console.print(table)
+
+
+@worker_app.command("profile")
+def worker_profile(
+    profile: str = typer.Argument(..., help="safe, unattended, or unsandboxed."),
+    command: str | None = typer.Option(None, "--command", help="Optional VOCR_CODEX_COMMAND override."),
+) -> None:
+    normalized = profile.lower()
+    if normalized not in {"safe", "unattended", "unsandboxed"}:
+        raise typer.BadParameter("Profile must be safe, unattended, or unsandboxed.")
+    updates: dict[str, str | None] = {
+        "VOCR_CODEX_PROFILE": normalized,
+        "VOCR_CODEX_UNSANDBOXED": "true" if normalized == "unsandboxed" else "false",
+    }
+    if command is not None:
+        updates["VOCR_CODEX_COMMAND"] = command
+    update_env_file(updates, env_path())
+    console.print(f"[green]Worker profile set[/green] {normalized}")
+
+
 @app.command("serve-mcp")
 def serve_mcp() -> None:
     serve_stdio(ledger().root)
@@ -482,8 +524,7 @@ app.command("ask")(vision)
 
 @app.command()
 def answer(
-    clarification_id: str,
-    details: str,
+    clarification_args: list[str] = typer.Argument(..., help="Either '<details>' or '<clarification-id> <details>'."),
     go: bool = typer.Option(
         False,
         "--go",
@@ -493,14 +534,23 @@ def answer(
     dispatch_workers: bool = typer.Option(True, "--dispatch/--no-dispatch"),
 ) -> None:
     store = ledger()
+    if len(clarification_args) == 1:
+        session = latest_open_clarification(store)
+        if session is None:
+            raise typer.BadParameter("No open clarification found. Use 'vocr ask ...' first.")
+        clarification_id = session.id
+        answer_details = clarification_args[0]
+    else:
+        clarification_id = clarification_args[0]
+        answer_details = " ".join(clarification_args[1:])
     session = store.get_clarification(clarification_id)
     if session is None:
         raise typer.BadParameter(f"Unknown clarification id: {clarification_id}")
     store.append(
         LedgerEventType.clarification_answered,
-        {"session_id": clarification_id, "answer": details},
+        {"session_id": clarification_id, "answer": answer_details},
     )
-    combined = "\n".join([session.request, *session.answers, details])
+    combined = "\n".join([session.request, *session.answers, answer_details or ""])
     run_vision_pipeline(
         combined,
         go=go,
@@ -511,6 +561,13 @@ def answer(
 
 
 app.command("reply")(answer)
+
+
+def latest_open_clarification(store: MemoryLedger) -> ClarificationSession | None:
+    for session in reversed(store.clarification_sessions()):
+        if not session.answers:
+            return session
+    return None
 
 
 @app.command("go")
@@ -571,6 +628,26 @@ def dispatch(task_id: str) -> None:
         write_dispatch_handoff(store, task_id)
     except (GitWorktreeError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
+
+
+@app.command("dispatch-ready")
+def dispatch_ready(limit: int = typer.Option(10, "--limit", help="Maximum ready tasks to dispatch.")) -> None:
+    store = ledger()
+    dispatched = 0
+    task_ids = {task.id: task for task in store.tasks()}
+    for task in task_ids.values():
+        if dispatched >= limit:
+            break
+        if task.status != TaskStatus.planned:
+            continue
+        if any(task_ids.get(dep) is None or task_ids[dep].status != TaskStatus.promoted for dep in task.dependencies):
+            continue
+        try:
+            write_dispatch_handoff(store, task.id)
+            dispatched += 1
+        except (GitWorktreeError, ValueError) as exc:
+            console.print(f"[yellow]Dispatch skipped for {task.id}:[/yellow] {safe_text(str(exc))}")
+    console.print(f"[green]Ready dispatch complete[/green] dispatched={dispatched}")
 
 
 @app.command("run")
@@ -653,6 +730,23 @@ def run_worker(
 app.command("work")(run_worker)
 
 
+@app.command("work-ready")
+def work_ready(
+    limit: int = typer.Option(3, "--limit", help="Maximum dispatched tasks to work."),
+    timeout_seconds: int = typer.Option(3600, "--timeout", help="Worker timeout in seconds."),
+    auto_fix: bool = typer.Option(False, "--fix", help="Retry bounded fixes until review_ready."),
+) -> None:
+    worked = 0
+    for task in ledger().tasks():
+        if worked >= limit:
+            break
+        if task.status != TaskStatus.dispatched:
+            continue
+        run_worker(task.id, timeout_seconds=timeout_seconds, commit=True, auto_fix=auto_fix, max_retries=2)
+        worked += 1
+    console.print(f"[green]Ready work complete[/green] worked={worked}")
+
+
 @app.command()
 def status() -> None:
     store = ledger()
@@ -693,6 +787,7 @@ def review(
     codex_review: bool = typer.Option(False, "--codex-review", help="Run codex exec review when available."),
     base_ref: str | None = typer.Option(None, "--base", help="Base branch/ref for Codex review."),
     export_comments: Path | None = typer.Option(None, "--export-comments", help="Write review comments as Markdown."),
+    save_artifact: bool = typer.Option(True, "--artifact/--no-artifact", help="Save review markdown under .vocr/artifacts."),
     post_pr_comments: bool = typer.Option(False, "--post-pr-comments", help="Post one PR comment with review markdown via gh."),
 ) -> None:
     result = review_task(
@@ -723,6 +818,9 @@ def review(
             console.print(f"- {safe_text(path)}")
     if result.diff_summary:
         console.print(f"[cyan]Diff summary:[/cyan] {safe_text(result.diff_summary)}")
+    if save_artifact:
+        artifact_path = write_review_artifact(result)
+        console.print(f"[green]Review artifact[/green] {artifact_path}")
     if export_comments:
         export_comments.parent.mkdir(parents=True, exist_ok=True)
         export_comments.write_text(render_review_markdown(result), encoding="utf-8")
@@ -732,6 +830,13 @@ def review(
 
 
 app.command("check")(review)
+
+
+def write_review_artifact(result: ReviewResult) -> Path:
+    target = artifacts_root() / result.task_id / "review.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(render_review_markdown(result), encoding="utf-8")
+    return target
 
 
 def post_review_comment(result: ReviewResult) -> None:
@@ -907,13 +1012,60 @@ def compact(
         console.print(f"Archive: {result.archive_path}")
 
 
+@app.command("test")
+def self_test() -> None:
+    commands = [
+        [sys.executable, "-m", "compileall", "src", "tests"],
+        [sys.executable, "-m", "unittest", "discover", "-s", "tests"],
+    ]
+    env = dict(os.environ)
+    env["PYTHONPATH"] = "src"
+    for command in commands:
+        completed = subprocess.run(command, text=True, capture_output=True, check=False, env=env)
+        console.print(f"[cyan]{' '.join(command)}[/cyan] -> {completed.returncode}")
+        output = "\n".join(part for part in [completed.stdout.strip(), completed.stderr.strip()] if part)
+        if output:
+            console.print(safe_text(output[-3000:]))
+        if completed.returncode != 0:
+            raise typer.Exit(code=completed.returncode)
+    console.print("[green]VOCR self-test passed[/green]")
+
+
 @app.command("clean")
-def clean_worktrees() -> None:
+def clean_worktrees(
+    artifacts: bool = typer.Option(False, "--artifacts", help="Also remove old .vocr/artifacts entries."),
+    older_than_days: int = typer.Option(30, "--older-than-days", min=1, help="Artifact retention window."),
+) -> None:
     try:
         message = GitWorktreeManager().prune_worktrees()
     except GitWorktreeError as exc:
         raise typer.BadParameter(str(exc)) from exc
     console.print(f"[green]{safe_text(message)}[/green]")
+    if artifacts:
+        removed = clean_artifacts(older_than_days=older_than_days)
+        console.print(f"[green]Artifact clean complete[/green] removed={removed}")
+
+
+def clean_artifacts(*, older_than_days: int) -> int:
+    root = artifacts_root()
+    if not root.exists():
+        return 0
+    cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+    removed = 0
+    for path in root.iterdir():
+        if not path.is_dir():
+            continue
+        modified = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        if modified >= cutoff:
+            continue
+        for child in sorted(path.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+            if child.is_file():
+                child.unlink()
+            elif child.is_dir():
+                child.rmdir()
+        path.rmdir()
+        removed += 1
+    return removed
 
 
 @app.command("abort")

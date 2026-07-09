@@ -124,8 +124,11 @@ class CodexMcpClient:
             "--color",
             "never",
         ]
+        profile = os.getenv("VOCR_CODEX_PROFILE", "safe").lower()
         if permission and permission.mode == PermissionMode.approve_all:
             command.extend(["--ask-for-approval", "never"])
-        if os.getenv("VOCR_CODEX_UNSANDBOXED", "").lower() in {"1", "true", "yes"}:
+        elif profile == "unattended":
+            command.extend(["--ask-for-approval", "never"])
+        if profile == "unsandboxed" or os.getenv("VOCR_CODEX_UNSANDBOXED", "").lower() in {"1", "true", "yes"}:
             command.append("--dangerously-bypass-approvals-and-sandbox")
         return command

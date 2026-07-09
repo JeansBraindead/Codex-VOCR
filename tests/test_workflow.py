@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import os
 from pathlib import Path
 
+from vocr.cli.app import clean_artifacts, latest_open_clarification, write_review_artifact
 from vocr.graph.graphify import GraphStore, RepoGraphBuilder
 from vocr.config.env_file import provider_from_env, read_env_file, redact_env, update_env_file
 from vocr.guardrails.scope_guard import ScopeGuard
@@ -265,6 +267,53 @@ class WorkflowTests(unittest.TestCase):
             context = graph_store.context_pack(query="docs", limit=1)
 
         self.assertIn("README.md", context)
+
+    def test_latest_open_clarification_skips_answered_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = MemoryLedger(Path(tmp) / ".vocr")
+            session_one = {
+                "id": "clarify-one",
+                "request": "one",
+                "report": {"ready": False, "confidence": 0.5, "questions": [], "missing_topics": [], "notes": []},
+                "answers": [],
+            }
+            session_two = {
+                "id": "clarify-two",
+                "request": "two",
+                "report": {"ready": False, "confidence": 0.5, "questions": [], "missing_topics": [], "notes": []},
+                "answers": [],
+            }
+            ledger.append(LedgerEventType.clarification_requested, session_one)
+            ledger.append(LedgerEventType.clarification_answered, {"session_id": "clarify-one", "answer": "done"})
+            ledger.append(LedgerEventType.clarification_requested, session_two)
+
+            latest = latest_open_clarification(ledger)
+
+        self.assertIsNotNone(latest)
+        self.assertEqual(latest.id, "clarify-two")
+
+    def test_review_artifact_and_clean_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            old_home = os.environ.get("VOCR_HOME")
+            os.environ["VOCR_HOME"] = str(Path(tmp) / ".vocr")
+            try:
+                review = ReviewResult(
+                    task_id="task-artifact",
+                    decision=ReviewDecision.needs_changes,
+                    summary="Needs changes",
+                )
+                path = write_review_artifact(review)
+
+                removed = clean_artifacts(older_than_days=1)
+                exists = path.exists()
+            finally:
+                if old_home is None:
+                    os.environ.pop("VOCR_HOME", None)
+                else:
+                    os.environ["VOCR_HOME"] = old_home
+
+        self.assertTrue(exists)
+        self.assertEqual(removed, 0)
 
 
 if __name__ == "__main__":

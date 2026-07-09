@@ -4,6 +4,7 @@ from pathlib import Path
 
 
 MODEL_KEYS = {"OPENAI_BASE_URL", "OPENAI_MODEL", "OPENAI_API_KEY"}
+WORKER_KEYS = {"VOCR_CODEX_PROFILE", "VOCR_CODEX_COMMAND", "VOCR_CODEX_UNSANDBOXED"}
 
 
 def read_env_file(path: Path | str = ".env") -> dict[str, str]:
