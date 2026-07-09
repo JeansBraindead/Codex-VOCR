@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+from shutil import which
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -72,14 +73,12 @@ class CodexMcpClient:
         permission: PermissionGrant | None = None,
         timeout_seconds: int = 3600,
     ) -> CodexRunResult:
-        if not self.command:
-            raise RuntimeError(
-                "VOCR_CODEX_COMMAND is not set. Configure the real Codex CLI/MCP worker command first."
-            )
         payload = self.build_payload(task, permission=permission)
-        command = shlex.split(self.command)
+        command = self._resolve_command(payload, permission)
         if not command:
-            raise RuntimeError("VOCR_CODEX_COMMAND is empty.")
+            raise RuntimeError(
+                "No Codex worker command available. Install Codex CLI or set VOCR_CODEX_COMMAND."
+            )
 
         completed = subprocess.run(
             command,
@@ -97,3 +96,30 @@ class CodexMcpClient:
             stdout=completed.stdout,
             stderr=completed.stderr,
         )
+
+    def _resolve_command(
+        self,
+        payload: CodexDispatchPayload,
+        permission: PermissionGrant | None,
+    ) -> list[str]:
+        if self.command:
+            return shlex.split(self.command)
+        if which("codex") is None:
+            return []
+
+        command = [
+            "codex",
+            "exec",
+            "-",
+            "--cd",
+            payload.worktree_path,
+            "--sandbox",
+            "workspace-write",
+            "--color",
+            "never",
+        ]
+        if permission and permission.mode == PermissionMode.approve_all:
+            command.extend(["--ask-for-approval", "never"])
+        if os.getenv("VOCR_CODEX_UNSANDBOXED", "").lower() in {"1", "true", "yes"}:
+            command.append("--dangerously-bypass-approvals-and-sandbox")
+        return command

@@ -95,6 +95,14 @@ class MemoryLedger:
                     task.branch_name = event.payload.get("branch_name")
                     worktree_path = event.payload.get("worktree_path")
                     task.worktree_path = Path(worktree_path) if worktree_path else None
+            elif event.type == LedgerEventType.task_worker_ran:
+                task_id = event.payload["task_id"]
+                if task_id in task_map and event.payload.get("exit_code") == 0:
+                    task_map[task_id].status = TaskStatus.review_ready
+            elif event.type == LedgerEventType.task_committed:
+                task_id = event.payload["task_id"]
+                if task_id in task_map:
+                    task_map[task_id].status = TaskStatus.review_ready
             elif event.type == LedgerEventType.review_recorded:
                 review = ReviewResult.model_validate(event.payload)
                 if review.task_id in task_map:

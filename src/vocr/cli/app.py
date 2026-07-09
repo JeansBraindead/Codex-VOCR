@@ -231,6 +231,9 @@ def vision(
     )
 
 
+app.command("ask")(vision)
+
+
 @app.command()
 def answer(
     clarification_id: str,
@@ -259,6 +262,9 @@ def answer(
         auto=True,
         dispatch_workers=dispatch_workers,
     )
+
+
+app.command("reply")(answer)
 
 
 @app.command("go")
@@ -325,6 +331,7 @@ def dispatch(task_id: str) -> None:
 def run_worker(
     task_id: str,
     timeout_seconds: int = typer.Option(3600, "--timeout", help="Worker timeout in seconds."),
+    commit: bool = typer.Option(True, "--commit/--no-commit", help="Commit worker changes on success."),
 ) -> None:
     store = ledger()
     task = store.get_task(task_id)
@@ -335,11 +342,24 @@ def run_worker(
         result = CodexMcpClient().run_task(task, permission=permission, timeout_seconds=timeout_seconds)
     except (RuntimeError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
+    if result.exit_code == 0 and commit:
+        worktree_git = GitWorktreeManager(task.worktree_path or ".")
+        if worktree_git.has_changes():
+            sha = worktree_git.commit_all(f"VOCR task {task.id}: {task.title}")
+            result.committed = True
+            result.commit_sha = sha
+            store.append(LedgerEventType.task_committed, {"task_id": task.id, "commit_sha": sha})
+    store.append(LedgerEventType.task_worker_ran, result)
     console.print(f"[green]Worker finished[/green] exit={result.exit_code}")
+    if result.committed:
+        console.print(f"[green]Committed[/green] {result.commit_sha}")
     if result.stdout:
         console.print(safe_text(result.stdout[-2000:]))
     if result.stderr:
         console.print(f"[yellow]{safe_text(result.stderr[-2000:])}[/yellow]")
+
+
+app.command("work")(run_worker)
 
 
 @app.command()
@@ -366,6 +386,9 @@ def status() -> None:
         console.print(permission_table)
 
 
+app.command("inspect")(status)
+
+
 @app.command()
 def review(
     task_id: str,
@@ -389,8 +412,15 @@ def review(
             console.print(safe_text(test.output))
     if result.git_status:
         console.print(f"[cyan]Git status:[/cyan] {safe_text(result.git_status)}")
+    if result.diff_files:
+        console.print("[cyan]Diff files:[/cyan]")
+        for path in result.diff_files:
+            console.print(f"- {safe_text(path)}")
     if result.diff_summary:
         console.print(f"[cyan]Diff summary:[/cyan] {safe_text(result.diff_summary)}")
+
+
+app.command("check")(review)
 
 
 @app.command()
@@ -406,6 +436,9 @@ def promote(task_id: str) -> None:
     except (GitWorktreeError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
     console.print(f"[green]Promoted[/green] {task_id}")
+
+
+app.command("ship")(promote)
 
 
 @app.command()

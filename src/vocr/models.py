@@ -44,6 +44,8 @@ class LedgerEventType(str, Enum):
     vision_created = "vision_created"
     task_created = "task_created"
     task_dispatched = "task_dispatched"
+    task_worker_ran = "task_worker_ran"
+    task_committed = "task_committed"
     review_recorded = "review_recorded"
     task_promoted = "task_promoted"
     permission_granted = "permission_granted"
@@ -122,6 +124,7 @@ class ReviewResult(BaseModel):
     test_results: list["TestRunResult"] = Field(default_factory=list)
     git_status: str | None = None
     diff_summary: str | None = None
+    diff_files: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
 
 
@@ -151,6 +154,8 @@ class CodexRunResult(BaseModel):
     exit_code: int
     stdout: str = ""
     stderr: str = ""
+    committed: bool = False
+    commit_sha: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
 
 
@@ -173,6 +178,7 @@ class GraphNode(BaseModel):
     kind: str
     size_bytes: int
     line_count: int
+    content_hash: str
     summary: str
     imports: list[str] = Field(default_factory=list)
     symbols: list[str] = Field(default_factory=list)

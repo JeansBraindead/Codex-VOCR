@@ -171,8 +171,11 @@ def review_task(
     if task.worktree_path:
         worktree_git = GitWorktreeManager(task.worktree_path)
         git_status = worktree_git.status_porcelain()
-        diff_summary = worktree_git.diff_stat()
-        issues.extend(ScopeGuard().validate_changed_files(task, worktree_git.changed_files()))
+        uncommitted_diff = worktree_git.diff_stat()
+        committed_diff = worktree_git.branch_diff_stat()
+        diff_summary = f"Committed diff:\n{committed_diff}\n\nUncommitted diff:\n{uncommitted_diff}"
+        changed_files = sorted(set(worktree_git.changed_files() + worktree_git.branch_diff_files()))
+        issues.extend(ScopeGuard().validate_changed_files(task, changed_files))
         if decision == ReviewDecision.accepted and git_status != "clean":
             issues.append("Worktree has uncommitted changes; commit or discard them before accepted review.")
 
@@ -203,6 +206,7 @@ def review_task(
         test_results=test_results,
         git_status=git_status,
         diff_summary=diff_summary,
+        diff_files=changed_files if task.worktree_path else [],
     )
     ledger.append(LedgerEventType.review_recorded, review)
     return review

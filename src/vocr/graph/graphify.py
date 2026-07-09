@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
+import os
 from pathlib import Path
 
 from vocr.models import GraphEdge, GraphNode, RepoGraph
@@ -17,6 +19,7 @@ DEFAULT_EXCLUDES = {
     "node_modules",
 }
 TEXT_SUFFIXES = {".py", ".md", ".toml", ".txt", ".json", ".yaml", ".yml", ".env.example"}
+DEFAULT_MAX_FILE_BYTES = 200_000
 
 
 class GraphStore:
@@ -64,16 +67,20 @@ class RepoGraphBuilder:
 
     def _iter_files(self) -> list[Path]:
         files: list[Path] = []
+        max_bytes = int(os.getenv("VOCR_GRAPH_MAX_FILE_BYTES", str(DEFAULT_MAX_FILE_BYTES)))
         for path in self.root.rglob("*"):
             if not path.is_file():
                 continue
             if any(part in DEFAULT_EXCLUDES for part in path.relative_to(self.root).parts):
+                continue
+            if path.stat().st_size > max_bytes:
                 continue
             if path.suffix in TEXT_SUFFIXES or path.name in TEXT_SUFFIXES:
                 files.append(path)
         return files
 
     def _build_node(self, path: Path, rel: str) -> GraphNode:
+        stat = path.stat()
         text = path.read_text(encoding="utf-8", errors="ignore")
         lines = text.splitlines()
         imports: list[str] = []
@@ -85,8 +92,9 @@ class RepoGraphBuilder:
         return GraphNode(
             path=rel,
             kind=path.suffix.lstrip(".") or path.name,
-            size_bytes=path.stat().st_size,
+            size_bytes=stat.st_size,
             line_count=len(lines),
+            content_hash=hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest(),
             summary=self._summarize(path, lines, symbols),
             imports=imports,
             symbols=symbols,

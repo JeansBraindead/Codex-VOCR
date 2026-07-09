@@ -67,6 +67,29 @@ class GitWorktreeManager:
             return result.stderr.strip() or result.stdout.strip()
         return result.stdout.strip() or "no uncommitted diff"
 
+    def branch_diff_stat(self, base_ref: str | None = None) -> str:
+        result = self._diff_against_base("--stat", base_ref=base_ref)
+        if result is None:
+            return "no committed diff base found"
+        return result.stdout.strip() or "no committed diff"
+
+    def branch_diff_files(self, base_ref: str | None = None) -> list[str]:
+        result = self._diff_against_base("--name-only", base_ref=base_ref)
+        if result is None:
+            return []
+        return [line.strip().replace("\\", "/") for line in result.stdout.splitlines() if line.strip()]
+
+    def _diff_against_base(self, mode: str, base_ref: str | None = None) -> subprocess.CompletedProcess[str] | None:
+        candidates = [item for item in [base_ref, "main", "master", "HEAD~1"] if item]
+        for candidate in candidates:
+            result = self._git("diff", mode, f"{candidate}...HEAD")
+            if result.returncode == 0:
+                return result
+            result = self._git("diff", mode, candidate, "HEAD")
+            if result.returncode == 0:
+                return result
+        return None
+
     def changed_files(self) -> list[str]:
         result = self._git("status", "--porcelain")
         if result.returncode != 0:
@@ -80,6 +103,24 @@ class GitWorktreeManager:
                 path = path.split(" -> ", 1)[1]
             files.append(path.replace("\\", "/"))
         return files
+
+    def has_changes(self) -> bool:
+        return self.status_porcelain() != "clean"
+
+    def commit_all(self, message: str) -> str:
+        self.ensure_git_repo()
+        if not self.has_changes():
+            raise GitWorktreeError("No changes to commit.")
+        add_result = self._git("add", "--all")
+        if add_result.returncode != 0:
+            raise GitWorktreeError(add_result.stderr.strip() or add_result.stdout.strip())
+        commit_result = self._git("commit", "-m", message)
+        if commit_result.returncode != 0:
+            raise GitWorktreeError(commit_result.stderr.strip() or commit_result.stdout.strip())
+        sha_result = self._git("rev-parse", "HEAD")
+        if sha_result.returncode != 0:
+            raise GitWorktreeError(sha_result.stderr.strip() or sha_result.stdout.strip())
+        return sha_result.stdout.strip()
 
     def branch_exists(self, branch_name: str) -> bool:
         result = self._git("rev-parse", "--verify", branch_name)
