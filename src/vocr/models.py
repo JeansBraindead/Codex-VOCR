@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import math
+import re
+from collections import Counter
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -23,6 +26,7 @@ class TaskStatus(str, Enum):
     accepted = "accepted"
     needs_changes = "needs_changes"
     blocked = "blocked"
+    aborted = "aborted"
     promoted = "promoted"
 
 
@@ -46,8 +50,10 @@ class LedgerEventType(str, Enum):
     task_dispatched = "task_dispatched"
     task_worker_ran = "task_worker_ran"
     task_committed = "task_committed"
+    task_aborted = "task_aborted"
     review_recorded = "review_recorded"
     task_promoted = "task_promoted"
+    telemetry_recorded = "telemetry_recorded"
     permission_granted = "permission_granted"
     tweak_recorded = "tweak_recorded"
     message = "message"
@@ -148,6 +154,7 @@ class PermissionGrant(BaseModel):
 class ScopePolicy(BaseModel):
     task_id: str
     allowed_roots: list[str]
+    allowed_globs: list[str] = Field(default_factory=list)
     denied_roots: list[str] = Field(default_factory=lambda: [".git", ".venv", ".vocr/ledger.jsonl"])
     notes: list[str] = Field(default_factory=list)
 
@@ -164,6 +171,26 @@ class CodexRunResult(BaseModel):
     stderr: str = ""
     committed: bool = False
     commit_sha: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class TokenUsage(BaseModel):
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    prompt_tokens_estimate: int | None = None
+    completion_tokens_estimate: int | None = None
+
+
+class RunTelemetry(BaseModel):
+    provider: str
+    model: str | None = None
+    base_url: str | None = None
+    slice_id: str | None = None
+    task_id: str | None = None
+    agent: str
+    token_usage: TokenUsage = Field(default_factory=TokenUsage)
+    command: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
 
 
@@ -206,31 +233,74 @@ class RepoGraph(BaseModel):
 
     def context_brief(self, limit: int = 20, query: str | None = None) -> str:
         nodes = self.nodes
+        ranked_paths: list[str] = []
         if query:
-            terms = [term.lower() for term in query.split() if term.strip()]
-            scored: list[tuple[int, GraphNode]] = []
-            for node in self.nodes:
-                haystack = " ".join(
-                    [
-                        node.path,
-                        node.summary,
-                        " ".join(node.imports),
-                        " ".join(node.symbols),
-                    ]
-                ).lower()
-                score = sum(1 for term in terms if term in haystack)
-                if score:
-                    scored.append((score, node))
-            nodes = [node for _, node in sorted(scored, key=lambda item: (-item[0], item[1].path))]
+            nodes = self._rank_nodes_bm25(query)
+            ranked_paths = [node.path for node in nodes]
+            nodes = self._expand_with_neighbors(nodes, limit=limit)
 
         lines = ["VOCR repo graph brief:"]
         if query:
             lines.append(f"Query: {query}")
         for node in nodes[:limit]:
             symbol_text = ", ".join(node.symbols[:6]) or "no symbols"
-            lines.append(f"- {node.path}: {node.summary} ({symbol_text})")
+            marker = ""
+            if query:
+                marker = " (seed)" if node.path in ranked_paths[:limit] else " (1-hop)"
+            lines.append(f"- {node.path}{marker}: {node.summary} ({symbol_text})")
         if len(nodes) > limit:
             lines.append(f"- ... {len(nodes) - limit} more matching files omitted")
         if not nodes:
             lines.append("- no matching files")
         return "\n".join(lines)
+
+    def _rank_nodes_bm25(self, query: str) -> list[GraphNode]:
+        query_terms = _tokenize(query)
+        if not query_terms:
+            return self.nodes
+
+        documents = [(node, _tokenize(_node_search_text(node))) for node in self.nodes]
+        if not documents:
+            return []
+        average_length = sum(len(tokens) for _, tokens in documents) / max(len(documents), 1)
+        document_frequency: Counter[str] = Counter()
+        for _, tokens in documents:
+            document_frequency.update(set(tokens))
+
+        scored: list[tuple[float, GraphNode]] = []
+        for node, tokens in documents:
+            if not tokens:
+                continue
+            frequencies = Counter(tokens)
+            score = 0.0
+            for term in query_terms:
+                if frequencies[term] == 0:
+                    continue
+                idf = math.log(1 + (len(documents) - document_frequency[term] + 0.5) / (document_frequency[term] + 0.5))
+                denominator = frequencies[term] + 1.2 * (1 - 0.75 + 0.75 * (len(tokens) / max(average_length, 1)))
+                score += idf * ((frequencies[term] * 2.2) / denominator)
+            if score > 0:
+                scored.append((score, node))
+        return [node for _, node in sorted(scored, key=lambda item: (-item[0], item[1].path))]
+
+    def _expand_with_neighbors(self, ranked: list[GraphNode], *, limit: int) -> list[GraphNode]:
+        by_path = {node.path: node for node in self.nodes}
+        selected: dict[str, GraphNode] = {}
+        seeds = ranked[:limit]
+        for node in seeds:
+            selected[node.path] = node
+        seed_paths = set(selected)
+        for edge in self.edges:
+            if edge.source in seed_paths and edge.target in by_path:
+                selected.setdefault(edge.target, by_path[edge.target])
+            if edge.target in seed_paths and edge.source in by_path:
+                selected.setdefault(edge.source, by_path[edge.source])
+        return list(selected.values())
+
+
+def _tokenize(text: str) -> list[str]:
+    return [token.lower() for token in re.findall(r"[A-Za-z0-9_]+", text) if len(token) > 1]
+
+
+def _node_search_text(node: GraphNode) -> str:
+    return " ".join([node.path, node.summary, " ".join(node.imports), " ".join(node.symbols)])

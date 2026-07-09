@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import os
-
 from agents import Agent, Runner
 from dotenv import load_dotenv
 
+from vocr.agents.common import configured_base_url, configured_model
 from vocr.agents.architect import build_architect_agent
 from vocr.agents.backend import build_backend_agent
 from vocr.agents.docs import build_docs_agent
@@ -18,13 +17,13 @@ from vocr.models import TaskPlan, VisionSlice
 
 def live_agents_available() -> bool:
     load_dotenv()
-    return bool(os.getenv("OPENAI_API_KEY"))
+    return bool(os.getenv("OPENAI_API_KEY") or configured_base_url())
 
 
 async def create_live_vision(request: str) -> VisionSlice:
     agent = Agent(
         name="VOCR Live Visionary",
-        model=os.getenv("OPENAI_MODEL") or None,
+        model=configured_model(),
         output_type=VisionSlice,
         instructions=(
             "Create a concise VOCR VisionSlice. Capture the goal, assumptions, "
@@ -53,7 +52,7 @@ async def create_live_task_plan(slice_item: VisionSlice, context_pack: str) -> T
     organizer = build_organizer_agent()
     agent = Agent(
         name="VOCR Live Organizer",
-        model=os.getenv("OPENAI_MODEL") or None,
+        model=configured_model(),
         output_type=TaskPlan,
         instructions=(
             "Create a tiny VOCR task plan from a VisionSlice. Every task must have "

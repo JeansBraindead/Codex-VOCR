@@ -51,6 +51,7 @@ class RepoGraphBuilder:
     def __init__(self, root: Path | str = ".", previous: RepoGraph | None = None) -> None:
         self.root = Path(root).resolve()
         self.previous = previous
+        self.previous_nodes = {node.path: node for node in previous.nodes} if previous else {}
 
     def build(self) -> RepoGraph:
         nodes: list[GraphNode] = []
@@ -73,14 +74,15 @@ class RepoGraphBuilder:
         return RepoGraph(root=str(self.root), nodes=sorted(nodes, key=lambda item: item.path), edges=edges)
 
     def _build_node_incremental(self, path: Path, rel: str) -> GraphNode:
-        if self.previous:
+        if self.previous_nodes:
+            previous = self.previous_nodes.get(rel)
             stat = path.stat()
-            text = path.read_text(encoding="utf-8", errors="ignore")
-            content_hash = hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
-            for node in self.previous.nodes:
-                if node.path == rel and node.content_hash == content_hash and node.size_bytes == stat.st_size:
-                    return node
-            return self._build_node_from_text(path, rel, text, stat.st_size)
+            if previous and previous.size_bytes == stat.st_size:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+                content_hash = hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
+                if previous.content_hash == content_hash:
+                    return previous
+                return self._build_node_from_text(path, rel, text, stat.st_size)
         return self._build_node(path, rel)
 
     def _iter_files(self) -> list[Path]:

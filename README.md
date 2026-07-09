@@ -15,7 +15,7 @@ pip install -e .
 vocr setup
 ```
 
-Optional: `.env.example` nach `.env` kopieren und `OPENAI_API_KEY` setzen, wenn die Agents live genutzt werden sollen. Mit `VOCR_HOME` kann der lokale Ledger-Pfad angepasst werden. Der aktuelle MVP kann ohne API-Key seine lokale Struktur, Ledger-Operationen und Worktree-Kommandos verwenden.
+Optional: `.env.example` nach `.env` kopieren und `OPENAI_API_KEY` setzen, wenn die Agents live ueber OpenAI genutzt werden sollen. Fuer LM Studio, llama.cpp, vLLM oder andere OpenAI-kompatible lokale Server kann stattdessen `OPENAI_BASE_URL` gesetzt werden, z.B. `http://localhost:1234/v1`, plus `OPENAI_MODEL` und eine lokale Dummy-API-Key-Konfiguration, falls der Server sie erwartet. VOCR bleibt dabei Codex-first: lokale Modelle helfen Vision/Organizer-Pfaden, aber Codex-Worker, Scope, Review und Promote bleiben die Sicherheitslinie.
 
 Optional kann `VOCR_CODEX_COMMAND` gesetzt werden. Dann startet `vocr work <task-id>` diesen echten Worker-Befehl im isolierten Worktree und uebergibt den Task-Prompt ueber stdin. Ohne `VOCR_CODEX_COMMAND` nutzt VOCR, wenn vorhanden, `codex exec - --cd <worktree> --sandbox workspace-write`. Bei `approve_all` wird `--ask-for-approval never` gesetzt. Unsandboxed-Ausfuehrung gibt es nur explizit mit `VOCR_CODEX_UNSANDBOXED=true`.
 
@@ -64,6 +64,12 @@ vocr organize <slice-id>
 vocr organize <slice-id> --live-agent
 vocr dispatch <task-id>
 vocr work <task-id>
+vocr work <task-id> --fix --max-retries 2
+vocr log --limit 30
+vocr diff <task-id>
+vocr diff <task-id> --full
+vocr clean
+vocr abort <task-id> --reason "Nicht mehr benoetigt"
 vocr codex-config
 vocr inspect
 vocr review <task-id>
@@ -92,12 +98,15 @@ vocr doctor
 - Neue Agents sollen zuerst `vocr context` bzw. `.vocr/graph.json` lesen, nicht blind das ganze Repo. Das reduziert Tokenburn und gibt ihnen eine Karte der relevanten Dateien.
 - `vocr dispatch` erzeugt im isolierten Worktree `.vocr/VOCR_TASK.md` mit Task, Context-Pack und Permission-Modus.
 - `vocr dispatch` erzeugt ausserdem `.vocr/scope.json` und `.vocr/AGENTS.md` als maschinenlesbare und menschenlesbare Scope-Policy fuer Worker.
+- Scope ist hart: `task.scope` wird in erlaubte Pfad-Globs uebersetzt. Aenderungen ausserhalb werden vor dem Commit blockiert und der Task wird `needs_changes`.
 - `vocr review` sammelt lokale Git-Signale aus dem Worktree und akzeptiert nur mit expliziter Entscheidung.
 - `vocr review` fuehrt sichere automatische Checks aus, z.B. Syntax-Check. Unbekannte Checks werden als manuell markiert, nicht blind gestartet.
-- `vocr work` fuehrt den echten Worker aus und erstellt bei Erfolg automatisch einen Task-Commit, wenn Aenderungen vorhanden sind.
+- `vocr work` fuehrt den echten Worker aus und erstellt bei Erfolg automatisch einen Task-Commit, wenn Aenderungen vorhanden sind und der Scope Guard keine Verletzung findet.
+- `vocr work --fix --max-retries 2` erlaubt begrenzte Nachbesserungen bis `review_ready`; Promote bleibt trotzdem manuell und review-gated.
 - `vocr check --codex-review` kann zusaetzlich `codex exec review` als Review-Signal ausfuehren.
 - `vocr ship --preview` zeigt Merge-Preview, `vocr ship --pr` erstellt optional eine Draft-PR via GitHub CLI.
 - `vocr promote` fuehrt vor dem Merge einen Preflight aus und blockiert ohne akzeptiertes Review.
+- `vocr log`, `vocr diff`, `vocr clean` und `vocr abort` sind Housekeeping-Kommandos fuer Timeline, Task-Diff, verwaiste Worktrees und kontrollierten Abbruch.
 
 ## Tests
 
@@ -111,16 +120,20 @@ $env:PYTHONPATH="src"; python -m unittest discover -s tests
 - `.vocr/ledger.jsonl` speichert Events, Slices, Tasks und Reviews.
 - `.vocr/ledger.jsonl` bleibt im Repo als lokaler Ablauf-Speicher.
 - `.vocr/graph.json` speichert den kompakten Graphify-Index fuer tokenarme Agent-Kontexte.
+- Telemetrie-Events protokollieren Provider, Modell, Slice/Task und geschaetzte Token pro Worker-Lauf.
+- `docs/THREAT_MODEL.md` beschreibt Prompt-Injection-Grenzen, Scope Guard und den geplanten Pre-Commit Secret-Scanner.
 
 ## Token-effizientes Arbeiten
 
 Vor jeder neuen Agent-Runde:
 
 1. `vocr vision` aktualisiert Graphify automatisch.
-2. Der Visionaer erzeugt daraus taskbezogene Context-Packs.
-3. Worker-Tasks bekommen ihren Context-Pack automatisch im Task-Template.
-4. Debug-Agenten sollen `vocr context "<suchbegriffe>" --limit 10` verwenden, statt breit Dateien zu lesen.
-5. Erst danach werden gezielt die wenigen Dateien gelesen, die der Context-Pack nennt.
+2. Graphify rankt per BM25, zieht 1-Hop-Import-Nachbarn relevanter Dateien dazu und nutzt vorhandene Content-Hashes fuer inkrementelle Rebuilds.
+3. Der Visionaer erzeugt daraus taskbezogene Context-Packs.
+4. Worker-Tasks bekommen ihren Context-Pack automatisch im Task-Template.
+5. Context-Packs sind als untrusted Repo-Inhalt markiert und duerfen keine Instruktionen ueberschreiben.
+6. Debug-Agenten sollen `vocr context "<suchbegriffe>" --limit 10` verwenden, statt breit Dateien zu lesen.
+7. Erst danach werden gezielt die wenigen Dateien gelesen, die der Context-Pack nennt.
 
 Das Ziel ist: neue Agents bekommen eine Repo-Karte und nur die naechsten relevanten Dateien, nicht den kompletten Codebestand.
 - Der Standard-Ort fuer isolierte Task-Worktrees liegt neben dem Repo: `<repo>.vocr-worktrees/`.
@@ -134,8 +147,8 @@ Das Ziel ist: neue Agents bekommen eine Repo-Karte und nur die naechsten relevan
 
 ## Naechste Schritte
 
-1. Codex CLI als MCP-Server konkret konfigurieren und `VOCR_CODEX_COMMAND` darauf zeigen lassen.
-2. Reviewer Agent mit Diff-Kommentaren und optionalen PR-Reviews erweitern.
-3. Scope Guard als harte Pre-Write-Schicht fuer Worker erweitern.
-4. Promote Gate mit optionalem PR-Modus ausbauen.
-5. Graphify um inkrementelle Updates und semantische Summaries erweitern.
+1. Pre-Commit Secret-Scanner implementieren: Keyword, bekannte Patterns, Entropie-Heuristik; spaeter optional gitleaks-kompatibel.
+2. Reviewer Agent mit feineren Diff-Kommentaren und optionalen PR-Review-Kommentaren erweitern.
+3. Echte Token-Usage aus Agents SDK/Codex auslesen, sobald stabil verfuegbar.
+4. Task-DAG und parallele Worktrees fuer unabhaengige Tasks ausbauen.
+5. VOCR optional selbst als MCP-Server exponieren.

@@ -5,7 +5,9 @@ import unittest
 from pathlib import Path
 
 from vocr.graph.graphify import GraphStore, RepoGraphBuilder
+from vocr.guardrails.scope_guard import ScopeGuard
 from vocr.memory.ledger import sanitize_payload
+from vocr.models import AcceptanceCriterion, VocrTask
 from vocr.orchestration.workflow import create_vision, organize_slice
 
 GOOD_REQUEST = (
@@ -41,6 +43,42 @@ class WorkflowTests(unittest.TestCase):
             sanitize_payload(payload),
             {"message": "key [redacted]", "api_key": "[redacted]"},
         )
+
+    def test_scope_guard_blocks_files_outside_declared_scope(self) -> None:
+        task = VocrTask(
+            slice_id="slice-test",
+            title="Docs only",
+            summary="Update docs",
+            scope=["docs"],
+            acceptance_criteria=[AcceptanceCriterion(text="Docs updated")],
+            tests=["Syntax-Check"],
+        )
+
+        guard = ScopeGuard()
+
+        self.assertEqual(guard.validate_changed_files(task, ["docs/guide.md"]), [])
+        self.assertTrue(guard.validate_changed_files(task, ["src/vocr/main.py"]))
+
+    def test_graph_context_uses_bm25_and_import_neighbors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package = root / "src" / "sample"
+            package.mkdir(parents=True)
+            (package / "__init__.py").write_text("", encoding="utf-8")
+            (package / "api.py").write_text(
+                "from sample.service import health_status\n\ndef health():\n    return health_status()\n",
+                encoding="utf-8",
+            )
+            (package / "service.py").write_text(
+                "def health_status():\n    return {'status': 'ok'}\n",
+                encoding="utf-8",
+            )
+
+            graph = RepoGraphBuilder(root).build()
+            brief = graph.context_brief(query="health api", limit=2)
+
+        self.assertIn("src/sample/api.py (seed)", brief)
+        self.assertIn("src/sample/service.py", brief)
 
 
 if __name__ == "__main__":

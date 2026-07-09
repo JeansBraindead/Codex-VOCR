@@ -111,6 +111,10 @@ class MemoryLedger:
                 task_id = event.payload["task_id"]
                 if task_id in task_map:
                     task_map[task_id].status = TaskStatus.promoted
+            elif event.type == LedgerEventType.task_aborted:
+                task_id = event.payload["task_id"]
+                if task_id in task_map:
+                    task_map[task_id].status = TaskStatus.aborted
         return list(task_map.values())
 
     def reviews(self) -> list[ReviewResult]:

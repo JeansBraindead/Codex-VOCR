@@ -95,6 +95,17 @@ class GitWorktreeManager:
             return result.stderr.strip() or result.stdout.strip()
         return result.stdout.strip() or "no uncommitted diff"
 
+    def diff(self, base_ref: str | None = None) -> str:
+        result = self._diff_against_base("", base_ref=base_ref)
+        committed = "" if result is None else result.stdout.strip()
+        uncommitted = self._git("diff")
+        parts = []
+        if committed:
+            parts.append(committed)
+        if uncommitted.returncode == 0 and uncommitted.stdout.strip():
+            parts.append(uncommitted.stdout.strip())
+        return "\n\n".join(parts) or "no diff"
+
     def branch_diff_stat(self, base_ref: str | None = None) -> str:
         result = self._diff_against_base("--stat", base_ref=base_ref)
         if result is None:
@@ -110,10 +121,18 @@ class GitWorktreeManager:
     def _diff_against_base(self, mode: str, base_ref: str | None = None) -> subprocess.CompletedProcess[str] | None:
         candidates = [item for item in [base_ref, "main", "master", "HEAD~1"] if item]
         for candidate in candidates:
-            result = self._git("diff", mode, f"{candidate}...HEAD")
+            args = ["diff"]
+            if mode:
+                args.append(mode)
+            args.append(f"{candidate}...HEAD")
+            result = self._git(*args)
             if result.returncode == 0:
                 return result
-            result = self._git("diff", mode, candidate, "HEAD")
+            args = ["diff"]
+            if mode:
+                args.append(mode)
+            args.extend([candidate, "HEAD"])
+            result = self._git(*args)
             if result.returncode == 0:
                 return result
         return None
@@ -170,6 +189,23 @@ class GitWorktreeManager:
             elif "<<<<<<<" in output or "changed in both" in output:
                 issues.append("merge preflight reports possible conflicts")
         return issues
+
+    def remove_worktree(self, path: Path | str, *, force: bool = False) -> None:
+        self.ensure_git_repo()
+        command = ["worktree", "remove"]
+        if force:
+            command.append("--force")
+        command.append(str(path))
+        result = self._git(*command)
+        if result.returncode != 0:
+            raise GitWorktreeError(result.stderr.strip() or result.stdout.strip())
+
+    def prune_worktrees(self) -> str:
+        self.ensure_git_repo()
+        result = self._git("worktree", "prune")
+        if result.returncode != 0:
+            raise GitWorktreeError(result.stderr.strip() or result.stdout.strip())
+        return result.stdout.strip() or "git worktree prune complete"
 
     def doctor(self) -> dict[str, str]:
         result = self._git("rev-parse", "--is-inside-work-tree")
