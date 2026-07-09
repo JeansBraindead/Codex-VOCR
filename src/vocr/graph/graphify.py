@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 
+from vocr.memory.learning import LearningStore
 from vocr.models import GraphEdge, GraphNode, RepoGraph
 
 
@@ -44,7 +45,11 @@ class GraphStore:
         return self.path.exists()
 
     def context_pack(self, query: str | None = None, limit: int = 20) -> str:
-        return self.load().context_brief(limit=limit, query=query)
+        boosts: dict[str, float] | None = None
+        learning = LearningStore(self.vocr_home)
+        if learning.exists():
+            boosts = learning.file_boosts(query=query)
+        return self.load().context_brief(limit=limit, query=query, learning_boosts=boosts)
 
 
 class RepoGraphBuilder:

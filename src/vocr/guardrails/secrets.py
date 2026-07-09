@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import subprocess
 import re
 from pathlib import Path
@@ -60,7 +61,7 @@ def run_gitleaks_scan(repo_root: Path) -> list[SecretFinding] | None:
     if which("gitleaks") is None:
         return None
     result = subprocess.run(
-        ["gitleaks", "detect", "--no-banner", "--redact", "--source", str(repo_root), "--report-format", "json"],
+        _gitleaks_command(repo_root),
         cwd=repo_root,
         text=True,
         capture_output=True,
@@ -99,6 +100,31 @@ def run_gitleaks_scan(repo_root: Path) -> list[SecretFinding] | None:
             )
         )
     return findings
+
+
+def _gitleaks_command(repo_root: Path) -> list[str]:
+    command = [
+        "gitleaks",
+        "detect",
+        "--no-banner",
+        "--redact",
+        "--source",
+        str(repo_root),
+        "--report-format",
+        "json",
+    ]
+    config = os.getenv("VOCR_GITLEAKS_CONFIG")
+    if config is None and (repo_root / ".gitleaks.toml").exists():
+        config = str(repo_root / ".gitleaks.toml")
+    if config:
+        command.extend(["--config", config])
+
+    baseline = os.getenv("VOCR_GITLEAKS_BASELINE")
+    if baseline is None and (repo_root / ".gitleaks-baseline.json").exists():
+        baseline = str(repo_root / ".gitleaks-baseline.json")
+    if baseline:
+        command.extend(["--baseline-path", baseline])
+    return command
 
 
 def _scan_added_line(line: str, path: str | None, line_no: int | None) -> list[SecretFinding]:

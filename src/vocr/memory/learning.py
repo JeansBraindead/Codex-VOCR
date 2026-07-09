@@ -52,6 +52,28 @@ class LearningStore:
             lines.append("- no learning signals yet")
         return "\n".join(lines)
 
+    def file_boosts(self, query: str | None = None, max_boost: float = 2.5) -> dict[str, float]:
+        snapshot = self.load()
+        terms = _terms(query or "")
+        boosts: dict[str, float] = {}
+
+        def entry_matches(entry: LearningEntry) -> bool:
+            if not terms:
+                return True
+            haystack = " ".join([entry.key, *entry.files, *entry.tests, *entry.risks]).lower()
+            return any(term in haystack for term in terms)
+
+        for entry in [*snapshot.scopes.values(), *snapshot.task_titles.values(), *snapshot.files.values()]:
+            if not entry_matches(entry):
+                continue
+            accepted = entry.decisions.get(ReviewDecision.accepted.value, 0)
+            needs_changes = entry.decisions.get(ReviewDecision.needs_changes.value, 0)
+            risk_multiplier = 1.0 + min(needs_changes, 3) * 0.15
+            success_multiplier = 1.0 + min(accepted, 3) * 0.1
+            for path, count in entry.files.items():
+                boosts[path] = boosts.get(path, 0.0) + min(count * 0.35 * risk_multiplier * success_multiplier, max_boost)
+        return {path: min(score, max_boost) for path, score in boosts.items()}
+
 
 def build_learning_snapshot(ledger: MemoryLedger) -> LearningSnapshot:
     snapshot = LearningSnapshot()

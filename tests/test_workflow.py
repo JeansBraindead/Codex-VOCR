@@ -7,12 +7,22 @@ from pathlib import Path
 from vocr.graph.graphify import GraphStore, RepoGraphBuilder
 from vocr.config.env_file import provider_from_env, read_env_file, redact_env, update_env_file
 from vocr.guardrails.scope_guard import ScopeGuard
-from vocr.guardrails.secrets import scan_diff_for_secrets
+from vocr.guardrails.secrets import _gitleaks_command, scan_diff_for_secrets
 from vocr.memory.ledger import sanitize_payload
 from vocr.memory.ledger import MemoryLedger
 from vocr.memory.learning import LearningStore
 from vocr.mcp.server import VocrMcpServer
-from vocr.models import AcceptanceCriterion, LedgerEventType, ReviewDecision, ReviewResult, RunTelemetry, TokenUsage, VocrTask
+from vocr.models import (
+    AcceptanceCriterion,
+    LedgerEventType,
+    LearningEntry,
+    LearningSnapshot,
+    ReviewDecision,
+    ReviewResult,
+    RunTelemetry,
+    TokenUsage,
+    VocrTask,
+)
 from vocr.orchestration.workflow import create_vision, organize_slice
 
 GOOD_REQUEST = (
@@ -100,6 +110,17 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(result.blocked)
         self.assertIn("vocr-minimal", result.scanners)
         self.assertTrue(any(finding.rule_id == "keyword_assignment" for finding in result.findings))
+
+    def test_gitleaks_command_uses_repo_config_and_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".gitleaks.toml").write_text("title = 'test'\n", encoding="utf-8")
+            (root / ".gitleaks-baseline.json").write_text("[]\n", encoding="utf-8")
+
+            command = _gitleaks_command(root)
+
+        self.assertIn("--config", command)
+        self.assertIn("--baseline-path", command)
 
     def test_organize_slice_creates_sequential_task_dependencies(self) -> None:
         request = (
@@ -216,6 +237,34 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(result.archived_events, 10)
         self.assertEqual(len(remaining), 20)
         self.assertIsNotNone(result.archive_path)
+
+    def test_learning_boosts_graph_context_ranking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            vocr_home = root / ".vocr"
+            (root / "README.md").write_text("# Setup\n", encoding="utf-8")
+            src = root / "src"
+            src.mkdir()
+            (src / "main.py").write_text("def run():\n    return True\n", encoding="utf-8")
+            learning = LearningStore(vocr_home)
+            learning.save(
+                LearningSnapshot(
+                    scopes={
+                        "scope:docs": LearningEntry(
+                            key="scope:docs",
+                            count=3,
+                            files={"README.md": 3},
+                            decisions={"needs_changes": 2},
+                        )
+                    }
+                )
+            )
+            graph_store = GraphStore(vocr_home)
+            graph_store.refresh(root)
+
+            context = graph_store.context_pack(query="docs", limit=1)
+
+        self.assertIn("README.md", context)
 
 
 if __name__ == "__main__":

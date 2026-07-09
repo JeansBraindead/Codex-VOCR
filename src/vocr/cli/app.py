@@ -52,7 +52,9 @@ from vocr.orchestration.readiness import assess_request_readiness
 
 app = typer.Typer(help="VOCR: Vision / Organize / Code / Review")
 model_app = typer.Typer(help="Configure local or cloud LLMs without editing files.")
+secrets_app = typer.Typer(help="Scan diffs for secrets without printing secret values.")
 app.add_typer(model_app, name="model")
+app.add_typer(secrets_app, name="secrets")
 console = Console()
 
 
@@ -379,6 +381,30 @@ def model_list(
     console.print(table)
 
 
+@secrets_app.command("scan")
+def secrets_scan() -> None:
+    manager = GitWorktreeManager()
+    result = scan_diff_for_secrets(manager.diff_for_scan(), repo_root=manager.repo_root)
+    table = Table(title="VOCR Secret Scan")
+    table.add_column("Rule")
+    table.add_column("Path")
+    table.add_column("Line")
+    table.add_column("Severity")
+    table.add_column("Summary")
+    for finding in result.findings:
+        table.add_row(
+            finding.rule_id,
+            finding.path or "-",
+            str(finding.line or "-"),
+            finding.severity,
+            safe_text(finding.summary),
+        )
+    console.print(table)
+    console.print(f"Scanners: {', '.join(result.scanners) or 'none'}")
+    if result.blocked:
+        raise typer.Exit(code=1)
+
+
 @app.command("serve-mcp")
 def serve_mcp() -> None:
     serve_stdio(ledger().root)
@@ -407,6 +433,13 @@ def context(
         raise typer.BadParameter("No graph found. Run 'vocr graphify' first.")
     console.print(store.context_pack(query=query, limit=limit))
     if learning:
+        boosts = learning_store().file_boosts(query=query) if learning_store().exists() else {}
+        if boosts:
+            top = sorted(boosts.items(), key=lambda item: (-item[1], item[0]))[:5]
+            console.print("")
+            console.print("[cyan]Learning rank boosts:[/cyan]")
+            for path, score in top:
+                console.print(f"- {safe_text(path)} +{score:.2f}")
         console.print("")
         console.print(learning_store().brief(query=query, limit=limit))
 

@@ -94,6 +94,7 @@ vocr usage
 vocr learn
 vocr context "scope review" --learning --limit 10
 vocr compact --keep-last 200
+vocr secrets scan
 vocr clean
 vocr abort <task-id> --reason "Nicht mehr benoetigt"
 vocr serve-mcp
@@ -127,6 +128,7 @@ vocr doctor
 - `vocr dispatch` erzeugt ausserdem `.vocr/scope.json` und `.vocr/AGENTS.md` als maschinenlesbare und menschenlesbare Scope-Policy fuer Worker.
 - Scope ist hart: `task.scope` wird in erlaubte Pfad-Globs uebersetzt. Aenderungen ausserhalb werden vor dem Commit blockiert und der Task wird `needs_changes`.
 - Der Pre-Commit Secret-Scanner prueft Diffs inklusive neuer untracked Dateien auf Keyword-Secrets, bekannte Token-Muster und Entropie-Hinweise. Treffer blockieren den Commit ohne Secret-Werte auszugeben.
+- `vocr secrets scan` scannt den aktuellen Diff manuell. Wenn `gitleaks` installiert ist, nutzt VOCR optional `.gitleaks.toml`, `.gitleaks-baseline.json`, `VOCR_GITLEAKS_CONFIG` und `VOCR_GITLEAKS_BASELINE`.
 - `vocr review` sammelt lokale Git-Signale aus dem Worktree und akzeptiert nur mit expliziter Entscheidung.
 - `vocr review` erzeugt einfache Diff-Kommentare fuer geaenderte Dateien und riskante Added-Lines.
 - `vocr review --export-comments review.md` schreibt Review-Kommentare als Markdown; `--post-pr-comments` postet optional einen PR-Kommentar via GitHub CLI.
@@ -165,7 +167,7 @@ Vor jeder neuen Agent-Runde:
 
 1. `vocr vision` aktualisiert Graphify automatisch.
 2. Graphify rankt per BM25, zieht 1-Hop-Import-Nachbarn relevanter Dateien dazu und nutzt vorhandene Content-Hashes fuer inkrementelle Rebuilds.
-3. Optionales Learning-Overlay boostet bekannte Scope/Datei/Test-Signale aus frueheren Reviews.
+3. Das Learning-Overlay boostet bekannte Scope/Datei/Test-Signale direkt im Graphify-Ranking.
 4. Der Visionaer erzeugt daraus taskbezogene Context-Packs.
 5. Worker-Tasks bekommen ihren Context-Pack automatisch im Task-Template.
 6. Context-Packs sind als untrusted Repo-Inhalt markiert und duerfen keine Instruktionen ueberschreiben.
@@ -184,8 +186,8 @@ Das Ziel ist: neue Agents bekommen eine Repo-Karte und nur die naechsten relevan
 
 ## Naechste Schritte
 
-1. Learning-Ranking direkt in Graphify-Scores einrechnen statt nur als Brief anzufuegen.
-2. Secret-Scanner gitleaks-Konfiguration und Baseline-Dateien unterstuetzen.
-3. Reviewer Agent mit echten inline PR-Review-Kommentaren erweitern.
-4. Echte Token-Usage aus Agents SDK/Codex auslesen, sobald stabil verfuegbar.
-5. MCP-Server um explizit bestaetigte Promote-Aktionen erweitern, weiterhin streng gate-gesteuert.
+1. Reviewer Agent mit echten inline PR-Review-Kommentaren erweitern.
+2. Echte Token-Usage aus Agents SDK/Codex auslesen, sobald stabil verfuegbar.
+3. MCP-Server um explizit bestaetigte Promote-Aktionen erweitern, weiterhin streng gate-gesteuert.
+4. Learning-Signale um Erfolgsdauer, Retry-Anzahl und Clarification-Qualitaet erweitern.
+5. Housekeeping-Retention fuer `.vocr/archive/` und Artefakte feiner konfigurierbar machen.

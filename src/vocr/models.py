@@ -275,11 +275,16 @@ class RepoGraph(BaseModel):
     edges: list[GraphEdge] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
 
-    def context_brief(self, limit: int = 20, query: str | None = None) -> str:
+    def context_brief(
+        self,
+        limit: int = 20,
+        query: str | None = None,
+        learning_boosts: dict[str, float] | None = None,
+    ) -> str:
         nodes = self.nodes
         ranked_paths: list[str] = []
         if query:
-            nodes = self._rank_nodes_bm25(query)
+            nodes = self._rank_nodes_bm25(query, learning_boosts=learning_boosts)
             ranked_paths = [node.path for node in nodes]
             nodes = self._expand_with_neighbors(nodes, limit=limit)
 
@@ -298,7 +303,11 @@ class RepoGraph(BaseModel):
             lines.append("- no matching files")
         return "\n".join(lines)
 
-    def _rank_nodes_bm25(self, query: str) -> list[GraphNode]:
+    def _rank_nodes_bm25(
+        self,
+        query: str,
+        learning_boosts: dict[str, float] | None = None,
+    ) -> list[GraphNode]:
         query_terms = _tokenize(query)
         if not query_terms:
             return self.nodes
@@ -323,6 +332,8 @@ class RepoGraph(BaseModel):
                 idf = math.log(1 + (len(documents) - document_frequency[term] + 0.5) / (document_frequency[term] + 0.5))
                 denominator = frequencies[term] + 1.2 * (1 - 0.75 + 0.75 * (len(tokens) / max(average_length, 1)))
                 score += idf * ((frequencies[term] * 2.2) / denominator)
+            if learning_boosts:
+                score += learning_boosts.get(node.path, 0.0)
             if score > 0:
                 scored.append((score, node))
         return [node for _, node in sorted(scored, key=lambda item: (-item[0], item[1].path))]
