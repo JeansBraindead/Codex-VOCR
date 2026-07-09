@@ -7,9 +7,10 @@ SECTION_ALIASES = {
     "ziel": ["ziel:", "zielbild:", "goal:"],
     "arbeitsbereich": ["arbeitsbereich:", "scope:", "bereich:", "dateien:"],
     "akzeptanz": ["akzeptanz:", "akzeptanzkriterien:", "done:", "erfolg:"],
-    "verifikation": ["verifikation:", "tests:", "checks:", "pruefung:", "prüfung:"],
+    "verifikation": ["verifikation:", "tests:", "checks:", "pruefung:"],
     "nicht_ziele": ["nicht-ziele:", "nichtziele:", "out-of-scope:", "non-goals:"],
-    "ausfuehrung": ["ausfuehrung:", "ausführung:", "permissions:", "go:", "review:"],
+    "tasks": ["tasks:", "aufgaben:", "slices:", "arbeitspakete:"],
+    "ausfuehrung": ["ausfuehrung:", "permissions:", "go:", "review:"],
 }
 
 

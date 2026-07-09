@@ -14,6 +14,7 @@ from vocr.models import (
     PermissionGrant,
     PermissionMode,
     ReviewResult,
+    RunTelemetry,
     TaskStatus,
     VisionSlice,
     VocrTask,
@@ -122,6 +123,13 @@ class MemoryLedger:
             ReviewResult.model_validate(event.payload)
             for event in self.events()
             if event.type == LedgerEventType.review_recorded
+        ]
+
+    def telemetry(self) -> list[RunTelemetry]:
+        return [
+            RunTelemetry.model_validate(event.payload)
+            for event in self.events()
+            if event.type == LedgerEventType.telemetry_recorded
         ]
 
     def clarification_sessions(self) -> list[ClarificationSession]:

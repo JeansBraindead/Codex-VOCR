@@ -106,6 +106,22 @@ class GitWorktreeManager:
             parts.append(uncommitted.stdout.strip())
         return "\n\n".join(parts) or "no diff"
 
+    def diff_for_scan(self, base_ref: str | None = None) -> str:
+        parts = [self.diff(base_ref=base_ref)]
+        untracked = self._git("ls-files", "--others", "--exclude-standard")
+        if untracked.returncode == 0:
+            for line in untracked.stdout.splitlines():
+                rel = line.strip().replace("\\", "/")
+                if not rel:
+                    continue
+                path = self.repo_root / rel
+                if not path.is_file() or path.stat().st_size > 200_000:
+                    continue
+                text = path.read_text(encoding="utf-8", errors="ignore")
+                added = "\n".join(f"+{item}" for item in text.splitlines())
+                parts.append(f"diff --git a/{rel} b/{rel}\n+++ b/{rel}\n@@ -0,0 +1 @@\n{added}")
+        return "\n\n".join(part for part in parts if part and part != "no diff") or "no diff"
+
     def branch_diff_stat(self, base_ref: str | None = None) -> str:
         result = self._diff_against_base("--stat", base_ref=base_ref)
         if result is None:

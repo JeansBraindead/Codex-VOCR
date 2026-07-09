@@ -104,6 +104,7 @@ class VocrTask(BaseModel):
     non_goals: list[str] = Field(default_factory=list)
     acceptance_criteria: list[AcceptanceCriterion]
     tests: list[str]
+    dependencies: list[str] = Field(default_factory=list)
     context_query: str | None = None
     context_pack: str | None = None
     status: TaskStatus = TaskStatus.planned
@@ -125,6 +126,22 @@ class ReviewComment(BaseModel):
     body: str
     path: str | None = None
     line: int | None = None
+
+
+class SecretFinding(BaseModel):
+    rule_id: str
+    path: str | None = None
+    line: int | None = None
+    summary: str
+    severity: str = "high"
+
+
+class SecretScanResult(BaseModel):
+    findings: list[SecretFinding] = Field(default_factory=list)
+
+    @property
+    def blocked(self) -> bool:
+        return bool(self.findings)
 
 
 class ReviewResult(BaseModel):
@@ -299,7 +316,7 @@ class RepoGraph(BaseModel):
 
 
 def _tokenize(text: str) -> list[str]:
-    return [token.lower() for token in re.findall(r"[A-Za-z0-9_]+", text) if len(token) > 1]
+    return [token.lower() for token in re.findall(r"[A-Za-z0-9]+", text.replace("_", " ")) if len(token) > 1]
 
 
 def _node_search_text(node: GraphNode) -> str:

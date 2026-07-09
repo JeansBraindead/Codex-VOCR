@@ -18,7 +18,9 @@ from vocr.codex.mcp_client import CodexMcpClient
 from vocr.git.worktrees import GitWorktreeError, GitWorktreeManager
 from vocr.graph.graphify import GraphStore, RepoGraphBuilder
 from vocr.guardrails.scope_guard import ScopeGuard
+from vocr.guardrails.secrets import scan_diff_for_secrets
 from vocr.memory.ledger import MemoryLedger, sanitize_payload
+from vocr.mcp.server import serve_stdio
 from vocr.models import (
     ClarificationSession,
     LedgerEventType,
@@ -95,6 +97,17 @@ def record_scope_block(store: MemoryLedger, task_id: str, issues: list[str]) -> 
         task_id=task_id,
         decision=ReviewDecision.needs_changes,
         summary="Scope guard blocked worker commit.",
+        risks=issues,
+        required_changes=issues,
+    )
+    store.append(LedgerEventType.review_recorded, review)
+
+
+def record_secret_block(store: MemoryLedger, task_id: str, issues: list[str]) -> None:
+    review = ReviewResult(
+        task_id=task_id,
+        decision=ReviewDecision.needs_changes,
+        summary="Secret scanner blocked worker commit.",
         risks=issues,
         required_changes=issues,
     )
@@ -247,6 +260,11 @@ def codex_config() -> None:
     path = write_mcp_config(ledger().root / "codex-mcp.json")
     console.print(f"[green]Codex MCP config written[/green] {path}")
     console.print("Worker default: codex exec - --cd <worktree> --sandbox workspace-write")
+
+
+@app.command("serve-mcp")
+def serve_mcp() -> None:
+    serve_stdio(ledger().root)
 
 
 @app.command()
@@ -445,6 +463,18 @@ def run_worker(
                         raise typer.BadParameter("Scope guard blocked commit: " + "; ".join(scope_issues))
                     extra_prompt = retry_prompt(attempt + 1, scope_issues, worktree_git.diff(), task.scope)
                     continue
+                secret_scan = scan_diff_for_secrets(worktree_git.diff_for_scan())
+                if secret_scan.blocked:
+                    issues = [
+                        f"{finding.rule_id}: {finding.path or 'unknown'}:{finding.line or '?'} {finding.summary}"
+                        for finding in secret_scan.findings
+                    ]
+                    store.append(LedgerEventType.task_worker_ran, result)
+                    record_secret_block(store, task.id, issues)
+                    if not auto_fix or attempt >= max_retries:
+                        raise typer.BadParameter("Secret scanner blocked commit: " + "; ".join(issues))
+                    extra_prompt = retry_prompt(attempt + 1, issues, worktree_git.diff_for_scan(), task.scope)
+                    continue
                 if worktree_git.has_changes():
                     sha = worktree_git.commit_all(f"VOCR task {task.id}: {task.title}")
                     result.committed = True
@@ -625,6 +655,47 @@ def show_diff(
         console.print("[cyan]Files:[/cyan]")
         for path in files:
             console.print(f"- {safe_text(path)}")
+
+
+@app.command("usage")
+def show_usage(
+    task_id: str | None = typer.Option(None, "--task", help="Filter by task id."),
+    slice_id: str | None = typer.Option(None, "--slice", help="Filter by slice id."),
+) -> None:
+    items = [
+        item
+        for item in ledger().telemetry()
+        if (task_id is None or item.task_id == task_id)
+        and (slice_id is None or item.slice_id == slice_id)
+    ]
+    table = Table(title="VOCR Token / Cost Telemetry")
+    table.add_column("Agent")
+    table.add_column("Provider")
+    table.add_column("Model")
+    table.add_column("Slice")
+    table.add_column("Task")
+    table.add_column("Prompt est.")
+    table.add_column("Completion est.")
+    table.add_column("Total")
+    total = 0
+    for item in items:
+        usage = item.token_usage
+        row_total = usage.total_tokens or (usage.prompt_tokens_estimate or 0) + (
+            usage.completion_tokens_estimate or 0
+        )
+        total += row_total
+        table.add_row(
+            item.agent,
+            item.provider,
+            item.model or "-",
+            item.slice_id or "-",
+            item.task_id or "-",
+            str(usage.prompt_tokens or usage.prompt_tokens_estimate or 0),
+            str(usage.completion_tokens or usage.completion_tokens_estimate or 0),
+            str(row_total),
+        )
+    console.print(table)
+    console.print(f"[cyan]Estimated total tokens:[/cyan] {total}")
 
 
 @app.command("clean")

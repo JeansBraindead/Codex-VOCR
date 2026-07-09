@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import re
 
 from vocr.guardrails.scope_guard import ScopeGuard
+from vocr.guardrails.secrets import scan_diff_for_secrets
 from vocr.git.worktrees import GitWorktreeManager
 from vocr.graph.graphify import GraphStore, RepoGraphBuilder
 from vocr.memory.ledger import MemoryLedger
@@ -11,6 +13,7 @@ from vocr.models import (
     AcceptanceCriterion,
     LedgerEventType,
     ReviewDecision,
+    ReviewComment,
     ReviewResult,
     TaskStatus,
     TestRunResult,
@@ -48,11 +51,17 @@ def organize_slice(slice_item: VisionSlice, *, vocr_home: str = ".vocr") -> list
     scope = _split_items(sections.get("arbeitsbereich", ""))
     non_goals = _split_items(sections.get("nicht_ziele", ""))
     tests = _split_items(sections.get("verifikation", ""))
-    return [
-        VocrTask(
+    task_items = _split_items(sections.get("tasks", ""))
+    if not task_items:
+        task_items = ["Implement first scoped slice"]
+
+    tasks: list[VocrTask] = []
+    previous_task_id: str | None = None
+    for index, task_item in enumerate(task_items, start=1):
+        task = VocrTask(
             slice_id=slice_item.id,
-            title="Implement first scoped slice",
-            summary=f"Implement the smallest useful part of: {slice_item.goal}",
+            title=task_item,
+            summary=f"Implement task {index} for: {slice_item.goal}",
             scope=scope or [
                 "Use only the explicitly requested repo area.",
                 "Keep changes inside the task worktree.",
@@ -60,10 +69,13 @@ def organize_slice(slice_item: VisionSlice, *, vocr_home: str = ".vocr") -> list
             non_goals=non_goals or ["Do not expand beyond the accepted VisionSlice."],
             acceptance_criteria=slice_item.acceptance_criteria,
             tests=tests or ["Run the verification explicitly approved in the VisionSlice."],
+            dependencies=[previous_task_id] if previous_task_id else [],
             context_query=context_query,
             context_pack=context_pack,
         )
-    ]
+        tasks.append(task)
+        previous_task_id = task.id
+    return tasks
 
 
 def _split_items(text: str) -> list[str]:
@@ -115,6 +127,9 @@ Scope:
 Non-goals:
 {bullets(task.non_goals)}
 
+Dependencies:
+{bullets(task.dependencies) if task.dependencies else "- none"}
+
 Acceptance criteria:
 {bullets(criteria)}
 
@@ -136,6 +151,11 @@ def dispatch_task(ledger: MemoryLedger, manager: GitWorktreeManager, task_id: st
     task = ledger.get_task(task_id)
     if task is None:
         raise ValueError(f"Task not found: {task_id}")
+    blocked_dependencies = _blocked_dependencies(ledger, task)
+    if blocked_dependencies:
+        raise ValueError(
+            "Task dependencies must be promoted before dispatch: " + ", ".join(blocked_dependencies)
+        )
     info = manager.create_for_task(task_id)
     ledger.append(
         LedgerEventType.task_dispatched,
@@ -149,6 +169,15 @@ def dispatch_task(ledger: MemoryLedger, manager: GitWorktreeManager, task_id: st
     task.branch_name = info.branch_name
     task.worktree_path = info.path
     return task
+
+
+def _blocked_dependencies(ledger: MemoryLedger, task: VocrTask) -> list[str]:
+    blocked: list[str] = []
+    for dependency_id in task.dependencies:
+        dependency = ledger.get_task(dependency_id)
+        if dependency is None or dependency.status != TaskStatus.promoted:
+            blocked.append(dependency_id)
+    return blocked
 
 
 def review_task(
@@ -182,9 +211,16 @@ def review_task(
         git_status = worktree_git.status_porcelain()
         uncommitted_diff = worktree_git.diff_stat()
         committed_diff = worktree_git.branch_diff_stat()
+        full_diff = worktree_git.diff_for_scan(base_ref=base_ref)
         diff_summary = f"Committed diff:\n{committed_diff}\n\nUncommitted diff:\n{uncommitted_diff}"
         changed_files = sorted(set(worktree_git.changed_files() + worktree_git.branch_diff_files()))
         issues.extend(ScopeGuard().validate_changed_files(task, changed_files))
+        secret_scan = scan_diff_for_secrets(full_diff)
+        if secret_scan.blocked:
+            for finding in secret_scan.findings:
+                issues.append(
+                    f"Secret scanner finding: {finding.rule_id} at {finding.path or 'unknown'}:{finding.line or '?'}"
+                )
         if decision == ReviewDecision.accepted and git_status != "clean":
             issues.append("Worktree has uncommitted changes; commit or discard them before accepted review.")
 
@@ -201,6 +237,8 @@ def review_task(
         decision = ReviewDecision.needs_changes
 
     comments = []
+    if task.worktree_path:
+        comments.extend(_diff_review_comments(changed_files, issues, full_diff))
     if codex_review:
         comment = run_codex_review(task, base_ref=base_ref)
         if comment:
@@ -226,6 +264,78 @@ def review_task(
     )
     ledger.append(LedgerEventType.review_recorded, review)
     return review
+
+
+def _diff_review_comments(changed_files: list[str], issues: list[str], diff_text: str) -> list[ReviewComment]:
+    comments: list[ReviewComment] = []
+    for path in changed_files[:20]:
+        comments.append(
+            ReviewComment(
+                source="vocr-review",
+                path=path,
+                body="Changed by this task; verify it stays inside scope and supports the acceptance criteria.",
+            )
+        )
+    for issue in issues:
+        if "Secret scanner finding" in issue:
+            comments.append(
+                ReviewComment(
+                    source="vocr-secret-scan",
+                    body=issue,
+                )
+            )
+    comments.extend(_line_level_diff_comments(diff_text))
+    return comments
+
+
+def _line_level_diff_comments(diff_text: str) -> list[ReviewComment]:
+    comments: list[ReviewComment] = []
+    current_path: str | None = None
+    new_line = 0
+    for raw_line in diff_text.splitlines():
+        if raw_line.startswith("+++ b/"):
+            current_path = raw_line[6:].strip()
+            new_line = 0
+            continue
+        if raw_line.startswith("@@"):
+            new_line = _parse_diff_new_line(raw_line)
+            continue
+        if raw_line.startswith("+") and not raw_line.startswith("+++"):
+            body = _review_hint_for_added_line(raw_line[1:])
+            if body:
+                comments.append(
+                    ReviewComment(
+                        source="vocr-diff-review",
+                        path=current_path,
+                        line=new_line or None,
+                        body=body,
+                    )
+                )
+            if new_line:
+                new_line += 1
+        elif raw_line.startswith("-") and not raw_line.startswith("---"):
+            continue
+        elif new_line:
+            new_line += 1
+    return comments[:30]
+
+
+def _parse_diff_new_line(hunk_header: str) -> int:
+    match = re.search(r"\+(\d+)", hunk_header)
+    return int(match.group(1)) if match else 0
+
+
+def _review_hint_for_added_line(line: str) -> str | None:
+    lowered = line.lower()
+    if "todo" in lowered or "fixme" in lowered:
+        return "Added TODO/FIXME. Confirm this is intentional before accepting review."
+    if lowered.strip() == "pass":
+        return "Added a pass stub. Confirm behavior is implemented or intentionally empty."
+    if "type: ignore" in lowered or "noqa" in lowered:
+        return "Added an ignore pragma. Confirm the underlying issue is understood."
+    if any(term in lowered for term in ["api_key", "token", "secret", "password"]):
+        return "Added secret-adjacent text. Secret scanner must stay clean before accepting."
+    return None
 
 
 def promote_task(ledger: MemoryLedger, manager: GitWorktreeManager, task_id: str) -> None:

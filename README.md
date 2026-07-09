@@ -68,8 +68,10 @@ vocr work <task-id> --fix --max-retries 2
 vocr log --limit 30
 vocr diff <task-id>
 vocr diff <task-id> --full
+vocr usage
 vocr clean
 vocr abort <task-id> --reason "Nicht mehr benoetigt"
+vocr serve-mcp
 vocr codex-config
 vocr inspect
 vocr review <task-id>
@@ -99,7 +101,9 @@ vocr doctor
 - `vocr dispatch` erzeugt im isolierten Worktree `.vocr/VOCR_TASK.md` mit Task, Context-Pack und Permission-Modus.
 - `vocr dispatch` erzeugt ausserdem `.vocr/scope.json` und `.vocr/AGENTS.md` als maschinenlesbare und menschenlesbare Scope-Policy fuer Worker.
 - Scope ist hart: `task.scope` wird in erlaubte Pfad-Globs uebersetzt. Aenderungen ausserhalb werden vor dem Commit blockiert und der Task wird `needs_changes`.
+- Der Pre-Commit Secret-Scanner prueft Diffs inklusive neuer untracked Dateien auf Keyword-Secrets, bekannte Token-Muster und Entropie-Hinweise. Treffer blockieren den Commit ohne Secret-Werte auszugeben.
 - `vocr review` sammelt lokale Git-Signale aus dem Worktree und akzeptiert nur mit expliziter Entscheidung.
+- `vocr review` erzeugt einfache Diff-Kommentare fuer geaenderte Dateien und riskante Added-Lines.
 - `vocr review` fuehrt sichere automatische Checks aus, z.B. Syntax-Check. Unbekannte Checks werden als manuell markiert, nicht blind gestartet.
 - `vocr work` fuehrt den echten Worker aus und erstellt bei Erfolg automatisch einen Task-Commit, wenn Aenderungen vorhanden sind und der Scope Guard keine Verletzung findet.
 - `vocr work --fix --max-retries 2` erlaubt begrenzte Nachbesserungen bis `review_ready`; Promote bleibt trotzdem manuell und review-gated.
@@ -107,6 +111,8 @@ vocr doctor
 - `vocr ship --preview` zeigt Merge-Preview, `vocr ship --pr` erstellt optional eine Draft-PR via GitHub CLI.
 - `vocr promote` fuehrt vor dem Merge einen Preflight aus und blockiert ohne akzeptiertes Review.
 - `vocr log`, `vocr diff`, `vocr clean` und `vocr abort` sind Housekeeping-Kommandos fuer Timeline, Task-Diff, verwaiste Worktrees und kontrollierten Abbruch.
+- `vocr usage` zeigt geschaetzte Token-/Provider-Telemetrie pro Task/Slice.
+- `vocr serve-mcp` startet einen minimalen plan-only MCP-Server fuer Status, Graphify-Kontext und VOCR-Planung.
 
 ## Tests
 
@@ -121,7 +127,7 @@ $env:PYTHONPATH="src"; python -m unittest discover -s tests
 - `.vocr/ledger.jsonl` bleibt im Repo als lokaler Ablauf-Speicher.
 - `.vocr/graph.json` speichert den kompakten Graphify-Index fuer tokenarme Agent-Kontexte.
 - Telemetrie-Events protokollieren Provider, Modell, Slice/Task und geschaetzte Token pro Worker-Lauf.
-- `docs/THREAT_MODEL.md` beschreibt Prompt-Injection-Grenzen, Scope Guard und den geplanten Pre-Commit Secret-Scanner.
+- `docs/THREAT_MODEL.md` beschreibt Prompt-Injection-Grenzen, Scope Guard und Secret-Scanning.
 
 ## Token-effizientes Arbeiten
 
@@ -147,8 +153,8 @@ Das Ziel ist: neue Agents bekommen eine Repo-Karte und nur die naechsten relevan
 
 ## Naechste Schritte
 
-1. Pre-Commit Secret-Scanner implementieren: Keyword, bekannte Patterns, Entropie-Heuristik; spaeter optional gitleaks-kompatibel.
-2. Reviewer Agent mit feineren Diff-Kommentaren und optionalen PR-Review-Kommentaren erweitern.
+1. Secret-Scanner optional gitleaks-kompatibel machen.
+2. Reviewer Agent mit optionalen PR-Review-Kommentaren erweitern.
 3. Echte Token-Usage aus Agents SDK/Codex auslesen, sobald stabil verfuegbar.
-4. Task-DAG und parallele Worktrees fuer unabhaengige Tasks ausbauen.
-5. VOCR optional selbst als MCP-Server exponieren.
+4. Task-DAG um explizite parallele Dispatch-Gruppen ausbauen.
+5. MCP-Server um review/promote Tools erweitern, weiterhin streng gate-gesteuert.

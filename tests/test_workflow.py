@@ -6,7 +6,9 @@ from pathlib import Path
 
 from vocr.graph.graphify import GraphStore, RepoGraphBuilder
 from vocr.guardrails.scope_guard import ScopeGuard
+from vocr.guardrails.secrets import scan_diff_for_secrets
 from vocr.memory.ledger import sanitize_payload
+from vocr.mcp.server import VocrMcpServer
 from vocr.models import AcceptanceCriterion, VocrTask
 from vocr.orchestration.workflow import create_vision, organize_slice
 
@@ -79,6 +81,47 @@ class WorkflowTests(unittest.TestCase):
 
         self.assertIn("src/sample/api.py (seed)", brief)
         self.assertIn("src/sample/service.py", brief)
+
+    def test_secret_scanner_blocks_added_secret_values(self) -> None:
+        diff = "\n".join(
+            [
+                "diff --git a/.env b/.env",
+                "+++ b/.env",
+                "@@ -0,0 +1 @@",
+                "+OPENAI_API_KEY=sk-testsecretvalue1234567890",
+            ]
+        )
+
+        result = scan_diff_for_secrets(diff)
+
+        self.assertTrue(result.blocked)
+        self.assertTrue(any(finding.rule_id == "keyword_assignment" for finding in result.findings))
+
+    def test_organize_slice_creates_sequential_task_dependencies(self) -> None:
+        request = (
+            GOOD_REQUEST
+            + " Tasks: Graphify Ranking; Scope Guard; README Update."
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            store = GraphStore(Path(tmp) / ".vocr")
+            store.save(RepoGraphBuilder(".").build())
+            vision = create_vision(request)
+            tasks = organize_slice(vision, vocr_home=str(Path(tmp) / ".vocr"))
+
+        self.assertEqual([task.title for task in tasks], ["Graphify Ranking", "Scope Guard", "README Update"])
+        self.assertEqual(tasks[0].dependencies, [])
+        self.assertEqual(tasks[1].dependencies, [tasks[0].id])
+        self.assertEqual(tasks[2].dependencies, [tasks[1].id])
+
+    def test_mcp_server_lists_vocr_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            server = VocrMcpServer(Path(tmp) / ".vocr")
+            response = server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+
+        tool_names = {tool["name"] for tool in response["result"]["tools"]}
+        self.assertIn("vocr_status", tool_names)
+        self.assertIn("vocr_context", tool_names)
+        self.assertIn("vocr_plan", tool_names)
 
 
 if __name__ == "__main__":

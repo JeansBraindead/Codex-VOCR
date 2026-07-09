@@ -26,6 +26,8 @@ only after gates pass."
 - Promote Gate: merge/PR promotion is explicit and never automatic.
 - Ledger redaction: obvious secret keys and `sk-...` style values are redacted
   before writing events.
+- Pre-commit secret scanning: worker diffs, including new untracked text files,
+  are scanned before `git add` and `git commit`.
 
 ## Prompt-Injection Risks
 
@@ -41,12 +43,12 @@ Minimal mitigation in this MVP:
 - Retry prompts mark diffs and test output as untrusted.
 - Workers are told to stop when task details are unclear.
 
-## Secret-Scanning Plan
+## Secret-Scanning
 
-Ledger redaction is not enough. The next hardening step is pre-commit diff
-scanning before `git add` and `git commit`.
+Ledger redaction is not enough. VOCR scans diffs before `git add` and
+`git commit`.
 
-Minimal scanner order:
+Current scanner order:
 
 1. Keyword keys: `api_key`, `token`, `secret`, `password`, `credential`.
 2. Known patterns: OpenAI-style `sk-...`, GitHub tokens, private key headers.
