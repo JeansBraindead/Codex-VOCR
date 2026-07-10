@@ -104,6 +104,7 @@ class BootstrapTests(unittest.TestCase):
             self.assertIn("$MyInvocation.MyCommand.Path", (result.repo_root / "install-vocr.ps1").read_text(encoding="utf-8"))
             self.assertIn("git clone $RepoUrl $target", (result.repo_root / "install-vocr.ps1").read_text(encoding="utf-8"))
             self.assertIn("[string]$InstallDir", (result.repo_root / "install-vocr.ps1").read_text(encoding="utf-8"))
+            self.assertIn("sys.version_info >= (3, 11)", (result.repo_root / "install-vocr.ps1").read_text(encoding="utf-8"))
             self.assertIn("%~dp0", (result.repo_root / "Start-VOCR.bat").read_text(encoding="utf-8"))
             self.assertNotIn(str(root), (result.repo_root / "start-vocr.ps1").read_text(encoding="utf-8"))
 

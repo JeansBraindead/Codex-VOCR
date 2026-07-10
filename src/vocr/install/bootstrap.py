@@ -277,7 +277,10 @@ function Resolve-Python {
         } catch {}
     }
     $python = Get-Command python -ErrorAction SilentlyContinue
-    if ($python) { return @{ Exe = "python"; Args = @() } }
+    if ($python) {
+        & python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" *> $null
+        if ($LASTEXITCODE -eq 0) { return @{ Exe = "python"; Args = @() } }
+    }
     throw "Python 3.11+ wurde nicht gefunden. Installiere Python 3.11 oder neuer und starte den Installer erneut."
 }
 

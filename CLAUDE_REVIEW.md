@@ -12,6 +12,7 @@ Claude ist kein VOCR-Produktbestandteil und kein Gate.
 - Retry bis 20:15 Europe/Berlin vorgesehen.
 - [19:17] Retry fuer Installer-Diff uebersprungen: CLI nicht gefunden.
 - [19:23] Retry fuer Installer-Clone-Diff uebersprungen: CLI nicht gefunden.
+- [19:27] Retry fuer Installer-Python-Version-Diff uebersprungen: CLI nicht gefunden.
 
 ## Reviews
 
