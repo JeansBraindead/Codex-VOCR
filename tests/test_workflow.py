@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 import os
 from pathlib import Path
@@ -9,7 +10,7 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from vocr.agents.runtime import diagnose_live_agent_error
-from vocr.cli.app import app, clean_artifacts, latest_open_clarification, write_review_artifact
+from vocr.cli.app import app, clean_archives, clean_artifacts, latest_open_clarification, write_review_artifact
 from vocr.graph.graphify import GraphStore, RepoGraphBuilder
 from vocr.config.env_file import provider_from_env, read_env_file, redact_env, update_env_file
 from vocr.guardrails.scope_guard import ScopeGuard
@@ -283,6 +284,37 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(result.archived_events, 10)
         self.assertEqual(len(remaining), 20)
         self.assertIsNotNone(result.archive_path)
+
+    def test_clean_archives_removes_only_old_jsonl_segments(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            old_home = os.environ.get("VOCR_HOME")
+            os.environ["VOCR_HOME"] = str(Path(tmp) / ".vocr")
+            try:
+                archive_root = Path(tmp) / ".vocr" / "archive"
+                archive_root.mkdir(parents=True)
+                old_archive = archive_root / "old.jsonl"
+                new_archive = archive_root / "new.jsonl"
+                ignored = archive_root / "notes.txt"
+                old_archive.write_text("old\n", encoding="utf-8")
+                new_archive.write_text("new\n", encoding="utf-8")
+                ignored.write_text("keep\n", encoding="utf-8")
+                old_time = time.time() - 10 * 24 * 60 * 60
+                os.utime(old_archive, (old_time, old_time))
+
+                removed = clean_archives(older_than_days=5)
+                old_exists = old_archive.exists()
+                new_exists = new_archive.exists()
+                ignored_exists = ignored.exists()
+            finally:
+                if old_home is None:
+                    os.environ.pop("VOCR_HOME", None)
+                else:
+                    os.environ["VOCR_HOME"] = old_home
+
+        self.assertEqual(removed, 1)
+        self.assertFalse(old_exists)
+        self.assertTrue(new_exists)
+        self.assertTrue(ignored_exists)
 
     def test_learning_boosts_graph_context_ranking(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

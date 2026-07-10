@@ -232,6 +232,7 @@ vocr secrets scan
 vocr test
 vocr clean
 vocr clean --artifacts --older-than-days 30
+vocr clean --archives --archive-older-than-days 90
 vocr abort <task-id> --reason "Nicht mehr benoetigt"
 vocr serve-mcp
 vocr codex-config
@@ -337,4 +338,4 @@ Das Ziel ist: neue Agents bekommen eine Repo-Karte und nur die naechsten relevan
 2. Echte Token-Usage aus Agents SDK/Codex auslesen, sobald stabil verfuegbar.
 3. MCP-Server um explizit bestaetigte Promote-Aktionen erweitern, weiterhin streng gate-gesteuert.
 4. Learning-Signale um Erfolgsdauer, Retry-Anzahl und Clarification-Qualitaet erweitern.
-5. Housekeeping-Retention fuer `.vocr/archive/` und Artefakte feiner konfigurierbar machen.
+5. Reviewer-/Learning-Signale nach echten Beta-Laeufen kalibrieren.

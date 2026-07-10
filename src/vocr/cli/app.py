@@ -1178,6 +1178,8 @@ def self_test() -> None:
 def clean_worktrees(
     artifacts: bool = typer.Option(False, "--artifacts", help="Also remove old .vocr/artifacts entries."),
     older_than_days: int = typer.Option(30, "--older-than-days", min=1, help="Artifact retention window."),
+    archives: bool = typer.Option(False, "--archives", help="Also remove old .vocr/archive ledger segments."),
+    archive_older_than_days: int = typer.Option(90, "--archive-older-than-days", min=1, help="Archive retention window."),
 ) -> None:
     try:
         message = GitWorktreeManager().prune_worktrees()
@@ -1187,6 +1189,9 @@ def clean_worktrees(
     if artifacts:
         removed = clean_artifacts(older_than_days=older_than_days)
         console.print(f"[green]Artifact clean complete[/green] removed={removed}")
+    if archives:
+        removed = clean_archives(older_than_days=archive_older_than_days)
+        console.print(f"[green]Archive clean complete[/green] removed={removed}")
 
 
 def clean_artifacts(*, older_than_days: int) -> int:
@@ -1207,6 +1212,21 @@ def clean_artifacts(*, older_than_days: int) -> int:
             elif child.is_dir():
                 child.rmdir()
         path.rmdir()
+        removed += 1
+    return removed
+
+
+def clean_archives(*, older_than_days: int) -> int:
+    root = ledger().root / "archive"
+    if not root.exists():
+        return 0
+    cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+    removed = 0
+    for path in root.glob("*.jsonl"):
+        modified = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        if modified >= cutoff:
+            continue
+        path.unlink()
         removed += 1
     return removed
 

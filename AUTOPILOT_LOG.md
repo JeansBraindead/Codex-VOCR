@@ -4,7 +4,7 @@
 
 - Branch: `vocr-autopilot-2026-07-10`
 - Phasen fertig / angefangen: 0 angefangen; Installer-Fix abgeschlossen; Phase-Spec `VOCR_Phasen_Upgrade.md` fehlt.
-- Tasks done / blocked / needs-human: 8 done / 0 blocked / 1 needs-human.
+- Tasks done / blocked / needs-human: 9 done / 0 blocked / 1 needs-human.
 - Commits: noch keine auf diesem Branch.
 - Beta-ready: sichtbarer Windows-Installer im Repo-Root, Clone-aus-leerem-Ordner, portable Script-Generierung, Bootstrap-Tests gruen.
 - Rollout offen: echte Review durch User, fehlende Phasen-Spec nachreichen, Installer manuell auf Windows doppelklicken.
@@ -27,3 +27,4 @@
 [19:40] PHASE installer - Start-Script Native Commands hart auswerten - DONE (Score 3/3) - commit pending - lokal: compileall/unittest/PS syntax gruen - start-vocr.ps1 stoppt bei pip/bootstrap/start-Fehlern.
 [19:43] PHASE installer - Windows-Skript-Zeilenenden fixieren - DONE (Score 2/2) - commit pending - lokal: compileall/unittest/diff-check gruen - .ps1/.bat sind in .gitattributes auf CRLF gesetzt.
 [19:48] PHASE installer - CLI Bootstrap Clone-Option - DONE (Score 4/4) - commit pending - lokal: compileall/unittest/help gruen - `vocr bootstrap --clone --install-dir ...` kann aus leerem Ordner clonen.
+[19:54] PHASE housekeeping - Archive-Retention fuer clean - DONE (Score 3/3) - commit pending - lokal: compileall/unittest/diff-check gruen - `vocr clean --archives --archive-older-than-days N` entfernt alte Ledger-Archive.
