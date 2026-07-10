@@ -13,14 +13,16 @@ from typer.testing import CliRunner
 from vocr.agents.runtime import diagnose_live_agent_error
 from vocr.cli.app import (
     app,
+    fetch_model_list,
     build_pr_review_comments,
     clean_archives,
     clean_artifacts,
+    _local_api_key,
     latest_open_clarification,
     write_review_artifact,
 )
 from vocr.graph.graphify import GraphStore, RepoGraphBuilder
-from vocr.config.env_file import provider_from_env, read_env_file, redact_env, update_env_file
+from vocr.config.env_file import provider_from_env, read_env_file, read_model_env, redact_env, update_env_file
 from vocr.guardrails.scope_guard import ScopeGuard
 from vocr.guardrails.secrets import _gitleaks_command, scan_diff_for_secrets
 from vocr.memory.ledger import sanitize_payload
@@ -280,6 +282,61 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(provider_from_env(values), "local-openai-compatible")
         self.assertEqual(values["OPENAI_MODEL"], "local-model")
         self.assertEqual(redact_env(values)["OPENAI_API_KEY"], "[set]")
+
+    def test_model_env_includes_process_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ,
+            {"OPENAI_API_KEY": "process-token", "OPENAI_MODEL": "process-model"},
+            clear=False,
+        ):
+            env_path = Path(tmp) / ".env"
+            update_env_file({"OPENAI_MODEL": "file-model"}, env_path)
+
+            values = read_model_env(env_path)
+
+        self.assertEqual(values["OPENAI_API_KEY"], "process-token")
+        self.assertEqual(values["OPENAI_MODEL"], "process-model")
+
+    def test_model_status_shows_process_key_redacted(self) -> None:
+        result = CliRunner().invoke(app, ["model", "status"], env={"OPENAI_API_KEY": "process-token"})
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("openai", result.output)
+        self.assertIn("[set]", result.output)
+        self.assertNotIn("process-token", result.output)
+
+    def test_fetch_model_list_sends_bearer_token_when_configured(self) -> None:
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self) -> bytes:
+                return b'{"data":[{"id":"local-model"}]}'
+
+        captured = {}
+
+        def fake_urlopen(request, timeout):
+            captured["authorization"] = request.get_header("Authorization")
+            captured["timeout"] = timeout
+            return FakeResponse()
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            payload = fetch_model_list("http://localhost:1234/v1", api_key="lm-token")
+
+        self.assertEqual(payload["data"][0]["id"], "local-model")
+        self.assertEqual(captured["authorization"], "Bearer lm-token")
+        self.assertEqual(captured["timeout"], 5)
+
+    def test_local_model_check_does_not_send_cloud_key_to_default_localhost(self) -> None:
+        self.assertIsNone(_local_api_key({"OPENAI_API_KEY": "cloud-key"}, None))
+        self.assertEqual(
+            _local_api_key({"OPENAI_BASE_URL": "http://localhost:1234/v1", "OPENAI_API_KEY": "lm-token"}, None),
+            "lm-token",
+        )
+        self.assertEqual(_local_api_key({"OPENAI_API_KEY": "lm-token"}, "http://localhost:1234/v1"), "lm-token")
 
     def test_learning_store_aggregates_reviews_without_raw_diff(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

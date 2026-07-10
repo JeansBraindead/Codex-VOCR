@@ -241,6 +241,7 @@ vocr model lmstudio --model "dein-modellname-aus-model-list"
 Status pruefen:
 
 ```powershell
+vocr model check
 vocr model status
 ```
 
@@ -277,6 +278,13 @@ deaktivieren oder VOCR mit einem gueltigen lokalen Token konfigurieren:
 
 ```powershell
 vocr model local --model "dein-modellname" --base-url http://localhost:1234/v1 --api-key "dein-lm-studio-token"
+```
+
+Oder kuerzer fuer LM Studio:
+
+```powershell
+vocr model lmstudio --model "dein-modellname" --api-key "dein-lm-studio-token"
+vocr model check
 ```
 
 VOCR behandelt diesen Fehler nicht als erfolgreichen Live-Agent-Lauf. Der

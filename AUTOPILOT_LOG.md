@@ -4,8 +4,8 @@
 
 - Branch: `vocr-autopilot-2026-07-10`
 - Phasen fertig / angefangen: 0 angefangen; Installer-Fix abgeschlossen; Phase-Spec `VOCR_Phasen_Upgrade.md` fehlt.
-- Tasks done / blocked / needs-human: 15 done / 0 blocked / 1 needs-human.
-- Commits: 15 auf diesem Branch nach Log-Commit.
+- Tasks done / blocked / needs-human: 16 done / 0 blocked / 1 needs-human.
+- Commits: 16 auf diesem Branch nach LM-Diagnose-Fix.
 - Beta-ready: sichtbarer Windows-Installer im Repo-Root, Clone-aus-leerem-Ordner, portable Script-Generierung, Bootstrap-Tests und Teststage-Smokes gruen.
 - Rollout offen: echte Review durch User, fehlende Phasen-Spec nachreichen, Installer manuell auf Windows doppelklicken, PR-Review-Posting gegen echten Test-PR validieren.
 - Claude Review / Resume / Todo: siehe `CLAUDE_REVIEW.md`.
@@ -34,3 +34,4 @@
 [resume] PHASE review - Optionaler GitHub PR-Review - DONE (Score 3/3) - commit pending - lokal: compileall/unittest/help/diff-check gruen - `vocr review --post-pr-review` nutzt Inline-Kommentare mit sicherer Datei-/Zeilenposition und faellt sonst auf normalen PR-Review zurueck.
 [resume] PHASE learning - Clarification-Qualitaetsproxy - DONE (Score 3/3) - commit pending - lokal: compileall/unittest/diff-check gruen - LearningSnapshot aggregiert Answer-Rate und offene Rueckfrage-Topics ohne Antwort-Rohtexte.
 [resume] TESTSTAGE - Lokale Smoke-Abnahme - DONE (Score 4/4) - commit pending - `vocr test`, `doctor`, `worker doctor`, `graphify`, `learn`, `context --learning` und `secrets scan` gruen.
+[resume] PHASE model - LM-Studio/Auth-Diagnose repariert - DONE (Score 4/4) - commit pending - lokal: compileall/unittest/help/diff-check gruen - Model-Status nutzt effektive Env, zeigt `[set]`, `model list/check` senden lokale Tokens nur bei lokaler Base-URL und geben klare 401-Diagnose aus.

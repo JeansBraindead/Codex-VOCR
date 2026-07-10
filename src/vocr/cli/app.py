@@ -27,7 +27,7 @@ from vocr.agents.runtime import (
 from vocr.bus.bus import MessageBus
 from vocr.codex.config import codex_available, write_mcp_config
 from vocr.codex.mcp_client import CodexMcpClient
-from vocr.config.env_file import provider_from_env, read_env_file, redact_env, update_env_file
+from vocr.config.env_file import provider_from_env, read_env_file, read_model_env, redact_env, update_env_file
 from vocr.git.worktrees import GitWorktreeError, GitWorktreeManager
 from vocr.graph.graphify import GraphStore, RepoGraphBuilder
 from vocr.guardrails.scope_guard import ScopeGuard
@@ -430,15 +430,15 @@ def codex_config() -> None:
 
 @model_app.command("status")
 def model_status() -> None:
-    values = read_env_file(env_path())
+    values = read_model_env(env_path())
     redacted = redact_env(values)
     table = Table(title="VOCR Model Config")
     table.add_column("Setting")
     table.add_column("Value")
     table.add_row("Provider", provider_from_env(values))
-    table.add_row("OPENAI_BASE_URL", redacted.get("OPENAI_BASE_URL", "-") or "-")
-    table.add_row("OPENAI_MODEL", redacted.get("OPENAI_MODEL", "-") or "-")
-    table.add_row("OPENAI_API_KEY", redacted.get("OPENAI_API_KEY", "-") or "-")
+    table.add_row("OPENAI_BASE_URL", safe_text(redacted.get("OPENAI_BASE_URL", "-") or "-"))
+    table.add_row("OPENAI_MODEL", safe_text(redacted.get("OPENAI_MODEL", "-") or "-"))
+    table.add_row("OPENAI_API_KEY", safe_text(redacted.get("OPENAI_API_KEY", "-") or "-"))
     console.print(table)
 
 
@@ -474,8 +474,13 @@ def model_local(
 def model_lmstudio(
     model: str = typer.Option(..., "--model", "-m", help="Model id loaded in LM Studio."),
     port: int = typer.Option(1234, "--port", help="LM Studio local server port."),
+    api_key: str = typer.Option(
+        "lm-studio",
+        "--api-key",
+        help="Local LM Studio API token or placeholder when LM Studio Auth is disabled.",
+    ),
 ) -> None:
-    model_local(model=model, base_url=f"http://localhost:{port}/v1", api_key="lm-studio")
+    model_local(model=model, base_url=f"http://localhost:{port}/v1", api_key=api_key)
 
 
 @model_app.command("openai")
@@ -511,11 +516,10 @@ def model_off(
 def model_list(
     base_url: str | None = typer.Option(None, "--base-url", help="Override local OpenAI-compatible base URL."),
 ) -> None:
-    values = read_env_file(env_path())
+    values = read_model_env(env_path())
     url = (base_url or values.get("OPENAI_BASE_URL") or "http://localhost:1234/v1").rstrip("/")
     try:
-        with urllib.request.urlopen(f"{url}/models", timeout=5) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        payload = fetch_model_list(url, api_key=_local_api_key(values, base_url))
     except urllib.error.HTTPError as exc:
         if exc.code == 401:
             raise typer.BadParameter(
@@ -530,6 +534,41 @@ def model_list(
         model_id = item.get("id") if isinstance(item, dict) else str(item)
         table.add_row(safe_text(str(model_id)))
     console.print(table)
+
+
+@model_app.command("check")
+def model_check(
+    base_url: str | None = typer.Option(None, "--base-url", help="Override local OpenAI-compatible base URL."),
+) -> None:
+    values = read_model_env(env_path())
+    url = (base_url or values.get("OPENAI_BASE_URL") or "http://localhost:1234/v1").rstrip("/")
+    try:
+        payload = fetch_model_list(url, api_key=_local_api_key(values, base_url))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            raise typer.BadParameter(
+                diagnose_live_agent_error(exc, provider="local-openai-compatible", base_url=url)
+            ) from exc
+        raise typer.BadParameter(f"Model check failed for {url}: {exc}") from exc
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise typer.BadParameter(f"Model check failed for {url}: {exc}") from exc
+    count = len(payload.get("data", []))
+    console.print(f"[green]Local OpenAI-compatible model endpoint reachable[/green] {url}")
+    console.print(f"Models visible: {count}")
+
+
+def fetch_model_list(url: str, *, api_key: str | None = None) -> dict:
+    request = urllib.request.Request(f"{url}/models")
+    if api_key:
+        request.add_header("Authorization", f"Bearer {api_key}")
+    with urllib.request.urlopen(request, timeout=5) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _local_api_key(values: dict[str, str], base_url_override: str | None) -> str | None:
+    if base_url_override or values.get("OPENAI_BASE_URL"):
+        return values.get("OPENAI_API_KEY")
+    return None
 
 
 @secrets_app.command("scan")
@@ -1346,6 +1385,6 @@ def doctor() -> None:
     table.add_row("Worktree root", git_status["worktree_root"])
     table.add_row("Approve-all grants", str(len(store.permission_grants())))
     table.add_row("Codex CLI", "yes" if codex_available() else "missing")
-    table.add_row("Live model provider", provider_from_env(read_env_file(env_path())))
+    table.add_row("Live model provider", provider_from_env(read_model_env(env_path())))
     table.add_row("Codex MCP config", str(store.root / "codex-mcp.json"))
     console.print(table)
