@@ -234,25 +234,9 @@ class Bootstrapper:
         install_script = repo_root / "install-vocr.ps1"
         start_script = repo_root / "start-vocr.ps1"
         bat_script = repo_root / "Start-VOCR.bat"
-        bootstrap_line = "python -m vocr.main bootstrap --no-start --write-scripts"
-        start_line = "python -m vocr.main start"
-        ps_header = (
-            "$ErrorActionPreference = 'Stop'\n"
-            f"Set-Location -LiteralPath '{repo_root}'\n"
-            "if (-not (Test-Path .venv)) { python -m venv .venv }\n"
-            ". .\\.venv\\Scripts\\Activate.ps1\n"
-        )
-        install_script.write_text(ps_header + "python -m pip install -e .\n" + bootstrap_line + "\n", encoding="utf-8")
-        start_script.write_text(ps_header + "python -m pip install -e .\n" + bootstrap_line + "\n" + start_line + "\n", encoding="utf-8")
-        bat_script.write_text(
-            "@echo off\r\n"
-            f"cd /d \"{repo_root}\"\r\n"
-            "if not exist .venv\\Scripts\\python.exe python -m venv .venv\r\n"
-            ".venv\\Scripts\\python.exe -m pip install -e .\r\n"
-            ".venv\\Scripts\\python.exe -m vocr.main bootstrap --no-start\r\n"
-            ".venv\\Scripts\\python.exe -m vocr.main start\r\n",
-            encoding="utf-8",
-        )
+        install_script.write_text(INSTALL_PS1, encoding="utf-8")
+        start_script.write_text(START_PS1, encoding="utf-8")
+        bat_script.write_text(START_BAT, encoding="utf-8")
 
     def _run(
         self,
@@ -269,3 +253,153 @@ class Bootstrapper:
             check=False,
             env=env,
         )
+
+
+INSTALL_PS1 = r'''param(
+    [switch]$Tests,
+    [switch]$NoStart
+)
+
+$ErrorActionPreference = "Stop"
+
+function Write-Step($Message) {
+    Write-Host "[VOCR] $Message" -ForegroundColor Cyan
+}
+
+function Resolve-Python {
+    $py = Get-Command py -ErrorAction SilentlyContinue
+    if ($py) {
+        try {
+            & py -3.11 --version *> $null
+            if ($LASTEXITCODE -eq 0) { return @{ Exe = "py"; Args = @("-3.11") } }
+        } catch {}
+    }
+    $python = Get-Command python -ErrorAction SilentlyContinue
+    if ($python) { return @{ Exe = "python"; Args = @() } }
+    throw "Python 3.11+ wurde nicht gefunden. Installiere Python 3.11 oder neuer und starte den Installer erneut."
+}
+
+try {
+    $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+    Set-Location -LiteralPath $repoRoot
+
+    if (-not (Test-Path "pyproject.toml")) {
+        throw "Hier liegt kein VOCR-Repo: pyproject.toml fehlt. Starte dieses Skript aus dem geklonten Codex-VOCR-Ordner."
+    }
+
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        throw "Git wurde nicht gefunden. Installiere Git fuer Windows: https://git-scm.com/download/win"
+    }
+
+    $pythonCmd = Resolve-Python
+    Write-Step "Repo: $repoRoot"
+
+    if (-not (Test-Path ".venv")) {
+        Write-Step "Lege .venv an"
+        & $pythonCmd.Exe @($pythonCmd.Args) -m venv .venv
+    } else {
+        Write-Step "Nutze vorhandene .venv"
+    }
+
+    $venvPython = Join-Path $repoRoot ".venv\Scripts\python.exe"
+    if (-not (Test-Path $venvPython)) {
+        throw ".venv wurde gefunden, aber .venv\Scripts\python.exe fehlt. Bitte .venv pruefen oder neu anlegen."
+    }
+
+    Write-Step "Installiere VOCR editable"
+    & $venvPython -m pip install -e .
+
+    $bootstrapArgs = @("bootstrap", "--no-start", "--write-scripts")
+    if ($Tests) { $bootstrapArgs += "--tests" }
+
+    Write-Step "Fuehre VOCR Bootstrap aus"
+    & $venvPython -m vocr.main @bootstrapArgs
+
+    if (-not $NoStart) {
+        Write-Step "Starte VOCR Normalmodus"
+        & $venvPython -m vocr.main start
+    } else {
+        Write-Step "Installation fertig. Starte spaeter mit: .\start-vocr.ps1"
+    }
+} catch {
+    Write-Host ""
+    Write-Host "VOCR Installation konnte nicht abgeschlossen werden:" -ForegroundColor Red
+    Write-Host $_.Exception.Message -ForegroundColor Red
+    Write-Host ""
+    Write-Host "Naechste Schritte:" -ForegroundColor Yellow
+    Write-Host "1. Pruefe, ob du im geklonten Codex-VOCR-Repo bist."
+    Write-Host "2. Pruefe Python 3.11+: python --version"
+    Write-Host "3. Pruefe Git: git --version"
+    Write-Host "4. Wenn PowerShell blockiert, nutze Start-VOCR.bat."
+    exit 1
+}
+'''
+
+
+START_PS1 = r'''param(
+    [switch]$Console
+)
+
+$ErrorActionPreference = "Stop"
+
+try {
+    $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+    Set-Location -LiteralPath $repoRoot
+
+    if (-not (Test-Path "pyproject.toml")) {
+        throw "Hier liegt kein VOCR-Repo: pyproject.toml fehlt. Starte dieses Skript aus dem geklonten Codex-VOCR-Ordner."
+    }
+
+    if (-not (Test-Path ".venv\Scripts\python.exe")) {
+        Write-Host "[VOCR] .venv fehlt, starte Installer zuerst." -ForegroundColor Yellow
+        & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot "install-vocr.ps1") -NoStart
+    }
+
+    $venvPython = Join-Path $repoRoot ".venv\Scripts\python.exe"
+    & $venvPython -m pip install -e .
+    & $venvPython -m vocr.main bootstrap --no-start
+
+    if ($Console) {
+        & $venvPython -m vocr.main start --console
+    } else {
+        & $venvPython -m vocr.main start
+    }
+} catch {
+    Write-Host ""
+    Write-Host "VOCR Start konnte nicht abgeschlossen werden:" -ForegroundColor Red
+    Write-Host $_.Exception.Message -ForegroundColor Red
+    Write-Host ""
+    Write-Host "Fallback: Starte .\Start-VOCR.bat oder fuehre .\install-vocr.ps1 erneut aus." -ForegroundColor Yellow
+    exit 1
+}
+'''
+
+
+START_BAT = r'''@echo off
+setlocal
+cd /d "%~dp0"
+
+where powershell >nul 2>nul
+if %ERRORLEVEL%==0 (
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0start-vocr.ps1"
+  exit /b %ERRORLEVEL%
+)
+
+if not exist ".venv\Scripts\python.exe" (
+  python -m venv .venv
+  if errorlevel 1 goto failed
+)
+
+".venv\Scripts\python.exe" -m pip install -e .
+if errorlevel 1 goto failed
+".venv\Scripts\python.exe" -m vocr.main bootstrap --no-start
+if errorlevel 1 goto failed
+".venv\Scripts\python.exe" -m vocr.main start
+exit /b %ERRORLEVEL%
+
+:failed
+echo.
+echo VOCR konnte nicht gestartet werden.
+echo Pruefe Python 3.11+, Git und ob dieses Skript im Codex-VOCR-Repo liegt.
+exit /b 1
+'''

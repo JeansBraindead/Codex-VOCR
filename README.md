@@ -27,15 +27,23 @@ vocr start
 Einfacher und robuster fuer normale Nutzer:
 
 ```powershell
-vocr bootstrap --write-scripts --tests
-vocr start
+.\install-vocr.ps1
 ```
 
-`vocr bootstrap` erkennt, ob es im VOCR-Repo laeuft, legt `.venv` bei Bedarf an,
-installiert VOCR nur neben einem echten `pyproject.toml`, initialisiert `.vocr`,
-erzeugt Graphify und respektiert vorhandene `.env`-Werte. Wenn der Ordner falsch
-ist, Git fehlt oder Python zu alt ist, gibt VOCR eine klare Diagnose statt eines
-rohen Pip-Tracebacks aus.
+Alternativ bei blockierter PowerShell:
+
+```powershell
+.\Start-VOCR.bat
+```
+
+Die Installer-Skripte liegen sichtbar im Repo-Root: `install-vocr.ps1`,
+`start-vocr.ps1` und `Start-VOCR.bat`. Sie wechseln automatisch in ihr eigenes
+Repo-Verzeichnis, legen `.venv` bei Bedarf an, installieren VOCR editable,
+fuehren Bootstrap/Graphify aus und starten den Normalmodus.
+
+`vocr bootstrap` bleibt der Expert-/CLI-Pfad. Er erkennt, ob er im VOCR-Repo
+laeuft, installiert nur neben einem echten `pyproject.toml`, initialisiert
+`.vocr`, erzeugt Graphify und respektiert vorhandene `.env`-Werte.
 
 Optional kann VOCR lokale oder Cloud-Modelle fuer den Live-Agent-Pfad nutzen. Der User muss dafuer nicht in `.env` schreiben:
 

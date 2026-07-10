@@ -68,12 +68,16 @@ Erfolgskriterien:
 Bootstrap pruefen:
 
 ```powershell
+Test-Path .\install-vocr.ps1
+Test-Path .\start-vocr.ps1
+Test-Path .\Start-VOCR.bat
 vocr bootstrap --tests --write-scripts --no-start
 vocr bootstrap --no-start
 ```
 
 Erfolgskriterien:
 
+- Die drei Installer-/Startskripte liegen sichtbar im Repo-Root.
 - Mehrfaches Ausfuehren bleibt sicher.
 - `.venv` wird angelegt oder wiederverwendet.
 - `.env` wird nicht ueberschrieben.

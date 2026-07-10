@@ -101,6 +101,16 @@ class BootstrapTests(unittest.TestCase):
             self.assertTrue((result.repo_root / "install-vocr.ps1").exists())
             self.assertTrue((result.repo_root / "start-vocr.ps1").exists())
             self.assertTrue((result.repo_root / "Start-VOCR.bat").exists())
+            self.assertIn("$MyInvocation.MyCommand.Path", (result.repo_root / "install-vocr.ps1").read_text(encoding="utf-8"))
+            self.assertIn("%~dp0", (result.repo_root / "Start-VOCR.bat").read_text(encoding="utf-8"))
+            self.assertNotIn(str(root), (result.repo_root / "start-vocr.ps1").read_text(encoding="utf-8"))
+
+    def test_repo_contains_visible_windows_installer_scripts(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+
+        self.assertTrue((repo_root / "install-vocr.ps1").exists())
+        self.assertTrue((repo_root / "start-vocr.ps1").exists())
+        self.assertTrue((repo_root / "Start-VOCR.bat").exists())
 
     def test_bootstrap_does_not_overwrite_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

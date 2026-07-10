@@ -63,20 +63,30 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 
 ## 4. VOCR installieren
 
-Im aktivierten venv:
+Normaler Windows-Weg:
+
+```powershell
+.\install-vocr.ps1
+```
+
+Wenn PowerShell blockiert oder du doppelklicken willst:
+
+```powershell
+.\Start-VOCR.bat
+```
+
+Die sichtbaren Installer-Dateien liegen direkt im Repo-Root:
+
+- `install-vocr.ps1`: installiert und startet VOCR.
+- `start-vocr.ps1`: prueft die Umgebung und startet VOCR erneut.
+- `Start-VOCR.bat`: Fallback fuer blockierte PowerShell ExecutionPolicy.
+
+Expert-Weg im aktivierten venv:
 
 ```powershell
 pip install -e .
-```
-
-Pruefen:
-
-```powershell
 vocr --help
 ```
-
-Erwartung: Die Hilfe zeigt Kommandos wie `start`, `vision`, `model`, `worker`,
-`dispatch-ready`, `work-ready`, `learn`, `compact`, `test`.
 
 ## 5. Robuster Bootstrap
 
