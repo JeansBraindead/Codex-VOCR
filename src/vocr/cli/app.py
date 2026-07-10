@@ -18,7 +18,12 @@ from rich.markup import escape
 from rich.table import Table
 
 from vocr.agents.common import live_model_config
-from vocr.agents.runtime import create_live_task_plan, create_live_vision, live_agents_available
+from vocr.agents.runtime import (
+    create_live_task_plan,
+    create_live_vision,
+    diagnose_live_agent_error,
+    live_agents_available,
+)
 from vocr.bus.bus import MessageBus
 from vocr.codex.config import codex_available, write_mcp_config
 from vocr.codex.mcp_client import CodexMcpClient
@@ -27,6 +32,7 @@ from vocr.git.worktrees import GitWorktreeError, GitWorktreeManager
 from vocr.graph.graphify import GraphStore, RepoGraphBuilder
 from vocr.guardrails.scope_guard import ScopeGuard
 from vocr.guardrails.secrets import scan_diff_for_secrets
+from vocr.install.bootstrap import BootstrapError, BootstrapResult, Bootstrapper
 from vocr.memory.ledger import MemoryLedger, sanitize_payload
 from vocr.memory.learning import LearningStore
 from vocr.mcp.server import serve_stdio
@@ -51,6 +57,7 @@ from vocr.orchestration.workflow import (
     render_task_template,
 )
 from vocr.orchestration.readiness import assess_request_readiness
+from vocr.ui.normal_mode import NormalModeUiError, launch_console_mode, launch_normal_mode
 
 app = typer.Typer(help="VOCR: Vision / Organize / Code / Review")
 model_app = typer.Typer(help="Configure local or cloud LLMs without editing files.")
@@ -119,6 +126,52 @@ def record_worker_telemetry(store: MemoryLedger, task_id: str, result, prompt_te
     )
     telemetry.token_usage.total_tokens = total
     store.append(LedgerEventType.telemetry_recorded, telemetry)
+
+
+def print_live_agent_fallback(component: str, exc: BaseException) -> None:
+    console.print(f"[yellow]{component} nicht verfuegbar, lokaler Fallback aktiv.[/yellow]")
+    console.print(safe_text(diagnose_live_agent_error(exc)))
+
+
+def print_bootstrap_result(result: BootstrapResult) -> None:
+    table = Table(title="VOCR Bootstrap")
+    table.add_column("Step")
+    table.add_column("Status")
+    table.add_column("Message")
+    for step in result.steps:
+        table.add_row(step.name, step.status, safe_text(step.message))
+    console.print(table)
+
+
+def run_bootstrap_or_exit(
+    *,
+    run_tests: bool,
+    write_scripts: bool,
+    allow_install: bool,
+) -> BootstrapResult:
+    try:
+        result = Bootstrapper(Path.cwd()).bootstrap(
+            run_tests=run_tests,
+            write_scripts=write_scripts,
+            allow_install=allow_install,
+        )
+    except BootstrapError as exc:
+        console.print(f"[red]{safe_text(str(exc))}[/red]")
+        raise typer.Exit(code=1) from exc
+    print_bootstrap_result(result)
+    return result
+
+
+def prepare_start_or_exit() -> BootstrapResult:
+    try:
+        result = Bootstrapper(Path.cwd()).prepare_start()
+    except BootstrapError as exc:
+        console.print(f"[red]{safe_text(str(exc))}[/red]")
+        raise typer.Exit(code=1) from exc
+    notable = [step for step in result.steps if step.status in {"changed", "warn"}]
+    if notable:
+        print_bootstrap_result(BootstrapResult(repo_root=result.repo_root, steps=notable))
+    return result
 
 
 def record_scope_block(store: MemoryLedger, task_id: str, issues: list[str]) -> None:
@@ -232,7 +285,7 @@ def run_vision_pipeline(
         try:
             item = asyncio.run(create_live_vision(request))
         except Exception as exc:
-            console.print(f"[yellow]Live agent failed, using local fallback:[/yellow] {safe_text(str(exc))}")
+            print_live_agent_fallback("Live Visionary", exc)
     elif live_agent:
         console.print("[yellow]No live OpenAI-compatible model config found, using local fallback.[/yellow]")
     store.append(LedgerEventType.vision_created, item)
@@ -259,7 +312,7 @@ def run_vision_pipeline(
                     task.context_query = task.context_query or item.goal
                     task.context_pack = graph_store().context_pack(query=task.context_query, limit=12)
         except Exception as exc:
-            console.print(f"[yellow]Live organizer failed, using local fallback:[/yellow] {safe_text(str(exc))}")
+            print_live_agent_fallback("Live Organizer", exc)
 
     persist_tasks(store, tasks)
 
@@ -282,6 +335,66 @@ def setup() -> None:
     store.append(LedgerEventType.setup, {"message": "VOCR workspace initialized."})
     console.print(f"[green]VOCR workspace initialized at {store.root}[/green]")
     console.print(f"[green]Codex MCP config written[/green] {mcp_path}")
+
+
+@app.command("bootstrap")
+def bootstrap(
+    run_tests: bool = typer.Option(False, "--tests", help="Run compileall and unittest after setup."),
+    write_scripts: bool = typer.Option(False, "--write-scripts", help="Write install-vocr.ps1, start-vocr.ps1 and Start-VOCR.bat."),
+    start_after: bool = typer.Option(False, "--start/--no-start", help="Open normal Visionary mode after bootstrap."),
+    console_only: bool = typer.Option(False, "--console", help="With --start, use the terminal fallback."),
+) -> None:
+    """Prepare the local VOCR repo safely and idempotently."""
+
+    result = run_bootstrap_or_exit(run_tests=run_tests, write_scripts=write_scripts, allow_install=True)
+    if start_after:
+        open_normal_mode(result.repo_root, console_only=console_only)
+    else:
+        console.print("[green]Bootstrap complete.[/green] Start with: vocr start")
+
+
+@app.command("install")
+def install(
+    run_tests: bool = typer.Option(False, "--tests", help="Run compileall and unittest after setup."),
+    write_scripts: bool = typer.Option(True, "--scripts/--no-scripts", help="Write Windows helper scripts."),
+) -> None:
+    """Alias for bootstrap focused on installation."""
+
+    run_bootstrap_or_exit(run_tests=run_tests, write_scripts=write_scripts, allow_install=True)
+    console.print("[green]Installation ready.[/green] Start with: vocr start")
+
+
+@app.command("start")
+def start_normal_mode(
+    console_only: bool = typer.Option(
+        False,
+        "--console",
+        help="Use the terminal fallback instead of the local GUI.",
+    ),
+) -> None:
+    """Open the non-technical local GUI Visionary conversation."""
+
+    result = prepare_start_or_exit()
+    open_normal_mode(result.repo_root, console_only=console_only)
+
+
+def open_normal_mode(repo_root: Path, *, console_only: bool) -> None:
+    if console_only:
+        launch_console_mode(repo_root)
+        return
+    try:
+        launch_normal_mode(repo_root)
+    except NormalModeUiError as exc:
+        console.print(f"[yellow]Lokales Fenster nicht verfuegbar:[/yellow] {safe_text(str(exc))}")
+        console.print("[cyan]Ich starte den ruhigen Dialog stattdessen im Terminal.[/cyan]")
+        launch_console_mode(repo_root)
+
+
+@app.command("gui")
+def gui() -> None:
+    """Alias for the local Visionary GUI."""
+
+    start_normal_mode(console_only=False)
 
 
 @app.command("codex-config")
@@ -379,6 +492,12 @@ def model_list(
     try:
         with urllib.request.urlopen(f"{url}/models", timeout=5) as response:
             payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            raise typer.BadParameter(
+                diagnose_live_agent_error(exc, provider="local-openai-compatible", base_url=url)
+            ) from exc
+        raise typer.BadParameter(f"Could not list models from {url}: {exc}") from exc
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         raise typer.BadParameter(f"Could not list models from {url}: {exc}") from exc
     table = Table(title=f"Models at {url}")
@@ -611,7 +730,7 @@ def organize(
             plan = asyncio.run(create_live_task_plan(slice_item, context_pack))
             tasks = plan.tasks or tasks
         except Exception as exc:
-            console.print(f"[yellow]Live organizer failed, using local fallback:[/yellow] {safe_text(str(exc))}")
+            print_live_agent_fallback("Live Organizer", exc)
     elif live_agent:
         console.print("[yellow]No live OpenAI-compatible model config found, using local fallback.[/yellow]")
     for task in tasks:

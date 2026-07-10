@@ -75,20 +75,59 @@ Pruefen:
 vocr --help
 ```
 
-Erwartung: Die Hilfe zeigt Kommandos wie `vision`, `model`, `worker`,
+Erwartung: Die Hilfe zeigt Kommandos wie `start`, `vision`, `model`, `worker`,
 `dispatch-ready`, `work-ready`, `learn`, `compact`, `test`.
 
-## 5. Workspace initialisieren
+## 5. Robuster Bootstrap
 
 ```powershell
-vocr setup
+vocr bootstrap --tests --write-scripts
 ```
 
 Erwartung:
 
+- VOCR bestaetigt Python 3.11+.
+- VOCR bestaetigt Git.
+- `.env` wird aus `.env.example` erzeugt, falls sie fehlt.
+- Eine vorhandene `.env` wird nicht ueberschrieben.
+- `.venv` wird angelegt oder wiederverwendet.
+- `pip install -e .` laeuft nur, wenn `pyproject.toml` im VOCR-Repo vorhanden ist.
 - `.vocr/ledger.jsonl` wird angelegt
 - `.vocr/codex-mcp.json` wird geschrieben
-- Worktree-Root wird vorbereitet
+- `.vocr/graph.json` wird erzeugt oder aktualisiert
+- Optional laufen `compileall` und `unittest`
+- Windows-Helfer werden erzeugt:
+  - `install-vocr.ps1`
+  - `start-vocr.ps1`
+  - `Start-VOCR.bat`
+
+Wenn du den Normalmodus danach direkt starten willst:
+
+```powershell
+vocr bootstrap --start
+```
+
+Oder getrennt:
+
+```powershell
+vocr bootstrap
+vocr start
+```
+
+`vocr install` ist ein Installationsalias, der die Windows-Helfer standardmaessig schreibt:
+
+```powershell
+vocr install --tests
+```
+
+Wenn PowerShell wegen ExecutionPolicy blockiert, nutze den `.bat`-Fallback:
+
+```powershell
+.\Start-VOCR.bat
+```
+
+Der Bootstrap ist idempotent. Mehrfaches Ausfuehren respektiert vorhandene
+`.venv`, `.vocr`, `.env` und `graph.json`.
 
 Pruefen:
 
@@ -96,7 +135,54 @@ Pruefen:
 vocr doctor
 ```
 
-## 6. Lokales Modell mit LM Studio konfigurieren
+## 6. Normalmodus starten
+
+Der normale Einstieg ist der Visionaer-Dialog:
+
+```powershell
+vocr start
+```
+
+Erwartung:
+
+- Ein ruhiges lokales Tkinter-Fenster oeffnet sich.
+- Links ist der Dialog mit dem Visionaer.
+- Unten ist das Textfeld fuer freie Eingaben.
+- Rechts steht der kompakte Projektstatus.
+- Der Visionaer schlaegt den naechsten sinnvollen Schritt vor und fragt fehlende Informationen ab.
+- Der User bestaetigt oder korrigiert natuerlichsprachlich.
+- Pro Fenster oder Console-Session gibt es genau einen aktiven Intake-Zustand.
+- Jede Antwort bezieht sich automatisch auf die aktuelle Visionaer-Frage.
+- Ein neues Ziel startet bewusst einen neuen Intake.
+- Der User sieht keine technischen Rueckfrage-Codes und muss keine IDs eingeben.
+- Nach vollstaendigem Intake zeigt der Visionaer eine Zusammenfassung mit internen Schritten und Sicherheitsgrenzen.
+- Tasks, Arbeitsbereiche und Dispatches entstehen erst nach ausdruecklicher Freigabe.
+- Interne Schritte wie Dispatch, Worktree, Review oder Promote werden nicht als primaere Bedienbuttons gezeigt.
+- Vor deiner ausdruecklichen Bestaetigung entstehen keine Tasks oder Worktrees.
+
+Warum Tkinter im MVP:
+
+- Python-stdlib, keine neue Runtime-Abhaengigkeit
+- keine Cloud-Pflicht
+- keine Frontend-Buildchain
+- testbarer Controller ohne GUI-Automation
+- Textual/TUI und lokale Web-GUI bleiben spaetere Optionen, falls mehr Oberflaechenkomfort noetig wird
+
+Falls kein Fenster verfuegbar ist:
+
+```powershell
+vocr start --console
+```
+
+Der Console-Modus ist derselbe Normalmodus, nur ohne Fenster.
+
+Alias fuer das lokale Fenster:
+
+```powershell
+vocr gui
+```
+
+## 7. Lokales Modell mit LM Studio konfigurieren
 
 Nur noetig, wenn `--live-agent` lokal laufen soll.
 
@@ -142,7 +228,32 @@ Live-Modell wieder deaktivieren:
 vocr model off
 ```
 
-## 7. OpenAI Cloud optional konfigurieren
+### LM Studio meldet 401/Auth
+
+Wenn `vocr model list`, `vocr ask --live-agent` oder `vocr organize --live-agent`
+bei lokalem LM Studio einen 401/Auth-Fehler melden, bedeutet das normalerweise:
+
+- Auth ist im LM-Studio-Server aktiviert.
+- Oder `OPENAI_API_KEY` enthaelt einen Token, den LM Studio nicht akzeptiert.
+
+Dann gilt:
+
+```powershell
+vocr model status
+```
+
+Pruefe, ob `OPENAI_BASE_URL` auf deinen lokalen Server zeigt, z.B.
+`http://localhost:1234/v1`. Danach entweder Auth im LM-Studio-Server
+deaktivieren oder VOCR mit einem gueltigen lokalen Token konfigurieren:
+
+```powershell
+vocr model local --model "dein-modellname" --base-url http://localhost:1234/v1 --api-key "dein-lm-studio-token"
+```
+
+VOCR behandelt diesen Fehler nicht als erfolgreichen Live-Agent-Lauf. Der
+deterministische lokale Fallback bleibt aktiv, bis die lokale Auth passt.
+
+## 8. OpenAI Cloud optional konfigurieren
 
 Nur wenn du den Live-Agent-Pfad ueber OpenAI nutzen willst:
 
@@ -157,7 +268,7 @@ nicht im Klartext.
 vocr model status
 ```
 
-## 8. Codex Worker konfigurieren
+## 9. Codex Worker konfigurieren
 
 VOCR kann ohne Codex CLI planen, graphifizieren, lernen, reviewen und testen.
 Fuer echte Worker-Ausfuehrung wird Codex CLI empfohlen.
@@ -188,7 +299,7 @@ Optional eigenen Worker-Befehl setzen:
 vocr worker profile safe --command "codex exec -"
 ```
 
-## 9. Secret Scanner optional erweitern
+## 10. Secret Scanner optional erweitern
 
 Minimaler Scanner ist eingebaut. Optional kann `gitleaks` installiert werden.
 Wenn vorhanden, nutzt VOCR automatisch:
@@ -206,7 +317,7 @@ vocr secrets scan
 
 Erwartung bei sauberem Diff: keine Findings, Exit-Code 0.
 
-## 10. Installation validieren
+## 11. Installation validieren
 
 ```powershell
 vocr test
@@ -227,7 +338,7 @@ vocr learn
 vocr compact --keep-last 200
 ```
 
-## 11. Standard-Dateien und Ordner
+## 12. Standard-Dateien und Ordner
 
 - `.vocr/ledger.jsonl`: aktueller lokaler Event-Ledger
 - `.vocr/graph.json`: Graphify-Index
@@ -236,7 +347,7 @@ vocr compact --keep-last 200
 - `.vocr/artifacts/<task-id>/review.md`: Review-Artefakte
 - `<repo>.vocr-worktrees/`: isolierte Task-Worktrees neben dem Repo
 
-## 12. Update bestehender Installation
+## 13. Update bestehender Installation
 
 ```powershell
 cd C:\Users\jeenz\Desktop\Agent
@@ -246,7 +357,7 @@ pip install -e .
 vocr test
 ```
 
-## 13. Haeufige Probleme
+## 14. Haeufige Probleme
 
 ### `vocr` wird nicht gefunden
 

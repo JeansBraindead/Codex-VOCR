@@ -41,6 +41,13 @@ class PermissionMode(str, Enum):
     approve_all = "approve_all"
 
 
+class NormalModePhase(str, Enum):
+    welcome = "welcome"
+    intake = "intake"
+    confirmation = "confirmation"
+    prepared = "prepared"
+
+
 class LedgerEventType(str, Enum):
     setup = "setup"
     clarification_requested = "clarification_requested"
@@ -76,6 +83,29 @@ class ReadinessReport(BaseModel):
     missing_topics: list[str] = Field(default_factory=list)
     questions: list[ClarificationQuestion] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+
+
+class ProjectIntake(BaseModel):
+    """User-approved facts collected by the normal Visionary dialog."""
+
+    goal: str = ""
+    workspace: str = ""
+    acceptance_criteria: str = ""
+    verification: str = ""
+    non_goals: str = ""
+    execution_bounds: str = ""
+
+
+class NormalModeStatus(BaseModel):
+    goal: str = "Noch nicht geklaert"
+    workspace: str = "Noch nicht geklaert"
+    acceptance_criteria: str = "Noch nicht geklaert"
+    verification: str = "Noch nicht geklaert"
+    non_goals: str = "Noch nicht geklaert"
+    execution_bounds: str = "Noch nicht geklaert"
+    readiness: str = "0/6 geklaert"
+    current_step: str = "Ziel verstehen"
+    environment_hint: str = "Lokaler Arbeitsbereich wird vorbereitet, wenn du zustimmst."
 
 
 class ClarificationSession(BaseModel):

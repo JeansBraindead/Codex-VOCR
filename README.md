@@ -6,19 +6,36 @@ VOCR ist architektonisch von [VOIT](https://github.com/yesitsfebreeze/voit) insp
 
 Der Visionary Agent ist der Single Contact Point fuer den User. Er nimmt Nutzerwuensche entgegen, baut automatisch einen tokenarmen Graphify-Kontext, haelt Ziel und Akzeptanzkriterien fest, zerlegt Arbeit in kleine Tasks, dispatcht bei `--go` in isolierte Git-Worktrees und promotet Aenderungen erst nach Review.
 
+Der normale Einstieg ist `vocr start`: eine einfache Dialogoberflaeche mit Textfeld, in der der User natuerlichsprachlich mit dem Visionaer spricht. Der Visionaer klaert fehlende Informationen, fasst den Intake zusammen, erklaert die Ausfuehrung und wartet auf Freigabe, bevor Tasks oder Worktrees entstehen.
+
 ## Setup
 
 Sehr genaue Anleitungen:
 
 - [Installationsanleitung](docs/INSTALLATION.md)
 - [Testanleitung](docs/TESTING.md)
+- [Normalmodus-Oberflaeche](docs/NORMAL_MODE_SURFACE.md)
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e .
 vocr setup
+vocr start
 ```
+
+Einfacher und robuster fuer normale Nutzer:
+
+```powershell
+vocr bootstrap --write-scripts --tests
+vocr start
+```
+
+`vocr bootstrap` erkennt, ob es im VOCR-Repo laeuft, legt `.venv` bei Bedarf an,
+installiert VOCR nur neben einem echten `pyproject.toml`, initialisiert `.vocr`,
+erzeugt Graphify und respektiert vorhandene `.env`-Werte. Wenn der Ordner falsch
+ist, Git fehlt oder Python zu alt ist, gibt VOCR eine klare Diagnose statt eines
+rohen Pip-Tracebacks aus.
 
 Optional kann VOCR lokale oder Cloud-Modelle fuer den Live-Agent-Pfad nutzen. Der User muss dafuer nicht in `.env` schreiben:
 
@@ -37,33 +54,116 @@ vocr model openai --model gpt-4.1-mini
 
 VOCR schreibt die noetigen Werte in `.env`, zeigt Secrets aber nur als `[set]`. VOCR bleibt Codex-first: lokale Modelle helfen Vision/Organizer-Pfaden, aber Codex-Worker, Scope, Review und Promote bleiben die Sicherheitslinie.
 
+Wenn LM Studio oder ein lokaler OpenAI-kompatibler Server mit 401 antwortet,
+ordnet VOCR das lokal ein: Auth ist im Server vermutlich aktiv oder der
+gesetzte Token ist ungueltig. Dann wird der Live-Agent nicht als Erfolg
+behandelt; VOCR nutzt den lokalen Fallback und fordert dazu auf, Auth im
+LM-Studio-Server zu deaktivieren oder einen gueltigen lokalen Token zu setzen.
+
 Optional kann `VOCR_CODEX_COMMAND` gesetzt werden. Dann startet `vocr work <task-id>` diesen echten Worker-Befehl im isolierten Worktree und uebergibt den Task-Prompt ueber stdin. Ohne `VOCR_CODEX_COMMAND` nutzt VOCR, wenn vorhanden, `codex exec - --cd <worktree> --sandbox workspace-write`. Bei `approve_all` wird `--ask-for-approval never` gesetzt. Unsandboxed-Ausfuehrung gibt es nur explizit mit `VOCR_CODEX_UNSANDBOXED=true`.
 
 `vocr setup` schreibt zusaetzlich `.vocr/codex-mcp.json` fuer Codex als MCP-Server (`codex mcp-server`). `vocr codex-config` kann diese Datei neu erzeugen.
 
 ## Normaler Ablauf
 
-Der User spricht nur mit dem Visionaer:
+Der User spricht im Normalfall nur mit dem Visionaer:
 
 ```powershell
-vocr setup
-vocr model lmstudio --model "dein-lokales-modell"
-vocr model status
-vocr ask "Ziel: Baue eine Healthcheck-API im Backend. Arbeitsbereich: FastAPI-App und Tests. Akzeptanz: GET /health liefert 200 und JSON status=ok. Verifikation: pytest oder Syntax-Check. Nicht-Ziele: keine Auth, keine Deployment-Aenderungen. Ausfuehrung: nur planen, Review vor Promote."
-vocr ask "Ziel: Baue eine Healthcheck-API im Backend. Arbeitsbereich: FastAPI-App und Tests. Akzeptanz: GET /health liefert 200 und JSON status=ok. Verifikation: pytest oder Syntax-Check. Nicht-Ziele: keine Auth, keine Deployment-Aenderungen. Ausfuehrung: mit go Worktree vorbereiten, Review vor Promote." --go
-vocr ask "Ziel: Baue eine Healthcheck-API im Backend. Arbeitsbereich: FastAPI-App und Tests. Akzeptanz: GET /health liefert 200 und JSON status=ok. Verifikation: pytest oder Syntax-Check. Nicht-Ziele: keine Auth, keine Deployment-Aenderungen. Ausfuehrung: mit go Worktree vorbereiten, Review vor Promote." --go --live-agent
+vocr start
 ```
+
+`vocr start` prueft vor dem Start Repo, Python, Git, `.env`, `.vocr` und Graphify.
+Falls etwas Lokales fehlt, wird es idempotent vorbereitet; falls der Ordner
+falsch ist, stoppt VOCR mit einer verstaendlichen Meldung.
+
+`vocr start` oeffnet im MVP bewusst eine lokale Tkinter-GUI: Python-stdlib, keine Cloud-Pflicht, keine Frontend-Buildchain, zentrale Texteingabe und kompakter Status. Textual/TUI und lokale Web-GUI bleiben sinnvolle spaetere Upgrades, aber fuer den MVP ist die lokale GUI der kleinste robuste Normalmodus.
+
+Falls kein Fenster verfuegbar ist oder du im Terminal bleiben willst:
+
+```powershell
+vocr start --console
+```
+
+Im Normalmodus kennt der User keine technischen Rueckfrage-Codes, Task-IDs, Worktrees oder Dispatch-Begriffe. Der Dialog laeuft phasenweise:
+
+1. Wunsch frei beschreiben.
+2. Visionaer interpretiert die Absicht und schlaegt einen passenden Rahmen vor.
+3. Visionaer setzt genau einen aktiven Intake-Punkt, z.B. Arbeitsbereich.
+4. User bestaetigt oder korrigiert diesen Punkt natuerlichsprachlich.
+5. Visionaer aktualisiert den Intake-State und fragt den naechsten logisch fehlenden Punkt.
+6. Visionaer zeigt ein klares Bestaetigungs-Gate mit Zusammenfassung, internen VOCR-Schritten und Sicherheitsgrenzen.
+7. User bestaetigt ausdruecklich oder aendert noch etwas natuerlichsprachlich.
+8. Erst danach entstehen Tasks und, falls freigegeben, isolierte Arbeitsbereiche.
+
+Die UI ist dabei nur der Gespraechsraum. Sie bietet keine primaeren Prozess-Buttons fuer Planen, Dispatch, Worktree, Review oder Promote. Der Visionaer schlaegt den naechsten sinnvollen Schritt vor, erklaert die Konsequenzen und wartet auf Bestaetigung oder Korrektur.
+
+Der Intake ist keine Pflichtfeldliste. Auch kurze Initialnachrichten sollen zu einem sinnvollen Vorschlag fuehren:
+
+```text
+User: Ich will eine Startshell fuer VOCR.
+Visionaer: Ich verstehe: Du willst einen einfacheren Einstieg fuer normale VOCR-Nutzer.
+Vermutlich passende Bereiche:
+- src/vocr/cli/app.py
+- neue Start-/Dialog-Komponente unter src/vocr/ui
+- tests
+- optional README/docs
+
+Ich schlage als Akzeptanz vor:
+- User kann vocr start ausfuehren
+- danach oeffnet sich ein normaler Visionaer-Dialog
+- User sieht keine technischen Rueckfrage-Codes
+- der bestehende Expert-CLI-Flow bleibt erhalten
+
+Verifikation:
+- python -m compileall src tests
+- python -m unittest discover -s tests
+
+Nicht-Ziele und Risiken:
+- keine Aenderungen an Review, Promote oder Worker-Sandboxing
+
+Ausfuehrungsgrenzen:
+- Erst planen
+- danach optional getrennten Arbeitsbereich vorbereiten
+- nie automatisch veroeffentlichen
+```
+
+Beispiel:
+
+```text
+User: Ich will die Rueckfrage-UX verbessern.
+Visionaer: Ich verstehe ... Ich schlage diesen Rahmen vor. Naechster Punkt: Arbeitsbereich. Passt das?
+User: Passt, aber keine Docs erstmal.
+Visionaer: Okay. Dokumentationsaenderungen sind ausgeschlossen. Naechster Punkt: Akzeptanz. Passt das?
+User: ja
+Visionaer: Naechster Punkt: Verifikation. Ich schlage compileall und unittest vor. Passt das?
+```
+
+Ein normaler Dialog hat genau einen aktiven Intake-Zustand pro Fenster oder Console-Session. Jede User-Antwort bezieht sich automatisch auf die aktuelle Frage; der User muss keine IDs kopieren, keine Rueckfrage auswaehlen und keinen Expert-Befehl eingeben. Wenn der User ein neues Ziel formuliert, startet der Visionaer bewusst einen neuen Intake. Wenn der User fortsetzt, wird der aktuelle Intake fortgefuehrt.
 
 Wenn Informationen fehlen, legt der Visionaer nicht los. Er fragt stattdessen konkret nach und erstellt keine Tasks, keine Worktrees und keine Dispatches. Der Request muss Zielbild, Arbeitsbereich, Akzeptanzkriterien, Verifikation, Nicht-Ziele und Ausfuehrungsgrenzen ausreichend klar machen.
 
-Antworten auf Rueckfragen laufen weiter ueber den Visionaer:
+Wenn der Intake vollstaendig ist, zeigt der Visionaer vor jeder Ausfuehrung:
+
+- Ziel
+- Arbeitsbereich
+- Akzeptanzkriterien
+- Verifikation
+- Nicht-Ziele
+- Ausfuehrungsmodus
+- geplante interne VOCR-Schritte
+- Sicherheitsgrenzen
+
+Danach fragt er `Soll ich so fortfahren?`. Tasks, Arbeitsbereiche und Dispatches entstehen im Normalmodus erst nach dieser ausdruecklichen Freigabe. Eine Antwort wie `Ja, Worktree vorbereiten, aber nichts mergen` aktualisiert den Ausfuehrungsmodus noch vor dem Start und laesst Review-/Promote-Gates aktiv.
+
+Expertmodus bleibt verfuegbar:
 
 ```powershell
-vocr reply <clarification-id> "Ziel: ... Arbeitsbereich: ... Akzeptanz: ... Verifikation: ... Nicht-Ziele: ... Ausfuehrung: ..." --go
+vocr ask "Ziel: Baue eine Healthcheck-API im Backend. Arbeitsbereich: FastAPI-App und Tests. Akzeptanz: GET /health liefert 200 und JSON status=ok. Verifikation: pytest oder Syntax-Check. Nicht-Ziele: keine Auth, keine Deployment-Aenderungen. Ausfuehrung: nur planen, Review vor Promote."
+vocr ask "Ziel: Baue eine Healthcheck-API im Backend. Arbeitsbereich: FastAPI-App und Tests. Akzeptanz: GET /health liefert 200 und JSON status=ok. Verifikation: pytest oder Syntax-Check. Nicht-Ziele: keine Auth, keine Deployment-Aenderungen. Ausfuehrung: mit go Worktree vorbereiten, Review vor Promote." --go
 vocr reply "Ziel: ... Arbeitsbereich: ... Akzeptanz: ... Verifikation: ... Nicht-Ziele: ... Ausfuehrung: ..." --go
 ```
 
-Was `vocr vision` intern macht:
+Was der Visionaer intern macht:
 
 1. Pruefen, ob genug Wissen vorhanden ist.
 2. Fehlende Informationen explizit abfragen und stoppen.
@@ -76,9 +176,13 @@ Was `vocr vision` intern macht:
 
 ## Debug- und Admin-Kommandos
 
-Diese Kommandos sind fuer Inspektion, Reparatur und manuelle Eingriffe gedacht, nicht als normaler User-Flow:
+Diese Kommandos sind der Expertmodus. Sie sind fuer Inspektion, Reparatur und manuelle Eingriffe gedacht, nicht als normaler User-Flow. Der Expertmodus darf technische Details zeigen: Task-IDs, Clarification-IDs, Slice-IDs, Worktree-Pfade, Ledger-Events, Diffs, Review-Artefakte, Model-Status, Doctor-Details und Promote-Previews.
+
+Bestehende Expert-Kommandos bleiben kompatibel:
 
 ```powershell
+vocr bootstrap --tests --write-scripts
+vocr install
 vocr graphify
 vocr model status
 vocr model list
@@ -123,8 +227,15 @@ vocr doctor
 ## Designregeln
 
 - Vision haelt Ziel, Annahmen und Akzeptanzkriterien.
-- Der User spricht im Normalfall nur mit `vocr vision`.
+- Der User spricht im Normalfall nur mit `vocr start`.
+- `vocr vision`, `vocr ask`, `vocr reply`, `vocr graphify`, `vocr organize` und `vocr dispatch` bleiben Expert-/Debug-Befehle.
+- Technische Rueckfrage-IDs bleiben nur im Expert-/Debugmodus sichtbar.
+- Die Normalmodus-UI fuehrt nicht den Prozess; der Visionaer fuehrt ihn dialogisch.
 - Der Visionaer fragt fehlende Informationen explizit ab und blockiert Planung, bis der Wissensstand hoch genug ist.
+- Der Visionaer darf Rahmen vorschlagen, aber Tasks entstehen erst nach natuerlicher Bestaetigung.
+- Der Normalmodus haelt genau einen aktiven Intake-State pro Session und fragt sequenziell den naechsten fehlenden Punkt.
+- Natuerliche Antworten wie `ja`, `ohne Docs`, `nimm Docs doch mit rein`, `nur planen` oder `mit Worktree, aber nicht mergen` aktualisieren diesen Intake-State.
+- Nach vollstaendigem Intake muss der Normalmodus immer eine menschenlesbare Zusammenfassung zeigen und auf Freigabe warten.
 - Keine halben Annahmen: unklare Details werden nicht erfunden.
 - Graphify wird vom Visionaer automatisch aktualisiert und fuer Context-Packs genutzt.
 - Organize zerlegt Arbeit in kleine, reviewbare Tasks.

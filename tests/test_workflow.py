@@ -4,8 +4,12 @@ import tempfile
 import unittest
 import os
 from pathlib import Path
+from unittest.mock import patch
 
-from vocr.cli.app import clean_artifacts, latest_open_clarification, write_review_artifact
+from typer.testing import CliRunner
+
+from vocr.agents.runtime import diagnose_live_agent_error
+from vocr.cli.app import app, clean_artifacts, latest_open_clarification, write_review_artifact
 from vocr.graph.graphify import GraphStore, RepoGraphBuilder
 from vocr.config.env_file import provider_from_env, read_env_file, redact_env, update_env_file
 from vocr.guardrails.scope_guard import ScopeGuard
@@ -38,6 +42,46 @@ GOOD_REQUEST = (
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_local_openai_compatible_401_gets_lm_studio_auth_diagnosis(self) -> None:
+        class LocalAuthError(Exception):
+            status_code = 401
+
+        diagnosis = diagnose_live_agent_error(
+            LocalAuthError("401 Unauthorized"),
+            provider="local-openai-compatible",
+            base_url="http://localhost:1234/v1",
+        )
+
+        self.assertIn("LM Studio hat die Anfrage wegen API-Key/Auth abgelehnt", diagnosis)
+        self.assertIn("Auth im LM-Studio-Server aktiv", diagnosis)
+        self.assertIn("gueltigen LM-Studio-API-Token", diagnosis)
+        self.assertIn("lokalen Fallback", diagnosis)
+
+    def test_live_agent_local_401_cli_prints_auth_diagnosis_and_falls_back(self) -> None:
+        class LocalAuthError(Exception):
+            status_code = 401
+
+        async def fail_with_401(_: str):
+            raise LocalAuthError("401 Unauthorized")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {
+                "VOCR_HOME": str(Path(tmp) / ".vocr"),
+                "OPENAI_BASE_URL": "http://localhost:1234/v1",
+                "OPENAI_API_KEY": "bad-local-token",
+                "OPENAI_MODEL": "local-model",
+            }
+            with patch("vocr.cli.app.live_agents_available", return_value=True), patch(
+                "vocr.cli.app.create_live_vision",
+                fail_with_401,
+            ):
+                result = CliRunner().invoke(app, ["ask", GOOD_REQUEST, "--live-agent", "--plan-only"], env=env)
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("LM Studio hat die Anfrage wegen API-Key/Auth abgelehnt", result.output)
+        self.assertIn("lokaler Fallback aktiv", result.output)
+        self.assertIn("Created slice", result.output)
+
     def test_vision_and_task_use_explicit_sections(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = GraphStore(Path(tmp) / ".vocr")
