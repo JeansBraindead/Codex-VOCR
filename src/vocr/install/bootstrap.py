@@ -365,6 +365,11 @@ START_PS1 = r'''param(
 
 $ErrorActionPreference = "Stop"
 
+function Invoke-Checked($Exe, $Arguments, $FailureMessage) {
+    & $Exe @Arguments
+    if ($LASTEXITCODE -ne 0) { throw $FailureMessage }
+}
+
 try {
     $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
     Set-Location -LiteralPath $repoRoot
@@ -379,13 +384,13 @@ try {
     }
 
     $venvPython = Join-Path $repoRoot ".venv\Scripts\python.exe"
-    & $venvPython -m pip install -e .
-    & $venvPython -m vocr.main bootstrap --no-start
+    Invoke-Checked -Exe $venvPython -Arguments @("-m", "pip", "install", "-e", ".") -FailureMessage "pip install -e . ist fehlgeschlagen."
+    Invoke-Checked -Exe $venvPython -Arguments @("-m", "vocr.main", "bootstrap", "--no-start") -FailureMessage "VOCR Bootstrap ist fehlgeschlagen."
 
     if ($Console) {
-        & $venvPython -m vocr.main start --console
+        Invoke-Checked -Exe $venvPython -Arguments @("-m", "vocr.main", "start", "--console") -FailureMessage "VOCR Start ist fehlgeschlagen."
     } else {
-        & $venvPython -m vocr.main start
+        Invoke-Checked -Exe $venvPython -Arguments @("-m", "vocr.main", "start") -FailureMessage "VOCR Start ist fehlgeschlagen."
     }
 } catch {
     Write-Host ""
