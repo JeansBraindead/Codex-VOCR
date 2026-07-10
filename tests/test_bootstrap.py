@@ -106,6 +106,7 @@ class BootstrapTests(unittest.TestCase):
             self.assertIn("[string]$InstallDir", (result.repo_root / "install-vocr.ps1").read_text(encoding="utf-8"))
             self.assertIn("sys.version_info >= (3, 11)", (result.repo_root / "install-vocr.ps1").read_text(encoding="utf-8"))
             self.assertIn("%~dp0", (result.repo_root / "Start-VOCR.bat").read_text(encoding="utf-8"))
+            self.assertIn("py -3.11 -m venv .venv", (result.repo_root / "Start-VOCR.bat").read_text(encoding="utf-8"))
             self.assertNotIn(str(root), (result.repo_root / "start-vocr.ps1").read_text(encoding="utf-8"))
 
     def test_repo_contains_visible_windows_installer_scripts(self) -> None:
