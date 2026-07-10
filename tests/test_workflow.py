@@ -255,6 +255,29 @@ class WorkflowTests(unittest.TestCase):
                 ),
             )
             ledger.append(
+                LedgerEventType.telemetry_recorded,
+                RunTelemetry(
+                    provider="codex-cli",
+                    task_id=task.id,
+                    slice_id=task.slice_id,
+                    agent="codex-worker",
+                    token_usage=TokenUsage(total_tokens=8),
+                ),
+            )
+            ledger.append(
+                LedgerEventType.clarification_requested,
+                {
+                    "id": "clarify-learning",
+                    "request": "needs detail",
+                    "report": {"ready": False, "confidence": 0.5, "questions": [], "missing_topics": [], "notes": []},
+                    "answers": [],
+                },
+            )
+            ledger.append(
+                LedgerEventType.clarification_answered,
+                {"session_id": "clarify-learning", "answer": "details"},
+            )
+            ledger.append(
                 LedgerEventType.review_recorded,
                 ReviewResult(
                     task_id=task.id,
@@ -270,7 +293,10 @@ class WorkflowTests(unittest.TestCase):
 
         self.assertIn("scope:docs", snapshot.scopes)
         self.assertEqual(snapshot.scopes["scope:docs"].files["README.md"], 1)
-        self.assertEqual(snapshot.scopes["scope:docs"].estimated_tokens, 42)
+        self.assertEqual(snapshot.scopes["scope:docs"].estimated_tokens, 50)
+        self.assertEqual(snapshot.scopes["scope:docs"].retry_count, 1)
+        self.assertEqual(snapshot.clarifications_requested, 1)
+        self.assertEqual(snapshot.clarifications_answered, 1)
 
     def test_ledger_compact_archives_old_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

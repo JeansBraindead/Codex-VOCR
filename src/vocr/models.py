@@ -250,6 +250,7 @@ class LearningEntry(BaseModel):
     decisions: dict[str, int] = Field(default_factory=dict)
     risks: dict[str, int] = Field(default_factory=dict)
     estimated_tokens: int = 0
+    retry_count: int = 0
 
 
 class LearningSnapshot(BaseModel):
@@ -257,6 +258,8 @@ class LearningSnapshot(BaseModel):
     scopes: dict[str, LearningEntry] = Field(default_factory=dict)
     task_titles: dict[str, LearningEntry] = Field(default_factory=dict)
     files: dict[str, LearningEntry] = Field(default_factory=dict)
+    clarifications_requested: int = 0
+    clarifications_answered: int = 0
     updated_at: datetime = Field(default_factory=utc_now)
 
 

@@ -18,6 +18,7 @@ Claude ist kein VOCR-Produktbestandteil und kein Gate.
 - [19:40] Retry fuer Start-Script-Diff uebersprungen: CLI nicht gefunden.
 - [19:48] Retry fuer CLI-Clone-Diff uebersprungen: CLI nicht gefunden.
 - [19:54] Retry fuer Archive-Retention-Diff uebersprungen: CLI nicht gefunden.
+- [resume] Retry fuer Learning-Signale-Diff uebersprungen: CLI nicht gefunden.
 
 ## Reviews
 
