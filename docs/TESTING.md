@@ -436,12 +436,14 @@ Erfolgskriterien:
 ```powershell
 vocr clean
 vocr clean --artifacts --older-than-days 30
+vocr clean --archives --archive-older-than-days 90
 ```
 
 Erfolgskriterien:
 
 - Git Worktree Prune laeuft
 - Alte Artefakte werden nur geloescht, wenn `--artifacts` gesetzt ist
+- Alte Ledger-Archive werden nur geloescht, wenn `--archives` gesetzt ist; das Loeschen ist dauerhaft und nutzt keinen Papierkorb.
 
 ## 17. MCP Smoke testen
 

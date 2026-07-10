@@ -386,6 +386,9 @@ vocr compact --keep-last 200
 - `.vocr/artifacts/<task-id>/review.md`: Review-Artefakte
 - `<repo>.vocr-worktrees/`: isolierte Task-Worktrees neben dem Repo
 
+Hinweis: `vocr clean --archives` loescht alte Dateien unter `.vocr/archive/`
+dauerhaft. Es gibt keinen Papierkorb-/Trash-Move.
+
 ## 13. Update bestehender Installation
 
 ```powershell

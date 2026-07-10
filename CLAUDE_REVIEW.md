@@ -27,4 +27,23 @@ Claude ist kein VOCR-Produktbestandteil und kein Gate.
 
 ## Reviews
 
-Noch kein Claude-Review verfuegbar.
+## 2026-07-11 - Extern nachgereichter Claude-Review
+
+Status: Review vom User bereitgestellt; lokaler `claude` CLI-Call bleibt uebersprungen.
+
+### Befund
+
+- Scope/Phasenspec: `VOCR_Phasen_Upgrade.md` fehlt im Repo. Codex hat das korrekt als `NEEDS_HUMAN` geloggt, aber die strikte Phasenfolge aus dem Autopilot-Auftrag ist dadurch nicht nachweisbar.
+- Isolation/Gates: `vocr_promote` im MCP-Server verlangt `confirm=true` und nutzt denselben `promote_task`-Pfad wie die CLI. Kein Gate-Bypass.
+- Robustheit: Installer-/Bootstrap-Clone schuetzt belegte Fremdordner. LM-Studio-Discovery faellt sauber ueber `/v1/models`, `/api/v1/models`, `/api/v0/models` und erkennt Fake-200-Antworten.
+- Tests: `pip install -e .`, `compileall` und 55 Unit-Tests liefen im Review-Kontext gruen.
+- Hinweis: `clean --archives` loescht Ledger-Archive dauerhaft per `unlink()`, ohne Trash-Fallback.
+
+### TODO
+
+- Fehlende `VOCR_Phasen_Upgrade.md` nachreichen oder bestaetigen, dass die improvisierte Phasenreihenfolge akzeptiert ist.
+- Installer-Skripte auf echtem Windows per Doppelklick/PowerShell manuell verifizieren.
+- `--post-pr-review` gegen einen echten Test-PR validieren.
+- LM-Studio Auth, Endpoint-Fallback und Chat-Smoke gegen einen echten laufenden Server mit passendem Token gegenzeichnen.
+- Hinweis zu dauerhaftem `clean --archives` in Doku aufnehmen.
+- Optional spaeter: echte Claude-Reviews pro Phase nachholen, falls die Phasengrenzen separat auditiert werden sollen.

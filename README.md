@@ -295,6 +295,7 @@ vocr doctor
 - `vocr ship --preview` zeigt Merge-Preview, `vocr ship --pr` erstellt optional eine Draft-PR via GitHub CLI.
 - `vocr promote` fuehrt vor dem Merge einen Preflight aus und blockiert ohne akzeptiertes Review.
 - `vocr log`, `vocr diff`, `vocr clean` und `vocr abort` sind Housekeeping-Kommandos fuer Timeline, Task-Diff, verwaiste Worktrees und kontrollierten Abbruch.
+- `vocr clean --archives` loescht alte `.vocr/archive`-Segmente dauerhaft per Dateisystem-Unlink; vorher sichern, wenn die Historie erhalten bleiben soll.
 - `vocr usage` zeigt geschaetzte Token-/Provider-Telemetrie pro Task/Slice.
 - `vocr learn` verdichtet lokale Ledger-, Review- und Telemetrie-Signale in `.vocr/learning.json`.
 - `vocr compact` aktualisiert Learning und archiviert alte Ledger-Events unter `.vocr/archive/`, damit `.vocr/ledger.jsonl` klein bleibt.
