@@ -56,7 +56,9 @@ class LearningStore:
         if snapshot.clarifications_requested:
             lines.append(
                 "Clarifications: "
-                f"requested={snapshot.clarifications_requested}; answered={snapshot.clarifications_answered}"
+                f"requested={snapshot.clarifications_requested}; answered={snapshot.clarifications_answered}; "
+                f"answer_rate={snapshot.clarification_answer_rate_percent}%; "
+                f"topics={_top_items(snapshot.clarification_topics, 5) or '-'}"
             )
         return "\n".join(lines)
 
@@ -91,6 +93,13 @@ def build_learning_snapshot(ledger: MemoryLedger) -> LearningSnapshot:
     clarification_sessions = ledger.clarification_sessions()
     snapshot.clarifications_requested = len(clarification_sessions)
     snapshot.clarifications_answered = sum(1 for session in clarification_sessions if session.answers)
+    snapshot.clarification_answer_rate_percent = _percent(
+        snapshot.clarifications_answered,
+        snapshot.clarifications_requested,
+    )
+    for session in clarification_sessions:
+        topics = [question.topic for question in session.report.questions] + session.report.missing_topics
+        _count_many(snapshot.clarification_topics, topics)
     for item in ledger.telemetry():
         if not item.task_id:
             continue
@@ -193,6 +202,10 @@ def _top_items(values: dict[str, int], limit: int) -> str:
 
 def _average_seconds(total: int, count: int) -> int:
     return int(total / count) if count else 0
+
+
+def _percent(value: int, total: int) -> int:
+    return int((value / total) * 100) if total else 0
 
 
 def _terms(query: str) -> list[str]:

@@ -262,6 +262,8 @@ class LearningSnapshot(BaseModel):
     files: dict[str, LearningEntry] = Field(default_factory=dict)
     clarifications_requested: int = 0
     clarifications_answered: int = 0
+    clarification_answer_rate_percent: int = 0
+    clarification_topics: dict[str, int] = Field(default_factory=dict)
     updated_at: datetime = Field(default_factory=utc_now)
 
 

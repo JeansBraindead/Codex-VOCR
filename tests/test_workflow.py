@@ -322,7 +322,19 @@ class WorkflowTests(unittest.TestCase):
                 {
                     "id": "clarify-learning",
                     "request": "needs detail",
-                    "report": {"ready": False, "confidence": 0.5, "questions": [], "missing_topics": [], "notes": []},
+                    "report": {
+                        "ready": False,
+                        "confidence": 0.5,
+                        "questions": [
+                            {
+                                "topic": "scope",
+                                "question": "Which files are in scope?",
+                                "why_needed": "Scope controls worker writes.",
+                            }
+                        ],
+                        "missing_topics": ["verification"],
+                        "notes": [],
+                    },
                     "answers": [],
                 },
             )
@@ -352,6 +364,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(snapshot.scopes["scope:docs"].accepted_review_seconds_total, 90)
         self.assertEqual(snapshot.clarifications_requested, 1)
         self.assertEqual(snapshot.clarifications_answered, 1)
+        self.assertEqual(snapshot.clarification_answer_rate_percent, 100)
+        self.assertEqual(snapshot.clarification_topics, {"scope": 1, "verification": 1})
 
     def test_ledger_compact_archives_old_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

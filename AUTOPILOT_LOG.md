@@ -4,8 +4,8 @@
 
 - Branch: `vocr-autopilot-2026-07-10`
 - Phasen fertig / angefangen: 0 angefangen; Installer-Fix abgeschlossen; Phase-Spec `VOCR_Phasen_Upgrade.md` fehlt.
-- Tasks done / blocked / needs-human: 13 done / 0 blocked / 1 needs-human.
-- Commits: 12 auf diesem Branch; naechster Review-Commit pending.
+- Tasks done / blocked / needs-human: 14 done / 0 blocked / 1 needs-human.
+- Commits: 13 auf diesem Branch; naechster Learning-Commit pending.
 - Beta-ready: sichtbarer Windows-Installer im Repo-Root, Clone-aus-leerem-Ordner, portable Script-Generierung, Bootstrap-Tests gruen.
 - Rollout offen: echte Review durch User, fehlende Phasen-Spec nachreichen, Installer manuell auf Windows doppelklicken.
 - Claude Review / Resume / Todo: siehe `CLAUDE_REVIEW.md`.
@@ -32,3 +32,4 @@
 [resume] PHASE mcp - Confirmed Promote Tool - DONE (Score 3/3) - commit pending - lokal: compileall/unittest/diff-check gruen - MCP kann accepted Tasks nur mit confirm=true ueber denselben Promote-Gate-Pfad promoten.
 [resume] PHASE learning - Review-Dauer-Signale - DONE (Score 3/3) - commit pending - lokal: compileall/unittest/diff-check gruen - LearningEntry aggregiert Review- und Accepted-Review-Sekunden aus vorhandenen Timestamps.
 [resume] PHASE review - Optionaler GitHub PR-Review - DONE (Score 3/3) - commit pending - lokal: compileall/unittest/help/diff-check gruen - `vocr review --post-pr-review` nutzt Inline-Kommentare mit sicherer Datei-/Zeilenposition und faellt sonst auf normalen PR-Review zurueck.
+[resume] PHASE learning - Clarification-Qualitaetsproxy - DONE (Score 3/3) - commit pending - lokal: compileall/unittest/diff-check gruen - LearningSnapshot aggregiert Answer-Rate und offene Rueckfrage-Topics ohne Antwort-Rohtexte.
