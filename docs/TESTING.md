@@ -452,6 +452,7 @@ Erfolgskriterien:
   - `vocr_plan`
   - `vocr_review`
   - `vocr_promote_preview`
+  - `vocr_promote`
 
 ## 18. Abnahmekriterien fuer Teststadium
 

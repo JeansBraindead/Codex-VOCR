@@ -276,6 +276,7 @@ vocr doctor
 - `vocr review` sammelt lokale Git-Signale aus dem Worktree und akzeptiert nur mit expliziter Entscheidung.
 - `vocr review` erzeugt einfache Diff-Kommentare fuer geaenderte Dateien und riskante Added-Lines.
 - `vocr review --export-comments review.md` schreibt Review-Kommentare als Markdown; `--post-pr-comments` postet optional einen PR-Kommentar via GitHub CLI.
+- `vocr review --post-pr-review` postet optional einen GitHub PR-Review. Kommentare mit sicherer Datei-/Zeilenposition werden als Inline-Review-Kommentare gesendet; sonst nutzt VOCR einen normalen PR-Review-Kommentar.
 - `vocr review` schreibt standardmaessig ein Artefakt nach `.vocr/artifacts/<task-id>/review.md`.
 - `vocr review` fuehrt sichere automatische Checks aus, z.B. Syntax-Check. Unbekannte Checks werden als manuell markiert, nicht blind gestartet.
 - `vocr work` fuehrt den echten Worker aus und erstellt bei Erfolg automatisch einen Task-Commit, wenn Aenderungen vorhanden sind und der Scope Guard keine Verletzung findet.
@@ -334,7 +335,7 @@ Das Ziel ist: neue Agents bekommen eine Repo-Karte und nur die naechsten relevan
 
 ## Naechste Schritte
 
-1. Reviewer Agent mit echten inline PR-Review-Kommentaren erweitern.
+1. PR-Review-Posting gegen einen echten GitHub-Test-PR live validieren.
 2. Echte Token-Usage aus Agents SDK/Codex auslesen, sobald stabil verfuegbar.
 3. Learning-Signale um Clarification-Qualitaet erweitern.
 4. Reviewer-/Learning-Signale nach echten Beta-Laeufen kalibrieren.

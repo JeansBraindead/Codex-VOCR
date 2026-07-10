@@ -932,6 +932,7 @@ def review(
     export_comments: Path | None = typer.Option(None, "--export-comments", help="Write review comments as Markdown."),
     save_artifact: bool = typer.Option(True, "--artifact/--no-artifact", help="Save review markdown under .vocr/artifacts."),
     post_pr_comments: bool = typer.Option(False, "--post-pr-comments", help="Post one PR comment with review markdown via gh."),
+    post_pr_review: bool = typer.Option(False, "--post-pr-review", help="Post a GitHub PR review via gh, with inline comments when safe line data exists."),
 ) -> None:
     result = review_task(
         ledger(),
@@ -970,6 +971,8 @@ def review(
         console.print(f"[green]Review comments written[/green] {export_comments}")
     if post_pr_comments:
         post_review_comment(result)
+    if post_pr_review:
+        post_pull_request_review(result)
 
 
 app.command("check")(review)
@@ -995,6 +998,67 @@ def post_review_comment(result: ReviewResult) -> None:
     if completed.returncode != 0:
         raise typer.BadParameter(completed.stderr.strip() or completed.stdout.strip())
     console.print("[green]Posted PR review comment[/green]")
+
+
+def post_pull_request_review(result: ReviewResult) -> None:
+    if which("gh") is None:
+        raise typer.BadParameter("GitHub CLI `gh` is not available.")
+    body = render_review_markdown(result)
+    inline_comments = build_pr_review_comments(result)
+    if not inline_comments:
+        completed = subprocess.run(
+            ["gh", "pr", "review", "--comment", "--body", body],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise typer.BadParameter(completed.stderr.strip() or completed.stdout.strip())
+        console.print("[green]Posted PR review[/green]")
+        return
+
+    repo = gh_stdout(["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+    pr_number = gh_stdout(["gh", "pr", "view", "--json", "number", "-q", ".number"])
+    payload = {
+        "body": body,
+        "event": "COMMENT",
+        "comments": inline_comments,
+    }
+    completed = subprocess.run(
+        ["gh", "api", f"repos/{repo}/pulls/{pr_number}/reviews", "--method", "POST", "--input", "-"],
+        input=json.dumps(payload),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise typer.BadParameter(completed.stderr.strip() or completed.stdout.strip())
+    console.print(f"[green]Posted PR review[/green] with {len(inline_comments)} inline comments")
+
+
+def build_pr_review_comments(result: ReviewResult, limit: int = 30) -> list[dict[str, object]]:
+    comments: list[dict[str, object]] = []
+    for comment in result.comments:
+        if not comment.path or not comment.line:
+            continue
+        comments.append(
+            {
+                "path": comment.path,
+                "line": comment.line,
+                "side": "RIGHT",
+                "body": f"{comment.source}: {comment.body}"[:4000],
+            }
+        )
+        if len(comments) >= limit:
+            break
+    return comments
+
+
+def gh_stdout(command: list[str]) -> str:
+    completed = subprocess.run(command, text=True, capture_output=True, check=False)
+    if completed.returncode != 0:
+        raise typer.BadParameter(completed.stderr.strip() or completed.stdout.strip())
+    return completed.stdout.strip()
 
 
 @app.command()

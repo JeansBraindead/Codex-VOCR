@@ -65,9 +65,9 @@ Expected behavior:
 
 ## MCP Surface
 
-`vocr serve-mcp` exposes status, context, plan, review, and promote-preview
-tools. MCP promote is preview-only in this MVP. Actual merge/promotion remains
-behind the normal accepted-review gate and explicit CLI command.
+`vocr serve-mcp` exposes status, context, plan, review, promote-preview, and a
+confirmed promote tool. MCP promotion requires `confirm=true` and still uses the
+normal accepted-review gate. Preview remains the safe default.
 
 ## ATT&CK-Aligned Notes
 

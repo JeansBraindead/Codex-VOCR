@@ -11,7 +11,14 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from vocr.agents.runtime import diagnose_live_agent_error
-from vocr.cli.app import app, clean_archives, clean_artifacts, latest_open_clarification, write_review_artifact
+from vocr.cli.app import (
+    app,
+    build_pr_review_comments,
+    clean_archives,
+    clean_artifacts,
+    latest_open_clarification,
+    write_review_artifact,
+)
 from vocr.graph.graphify import GraphStore, RepoGraphBuilder
 from vocr.config.env_file import provider_from_env, read_env_file, redact_env, update_env_file
 from vocr.guardrails.scope_guard import ScopeGuard
@@ -26,6 +33,7 @@ from vocr.models import (
     LearningEntry,
     LearningSnapshot,
     ReviewDecision,
+    ReviewComment,
     ReviewResult,
     RunTelemetry,
     TaskStatus,
@@ -463,6 +471,31 @@ class WorkflowTests(unittest.TestCase):
 
         self.assertTrue(exists)
         self.assertEqual(removed, 0)
+
+    def test_pr_review_payload_uses_only_safe_inline_comments(self) -> None:
+        review = ReviewResult(
+            task_id="task-review",
+            decision=ReviewDecision.needs_changes,
+            summary="Needs changes",
+            comments=[
+                ReviewComment(source="vocr-diff-review", path="src/app.py", line=12, body="Check this line."),
+                ReviewComment(source="vocr-review", path="README.md", body="File-level note."),
+            ],
+        )
+
+        comments = build_pr_review_comments(review)
+
+        self.assertEqual(
+            comments,
+            [
+                {
+                    "path": "src/app.py",
+                    "line": 12,
+                    "side": "RIGHT",
+                    "body": "vocr-diff-review: Check this line.",
+                }
+            ],
+        )
 
 
 if __name__ == "__main__":
