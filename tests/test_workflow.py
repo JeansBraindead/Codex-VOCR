@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import tempfile
 import time
 import unittest
@@ -276,6 +277,7 @@ class WorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / ".vocr"
             ledger = MemoryLedger(root)
+            created_at = datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)
             task = VocrTask(
                 id="task-learn",
                 slice_id="slice-learn",
@@ -284,6 +286,7 @@ class WorkflowTests(unittest.TestCase):
                 scope=["docs"],
                 acceptance_criteria=[AcceptanceCriterion(text="Docs updated")],
                 tests=["Syntax-Check"],
+                created_at=created_at,
             )
             ledger.append(LedgerEventType.task_created, task)
             ledger.append(
@@ -323,11 +326,11 @@ class WorkflowTests(unittest.TestCase):
                 LedgerEventType.review_recorded,
                 ReviewResult(
                     task_id=task.id,
-                    decision=ReviewDecision.needs_changes,
-                    summary="Needs docs fix",
-                    required_changes=["Clarify setup"],
+                    decision=ReviewDecision.accepted,
+                    summary="Docs fix accepted",
                     tests_reviewed=["Syntax-Check"],
                     diff_files=["README.md"],
+                    created_at=created_at + timedelta(seconds=90),
                 ),
             )
             learning = LearningStore(root)
@@ -337,6 +340,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(snapshot.scopes["scope:docs"].files["README.md"], 1)
         self.assertEqual(snapshot.scopes["scope:docs"].estimated_tokens, 50)
         self.assertEqual(snapshot.scopes["scope:docs"].retry_count, 1)
+        self.assertEqual(snapshot.scopes["scope:docs"].review_seconds_total, 90)
+        self.assertEqual(snapshot.scopes["scope:docs"].accepted_review_seconds_total, 90)
         self.assertEqual(snapshot.clarifications_requested, 1)
         self.assertEqual(snapshot.clarifications_answered, 1)
 

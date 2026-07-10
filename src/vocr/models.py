@@ -251,6 +251,8 @@ class LearningEntry(BaseModel):
     risks: dict[str, int] = Field(default_factory=dict)
     estimated_tokens: int = 0
     retry_count: int = 0
+    review_seconds_total: int = 0
+    accepted_review_seconds_total: int = 0
 
 
 class LearningSnapshot(BaseModel):

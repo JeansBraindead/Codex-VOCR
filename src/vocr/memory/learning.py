@@ -47,7 +47,9 @@ class LearningStore:
             lines.append(
                 f"- {entry.key}: count={entry.count}; files={files or '-'}; "
                 f"tests={tests or '-'}; decisions={decisions or '-'}; "
-                f"token_est={entry.estimated_tokens}; retries={entry.retry_count}"
+                f"token_est={entry.estimated_tokens}; retries={entry.retry_count}; "
+                f"avg_review_s={_average_seconds(entry.review_seconds_total, entry.count)}; "
+                f"avg_success_s={_average_seconds(entry.accepted_review_seconds_total, entry.decisions.get(ReviewDecision.accepted.value, 0))}"
             )
         if not ranked:
             lines.append("- no learning signals yet")
@@ -108,6 +110,8 @@ def build_learning_snapshot(ledger: MemoryLedger) -> LearningSnapshot:
         risks = review.required_changes + review.risks
         token_total = telemetry_by_task.get(task.id, 0)
         retry_count = max(0, telemetry_runs_by_task.get(task.id, 0) - 1)
+        review_seconds = max(0, int((review.created_at - task.created_at).total_seconds()))
+        accepted_review_seconds = review_seconds if review.decision == ReviewDecision.accepted else 0
 
         for scope in task.scope:
             _apply_signal(
@@ -118,6 +122,8 @@ def build_learning_snapshot(ledger: MemoryLedger) -> LearningSnapshot:
                 risks,
                 token_total,
                 retry_count,
+                review_seconds,
+                accepted_review_seconds,
             )
         _apply_signal(
             _entry(snapshot.task_titles, f"task:{task.title.lower()}"),
@@ -127,6 +133,8 @@ def build_learning_snapshot(ledger: MemoryLedger) -> LearningSnapshot:
             risks,
             token_total,
             retry_count,
+            review_seconds,
+            accepted_review_seconds,
         )
         for path in files:
             _apply_signal(
@@ -137,6 +145,8 @@ def build_learning_snapshot(ledger: MemoryLedger) -> LearningSnapshot:
                 risks,
                 token_total,
                 retry_count,
+                review_seconds,
+                accepted_review_seconds,
             )
     return snapshot
 
@@ -155,10 +165,14 @@ def _apply_signal(
     risks: list[str],
     token_total: int,
     retry_count: int,
+    review_seconds: int,
+    accepted_review_seconds: int,
 ) -> None:
     entry.count += 1
     entry.estimated_tokens += token_total
     entry.retry_count += retry_count
+    entry.review_seconds_total += review_seconds
+    entry.accepted_review_seconds_total += accepted_review_seconds
     _count_many(entry.files, files)
     _count_many(entry.tests, tests)
     _count_many(entry.decisions, [decision])
@@ -175,6 +189,10 @@ def _count_many(target: dict[str, int], values: list[str]) -> None:
 def _top_items(values: dict[str, int], limit: int) -> str:
     items = sorted(values.items(), key=lambda item: (-item[1], item[0]))[:limit]
     return ", ".join(f"{key}({count})" for key, count in items)
+
+
+def _average_seconds(total: int, count: int) -> int:
+    return int(total / count) if count else 0
 
 
 def _terms(query: str) -> list[str]:
