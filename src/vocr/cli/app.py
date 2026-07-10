@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -515,11 +516,12 @@ def model_off(
 @model_app.command("list")
 def model_list(
     base_url: str | None = typer.Option(None, "--base-url", help="Override local OpenAI-compatible base URL."),
+    api_key: str | None = typer.Option(None, "--api-key", help="Local API token for this check; not printed."),
 ) -> None:
     values = read_model_env(env_path())
     url = (base_url or values.get("OPENAI_BASE_URL") or "http://localhost:1234/v1").rstrip("/")
     try:
-        payload = fetch_model_list(url, api_key=_local_api_key(values, base_url))
+        payload, endpoint = fetch_model_catalog(url, api_key=api_key or _local_api_key(values, base_url))
     except urllib.error.HTTPError as exc:
         if exc.code == 401:
             raise typer.BadParameter(
@@ -528,7 +530,7 @@ def model_list(
         raise typer.BadParameter(f"Could not list models from {url}: {exc}") from exc
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         raise typer.BadParameter(f"Could not list models from {url}: {exc}") from exc
-    table = Table(title=f"Models at {url}")
+    table = Table(title=f"Models at {endpoint}")
     table.add_column("Model ID")
     for item in payload.get("data", []):
         model_id = item.get("id") if isinstance(item, dict) else str(item)
@@ -539,11 +541,30 @@ def model_list(
 @model_app.command("check")
 def model_check(
     base_url: str | None = typer.Option(None, "--base-url", help="Override local OpenAI-compatible base URL."),
+    api_key: str | None = typer.Option(None, "--api-key", help="Local API token for this check; not printed."),
+    model: str | None = typer.Option(None, "--model", "-m", help="Run a tiny chat completion check with this model."),
 ) -> None:
     values = read_model_env(env_path())
     url = (base_url or values.get("OPENAI_BASE_URL") or "http://localhost:1234/v1").rstrip("/")
+    active_api_key = api_key or _local_api_key(values, base_url)
+    active_model = model or values.get("OPENAI_MODEL")
+    if active_model:
+        try:
+            fetch_chat_completion(url, model=active_model, api_key=active_api_key)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 401:
+                raise typer.BadParameter(
+                    diagnose_live_agent_error(exc, provider="local-openai-compatible", base_url=url)
+                ) from exc
+            raise typer.BadParameter(f"Chat check failed for {url}: {exc}") from exc
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            raise typer.BadParameter(f"Chat check failed for {url}: {exc}") from exc
+        console.print(f"[green]Local chat endpoint reachable[/green] {chat_completion_endpoint(url)}")
+        console.print(f"Model checked: {safe_text(active_model)}")
+        return
+
     try:
-        payload = fetch_model_list(url, api_key=_local_api_key(values, base_url))
+        payload, endpoint = fetch_model_catalog(url, api_key=active_api_key)
     except urllib.error.HTTPError as exc:
         if exc.code == 401:
             raise typer.BadParameter(
@@ -553,16 +574,88 @@ def model_check(
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         raise typer.BadParameter(f"Model check failed for {url}: {exc}") from exc
     count = len(payload.get("data", []))
-    console.print(f"[green]Local OpenAI-compatible model endpoint reachable[/green] {url}")
+    console.print(f"[green]Local model endpoint reachable[/green] {endpoint}")
     console.print(f"Models visible: {count}")
 
 
+def fetch_model_catalog(base_url: str, *, api_key: str | None = None) -> tuple[dict, str]:
+    errors: list[BaseException] = []
+    for endpoint in model_list_endpoints(base_url):
+        try:
+            payload = fetch_model_list(endpoint, api_key=api_key)
+            if isinstance(payload.get("data"), list):
+                return payload, endpoint
+            errors.append(ValueError(f"{endpoint} did not return a model list"))
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError) as exc:
+            errors.append(exc)
+            continue
+    if errors:
+        raise errors[-1]
+    raise ValueError(f"No model-list endpoints derived from {base_url}")
+
+
+def model_list_endpoints(base_url: str) -> list[str]:
+    parsed = urllib.parse.urlparse(base_url.rstrip("/"))
+    path = parsed.path.rstrip("/")
+    root = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, "", "", "", "")).rstrip("/")
+    candidates: list[str] = []
+
+    if path.endswith("/models"):
+        candidates.append(base_url.rstrip("/"))
+    elif path in {"", "/"}:
+        candidates.extend([f"{root}/v1/models", f"{root}/api/v1/models", f"{root}/api/v0/models"])
+    elif path == "/v1":
+        candidates.extend([f"{root}/v1/models", f"{root}/api/v1/models", f"{root}/api/v0/models"])
+    elif path == "/api/v1":
+        candidates.extend([f"{root}/api/v1/models", f"{root}/v1/models", f"{root}/api/v0/models"])
+    elif path == "/api/v0":
+        candidates.extend([f"{root}/api/v0/models", f"{root}/api/v1/models", f"{root}/v1/models"])
+    else:
+        candidates.append(f"{base_url.rstrip('/')}/models")
+
+    unique: list[str] = []
+    for candidate in candidates:
+        if candidate not in unique:
+            unique.append(candidate)
+    return unique
+
+
 def fetch_model_list(url: str, *, api_key: str | None = None) -> dict:
-    request = urllib.request.Request(f"{url}/models")
+    request = urllib.request.Request(url)
     if api_key:
         request.add_header("Authorization", f"Bearer {api_key}")
     with urllib.request.urlopen(request, timeout=5) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def fetch_chat_completion(base_url: str, *, model: str, api_key: str | None = None) -> dict:
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": "Reply with ok."}],
+        "max_tokens": 4,
+        "temperature": 0,
+    }
+    request = urllib.request.Request(
+        chat_completion_endpoint(base_url),
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    if api_key:
+        request.add_header("Authorization", f"Bearer {api_key}")
+    with urllib.request.urlopen(request, timeout=20) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def chat_completion_endpoint(base_url: str) -> str:
+    parsed = urllib.parse.urlparse(base_url.rstrip("/"))
+    path = parsed.path.rstrip("/")
+    root = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, "", "", "", "")).rstrip("/")
+    if path == "/v1":
+        return f"{root}/v1/chat/completions"
+    if path in {"", "/"}:
+        return f"{root}/v1/chat/completions"
+    return f"{base_url.rstrip('/')}/chat/completions"
 
 
 def _local_api_key(values: dict[str, str], base_url_override: str | None) -> str | None:

@@ -252,7 +252,8 @@ Mit LM Studio:
 4. Dann:
 
 ```powershell
-vocr model check
+vocr model check --model "modellname-aus-list"
+vocr model check --api-key "test-token"
 vocr model list
 vocr model lmstudio --model "modellname-aus-list"
 vocr model status
@@ -269,7 +270,8 @@ Erfolgskriterien:
 
 ```powershell
 vocr model list --base-url http://localhost:1234/v1
-vocr model check --base-url http://localhost:1234/v1
+vocr model check --base-url http://localhost:1234/v1 --model "modellname-aus-list"
+vocr model check --base-url http://localhost:1234/v1 --api-key "test-token"
 vocr ask "Ziel: Teste lokalen Live-Agent. Arbeitsbereich: src. Akzeptanz: klare Diagnose. Verifikation: unittest. Nicht-Ziele: kein Merge. Ausfuehrung: nur planen." --live-agent --plan-only
 ```
 

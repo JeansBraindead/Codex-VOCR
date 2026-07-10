@@ -14,6 +14,10 @@ from vocr.agents.runtime import diagnose_live_agent_error
 from vocr.cli.app import (
     app,
     fetch_model_list,
+    fetch_model_catalog,
+    fetch_chat_completion,
+    chat_completion_endpoint,
+    model_list_endpoints,
     build_pr_review_comments,
     clean_archives,
     clean_artifacts,
@@ -305,6 +309,31 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("[set]", result.output)
         self.assertNotIn("process-token", result.output)
 
+    def test_model_check_accepts_one_shot_api_key_without_printing_it(self) -> None:
+        with patch(
+            "vocr.cli.app.fetch_model_catalog",
+            return_value=({"data": [{"id": "local-model"}]}, "http://localhost:1234/api/v1/models"),
+        ) as fetch:
+            result = CliRunner().invoke(app, ["model", "check", "--api-key", "local-token"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        fetch.assert_called_once_with("http://localhost:1234/v1", api_key="local-token")
+        self.assertIn("Models visible: 1", result.output)
+        self.assertNotIn("local-token", result.output)
+
+    def test_model_check_uses_chat_completion_when_model_is_given(self) -> None:
+        with patch("vocr.cli.app.fetch_chat_completion", return_value={"choices": []}) as chat:
+            result = CliRunner().invoke(
+                app,
+                ["model", "check", "--model", "local-model", "--api-key", "local-token"],
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        chat.assert_called_once_with("http://localhost:1234/v1", model="local-model", api_key="local-token")
+        self.assertIn("Local chat endpoint reachable", result.output)
+        self.assertIn("local-model", result.output)
+        self.assertNotIn("local-token", result.output)
+
     def test_fetch_model_list_sends_bearer_token_when_configured(self) -> None:
         class FakeResponse:
             def __enter__(self):
@@ -324,11 +353,87 @@ class WorkflowTests(unittest.TestCase):
             return FakeResponse()
 
         with patch("urllib.request.urlopen", fake_urlopen):
-            payload = fetch_model_list("http://localhost:1234/v1", api_key="lm-token")
+            payload = fetch_model_list("http://localhost:1234/v1/models", api_key="lm-token")
 
         self.assertEqual(payload["data"][0]["id"], "local-model")
         self.assertEqual(captured["authorization"], "Bearer lm-token")
         self.assertEqual(captured["timeout"], 5)
+
+    def test_fetch_chat_completion_sends_bearer_token_to_chat_endpoint(self) -> None:
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self) -> bytes:
+                return b'{"choices":[{"message":{"content":"ok"}}]}'
+
+        captured = {}
+
+        def fake_urlopen(request, timeout):
+            captured["url"] = request.full_url
+            captured["authorization"] = request.get_header("Authorization")
+            captured["timeout"] = timeout
+            return FakeResponse()
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            payload = fetch_chat_completion("http://localhost:1234/v1", model="local-model", api_key="lm-token")
+
+        self.assertEqual(payload["choices"][0]["message"]["content"], "ok")
+        self.assertEqual(captured["url"], "http://localhost:1234/v1/chat/completions")
+        self.assertEqual(captured["authorization"], "Bearer lm-token")
+        self.assertEqual(captured["timeout"], 20)
+
+    def test_chat_completion_endpoint_normalizes_root_and_v1_base_urls(self) -> None:
+        self.assertEqual(chat_completion_endpoint("http://localhost:1234"), "http://localhost:1234/v1/chat/completions")
+        self.assertEqual(
+            chat_completion_endpoint("http://localhost:1234/v1"),
+            "http://localhost:1234/v1/chat/completions",
+        )
+
+    def test_model_catalog_falls_back_to_lmstudio_native_models_endpoint(self) -> None:
+        class FakeResponse:
+            def __init__(self, body: bytes):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self) -> bytes:
+                return self.body
+
+        seen = []
+
+        def fake_urlopen(request, timeout):
+            seen.append(request.full_url)
+            if request.full_url == "http://localhost:1234/v1/models":
+                return FakeResponse(b"Unexpected endpoint or method. Returning 200 anyway")
+            return FakeResponse(b'{"data":[{"id":"lmstudio-model"}]}')
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            payload, endpoint = fetch_model_catalog("http://localhost:1234/v1")
+
+        self.assertEqual(payload["data"][0]["id"], "lmstudio-model")
+        self.assertEqual(endpoint, "http://localhost:1234/api/v1/models")
+        self.assertEqual(
+            seen,
+            ["http://localhost:1234/v1/models", "http://localhost:1234/api/v1/models"],
+        )
+
+    def test_model_list_endpoints_include_openai_and_lmstudio_native_paths(self) -> None:
+        self.assertEqual(
+            model_list_endpoints("http://localhost:1234/v1"),
+            [
+                "http://localhost:1234/v1/models",
+                "http://localhost:1234/api/v1/models",
+                "http://localhost:1234/api/v0/models",
+            ],
+        )
 
     def test_local_model_check_does_not_send_cloud_key_to_default_localhost(self) -> None:
         self.assertIsNone(_local_api_key({"OPENAI_API_KEY": "cloud-key"}, None))

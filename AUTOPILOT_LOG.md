@@ -4,8 +4,8 @@
 
 - Branch: `vocr-autopilot-2026-07-10`
 - Phasen fertig / angefangen: 0 angefangen; Installer-Fix abgeschlossen; Phase-Spec `VOCR_Phasen_Upgrade.md` fehlt.
-- Tasks done / blocked / needs-human: 16 done / 0 blocked / 1 needs-human.
-- Commits: 16 auf diesem Branch nach LM-Diagnose-Fix.
+- Tasks done / blocked / needs-human: 17 done / 0 blocked / 1 needs-human.
+- Commits: 17 auf diesem Branch nach LM-Studio-Endpoint-Fix.
 - Beta-ready: sichtbarer Windows-Installer im Repo-Root, Clone-aus-leerem-Ordner, portable Script-Generierung, Bootstrap-Tests und Teststage-Smokes gruen.
 - Rollout offen: echte Review durch User, fehlende Phasen-Spec nachreichen, Installer manuell auf Windows doppelklicken, PR-Review-Posting gegen echten Test-PR validieren.
 - Claude Review / Resume / Todo: siehe `CLAUDE_REVIEW.md`.
@@ -35,3 +35,4 @@
 [resume] PHASE learning - Clarification-Qualitaetsproxy - DONE (Score 3/3) - commit pending - lokal: compileall/unittest/diff-check gruen - LearningSnapshot aggregiert Answer-Rate und offene Rueckfrage-Topics ohne Antwort-Rohtexte.
 [resume] TESTSTAGE - Lokale Smoke-Abnahme - DONE (Score 4/4) - commit pending - `vocr test`, `doctor`, `worker doctor`, `graphify`, `learn`, `context --learning` und `secrets scan` gruen.
 [resume] PHASE model - LM-Studio/Auth-Diagnose repariert - DONE (Score 4/4) - commit pending - lokal: compileall/unittest/help/diff-check gruen - Model-Status nutzt effektive Env, zeigt `[set]`, `model list/check` senden lokale Tokens nur bei lokaler Base-URL und geben klare 401-Diagnose aus.
+[resume] PHASE model - LM-Studio-Endpoint-Fallback und Chat-Smoke - DONE (Score 4/4) - commit pending - lokal: compileall/unittest/help/diff-check gruen - `model list/check` erkennen falsche 200-Antworten, fallbacken auf `/api/v1/models` und `/api/v0/models`; `model check --model` prueft Chat-Completions direkt.

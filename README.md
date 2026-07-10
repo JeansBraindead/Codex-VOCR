@@ -60,7 +60,8 @@ Optional kann VOCR lokale oder Cloud-Modelle fuer den Live-Agent-Pfad nutzen. De
 
 ```powershell
 vocr model lmstudio --model "dein-lm-studio-modell"
-vocr model check
+vocr model check --model "dein-lm-studio-modell"
+vocr model check --api-key "dein-lm-studio-token"
 vocr model list
 vocr model status
 vocr model off
@@ -82,7 +83,8 @@ LM-Studio-Server zu deaktivieren oder einen gueltigen lokalen Token zu setzen:
 
 ```powershell
 vocr model lmstudio --model "dein-lm-studio-modell" --api-key "dein-lm-studio-token"
-vocr model check
+vocr model check --model "dein-lm-studio-modell"
+vocr model list --api-key "dein-lm-studio-token"
 ```
 
 Optional kann `VOCR_CODEX_COMMAND` gesetzt werden. Dann startet `vocr work <task-id>` diesen echten Worker-Befehl im isolierten Worktree und uebergibt den Task-Prompt ueber stdin. Ohne `VOCR_CODEX_COMMAND` nutzt VOCR, wenn vorhanden, `codex exec - --cd <worktree> --sandbox workspace-write`. Bei `approve_all` wird `--ask-for-approval never` gesetzt. Unsandboxed-Ausfuehrung gibt es nur explizit mit `VOCR_CODEX_UNSANDBOXED=true`.
