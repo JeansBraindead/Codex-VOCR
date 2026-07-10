@@ -23,6 +23,7 @@ Claude ist kein VOCR-Produktbestandteil und kein Gate.
 - [resume] Retry fuer Learning-Review-Dauer-Diff uebersprungen: CLI nicht gefunden.
 - [resume] Retry fuer PR-Review-Diff uebersprungen: CLI nicht gefunden.
 - [resume] Retry fuer Clarification-Qualitaetsproxy-Diff uebersprungen: CLI nicht gefunden.
+- [resume] Finaler Retry nach Teststage-Smoke uebersprungen: CLI nicht gefunden.
 
 ## Reviews
 
