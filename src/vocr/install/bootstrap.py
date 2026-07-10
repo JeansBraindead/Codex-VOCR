@@ -257,7 +257,9 @@ class Bootstrapper:
 
 INSTALL_PS1 = r'''param(
     [switch]$Tests,
-    [switch]$NoStart
+    [switch]$NoStart,
+    [string]$InstallDir = "Codex-VOCR",
+    [string]$RepoUrl = "https://github.com/JeansBraindead/Codex-VOCR.git"
 )
 
 $ErrorActionPreference = "Stop"
@@ -284,7 +286,20 @@ try {
     Set-Location -LiteralPath $repoRoot
 
     if (-not (Test-Path "pyproject.toml")) {
-        throw "Hier liegt kein VOCR-Repo: pyproject.toml fehlt. Starte dieses Skript aus dem geklonten Codex-VOCR-Ordner."
+        if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+            throw "Hier liegt kein VOCR-Repo und Git wurde nicht gefunden. Installiere Git fuer Windows: https://git-scm.com/download/win"
+        }
+        $target = Join-Path $repoRoot $InstallDir
+        if (Test-Path (Join-Path $target "pyproject.toml")) {
+            Write-Step "Nutze vorhandenes Repo: $target"
+        } elseif (Test-Path $target) {
+            throw "Zielordner existiert bereits, ist aber kein VOCR-Repo: $target. Bitte gib mit -InstallDir einen leeren oder passenden Ordner an."
+        } else {
+            Write-Step "Kein VOCR-Repo gefunden. Klone nach: $target"
+            git clone $RepoUrl $target
+        }
+        Set-Location -LiteralPath $target
+        $repoRoot = $target
     }
 
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {

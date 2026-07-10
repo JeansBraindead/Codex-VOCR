@@ -81,6 +81,19 @@ Die sichtbaren Installer-Dateien liegen direkt im Repo-Root:
 - `start-vocr.ps1`: prueft die Umgebung und startet VOCR erneut.
 - `Start-VOCR.bat`: Fallback fuer blockierte PowerShell ExecutionPolicy.
 
+Wenn du nur `install-vocr.ps1` in einem leeren Ordner hast, kann es VOCR selbst
+klonen:
+
+```powershell
+.\install-vocr.ps1
+```
+
+Standardziel ist `.\Codex-VOCR`. Ein eigener Zielordner geht so:
+
+```powershell
+.\install-vocr.ps1 -InstallDir D:\Tools\Codex-VOCR
+```
+
 Expert-Weg im aktivierten venv:
 
 ```powershell

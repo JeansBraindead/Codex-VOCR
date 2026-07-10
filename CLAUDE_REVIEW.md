@@ -11,6 +11,7 @@ Claude ist kein VOCR-Produktbestandteil und kein Gate.
 - [19:13] `claude -p "ok"` konnte nicht laufen: CLI nicht gefunden.
 - Retry bis 20:15 Europe/Berlin vorgesehen.
 - [19:17] Retry fuer Installer-Diff uebersprungen: CLI nicht gefunden.
+- [19:23] Retry fuer Installer-Clone-Diff uebersprungen: CLI nicht gefunden.
 
 ## Reviews
 

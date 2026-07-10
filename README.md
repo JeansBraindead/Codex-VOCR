@@ -41,6 +41,10 @@ Die Installer-Skripte liegen sichtbar im Repo-Root: `install-vocr.ps1`,
 Repo-Verzeichnis, legen `.venv` bei Bedarf an, installieren VOCR editable,
 fuehren Bootstrap/Graphify aus und starten den Normalmodus.
 
+Wenn `install-vocr.ps1` in einem leeren Ordner liegt, klont es das Repo nach
+`Codex-VOCR` und fuehrt die Installation dort fort. Ein anderer Zielordner geht
+mit `.\install-vocr.ps1 -InstallDir D:\Tools\Codex-VOCR`.
+
 `vocr bootstrap` bleibt der Expert-/CLI-Pfad. Er erkennt, ob er im VOCR-Repo
 laeuft, installiert nur neben einem echten `pyproject.toml`, initialisiert
 `.vocr`, erzeugt Graphify und respektiert vorhandene `.env`-Werte.
