@@ -49,6 +49,13 @@ mit `.\install-vocr.ps1 -InstallDir D:\Tools\Codex-VOCR`.
 laeuft, installiert nur neben einem echten `pyproject.toml`, initialisiert
 `.vocr`, erzeugt Graphify und respektiert vorhandene `.env`-Werte.
 
+Wenn VOCR bereits global verfuegbar ist, kann auch die CLI aus einem leeren
+Ordner clonen:
+
+```powershell
+vocr bootstrap --clone --install-dir Codex-VOCR
+```
+
 Optional kann VOCR lokale oder Cloud-Modelle fuer den Live-Agent-Pfad nutzen. Der User muss dafuer nicht in `.env` schreiben:
 
 ```powershell

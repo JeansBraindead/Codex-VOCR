@@ -16,6 +16,7 @@ Claude ist kein VOCR-Produktbestandteil und kein Gate.
 - [19:31] Retry fuer BAT-Fallback-Diff uebersprungen: CLI nicht gefunden.
 - [19:36] Retry fuer Native-Command-Diff uebersprungen: CLI nicht gefunden.
 - [19:40] Retry fuer Start-Script-Diff uebersprungen: CLI nicht gefunden.
+- [19:48] Retry fuer CLI-Clone-Diff uebersprungen: CLI nicht gefunden.
 
 ## Reviews
 

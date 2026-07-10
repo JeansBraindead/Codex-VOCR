@@ -148,12 +148,18 @@ def run_bootstrap_or_exit(
     run_tests: bool,
     write_scripts: bool,
     allow_install: bool,
+    clone_if_missing: bool = False,
+    install_dir: str = "Codex-VOCR",
+    repo_url: str = "https://github.com/JeansBraindead/Codex-VOCR.git",
 ) -> BootstrapResult:
     try:
         result = Bootstrapper(Path.cwd()).bootstrap(
             run_tests=run_tests,
             write_scripts=write_scripts,
             allow_install=allow_install,
+            clone_if_missing=clone_if_missing,
+            install_dir=install_dir,
+            repo_url=repo_url,
         )
     except BootstrapError as exc:
         console.print(f"[red]{safe_text(str(exc))}[/red]")
@@ -343,10 +349,20 @@ def bootstrap(
     write_scripts: bool = typer.Option(False, "--write-scripts", help="Write install-vocr.ps1, start-vocr.ps1 and Start-VOCR.bat."),
     start_after: bool = typer.Option(False, "--start/--no-start", help="Open normal Visionary mode after bootstrap."),
     console_only: bool = typer.Option(False, "--console", help="With --start, use the terminal fallback."),
+    clone_if_missing: bool = typer.Option(False, "--clone", help="Clone VOCR into --install-dir if no repo is found."),
+    install_dir: str = typer.Option("Codex-VOCR", "--install-dir", help="Target folder for --clone."),
+    repo_url: str = typer.Option("https://github.com/JeansBraindead/Codex-VOCR.git", "--repo-url", help="Repository URL for --clone."),
 ) -> None:
     """Prepare the local VOCR repo safely and idempotently."""
 
-    result = run_bootstrap_or_exit(run_tests=run_tests, write_scripts=write_scripts, allow_install=True)
+    result = run_bootstrap_or_exit(
+        run_tests=run_tests,
+        write_scripts=write_scripts,
+        allow_install=True,
+        clone_if_missing=clone_if_missing,
+        install_dir=install_dir,
+        repo_url=repo_url,
+    )
     if start_after:
         open_normal_mode(result.repo_root, console_only=console_only)
     else:
@@ -357,10 +373,18 @@ def bootstrap(
 def install(
     run_tests: bool = typer.Option(False, "--tests", help="Run compileall and unittest after setup."),
     write_scripts: bool = typer.Option(True, "--scripts/--no-scripts", help="Write Windows helper scripts."),
+    clone_if_missing: bool = typer.Option(False, "--clone", help="Clone VOCR into --install-dir if no repo is found."),
+    install_dir: str = typer.Option("Codex-VOCR", "--install-dir", help="Target folder for --clone."),
 ) -> None:
     """Alias for bootstrap focused on installation."""
 
-    run_bootstrap_or_exit(run_tests=run_tests, write_scripts=write_scripts, allow_install=True)
+    run_bootstrap_or_exit(
+        run_tests=run_tests,
+        write_scripts=write_scripts,
+        allow_install=True,
+        clone_if_missing=clone_if_missing,
+        install_dir=install_dir,
+    )
     console.print("[green]Installation ready.[/green] Start with: vocr start")
 
 

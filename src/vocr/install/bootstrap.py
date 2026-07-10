@@ -93,9 +93,17 @@ class Bootstrapper:
         run_tests: bool = False,
         write_scripts: bool = False,
         allow_install: bool = True,
+        clone_if_missing: bool = False,
+        repo_url: str = REPO_URL,
+        install_dir: str = "Codex-VOCR",
     ) -> BootstrapResult:
-        repo_root = self._require_repo_root()
+        repo_root, pre_steps = self._require_repo_root(
+            clone_if_missing=clone_if_missing,
+            repo_url=repo_url,
+            install_dir=install_dir,
+        )
         result = BootstrapResult(repo_root=repo_root)
+        result.steps.extend(pre_steps)
         self._check_python(result)
         self._check_git(result)
         self._ensure_env_file(result, repo_root)
@@ -118,8 +126,9 @@ class Bootstrapper:
         return result
 
     def prepare_start(self) -> BootstrapResult:
-        repo_root = self._require_repo_root()
+        repo_root, pre_steps = self._require_repo_root()
         result = BootstrapResult(repo_root=repo_root)
+        result.steps.extend(pre_steps)
         self._check_python(result)
         self._check_git(result)
         self._ensure_env_file(result, repo_root)
@@ -127,16 +136,46 @@ class Bootstrapper:
         self._ensure_graph(result, repo_root)
         return result
 
-    def _require_repo_root(self) -> Path:
+    def _require_repo_root(
+        self,
+        *,
+        clone_if_missing: bool = False,
+        repo_url: str = REPO_URL,
+        install_dir: str = "Codex-VOCR",
+    ) -> tuple[Path, list[BootstrapStep]]:
         repo_root = find_repo_root(self.start_path)
-        if repo_root is None:
+        if repo_root is not None:
+            return repo_root, []
+        if not clone_if_missing:
             raise BootstrapError(
                 "Hier liegt kein VOCR-Repo. Wechsle in den geklonten Codex-VOCR-Ordner "
                 "oder klone zuerst das Repo:\n"
                 f"git clone {REPO_URL} Codex-VOCR\n"
                 "cd Codex-VOCR"
             )
-        return repo_root
+        if self.which("git") is None:
+            raise BootstrapError(
+                "Hier liegt kein VOCR-Repo und Git wurde nicht gefunden. "
+                "Installiere Git fuer Windows: https://git-scm.com/download/win"
+            )
+        parent = self.start_path if self.start_path.is_dir() else self.start_path.parent
+        target = (parent / install_dir).resolve()
+        if is_vocr_repo(target):
+            return target, [BootstrapStep("clone", "ok", f"Existing VOCR repo reused at {target}.")]
+        if target.exists():
+            raise BootstrapError(
+                f"Zielordner existiert bereits, ist aber kein VOCR-Repo: {target}. "
+                "Waehle einen leeren Ordner mit --install-dir."
+            )
+        completed = self._run(["git", "clone", repo_url, str(target)], cwd=parent)
+        if completed.returncode != 0:
+            raise BootstrapError(
+                "Git clone ist fehlgeschlagen. "
+                f"Details: {(completed.stderr or completed.stdout).strip()}"
+            )
+        if not is_vocr_repo(target):
+            raise BootstrapError(f"Clone abgeschlossen, aber Ziel ist kein VOCR-Repo: {target}")
+        return target, [BootstrapStep("clone", "changed", f"Cloned VOCR repo to {target}.")]
 
     def _check_python(self, result: BootstrapResult) -> None:
         if tuple(self.python_version[:2]) < MIN_PYTHON:

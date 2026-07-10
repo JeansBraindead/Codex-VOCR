@@ -143,6 +143,12 @@ vocr start
 vocr install --tests
 ```
 
+Wenn `vocr` bereits global verfuegbar ist und du in einem leeren Ordner stehst:
+
+```powershell
+vocr bootstrap --clone --install-dir Codex-VOCR
+```
+
 Wenn PowerShell wegen ExecutionPolicy blockiert, nutze den `.bat`-Fallback:
 
 ```powershell
