@@ -102,7 +102,8 @@ class BootstrapTests(unittest.TestCase):
             self.assertTrue((result.repo_root / "start-vocr.ps1").exists())
             self.assertTrue((result.repo_root / "Start-VOCR.bat").exists())
             self.assertIn("$MyInvocation.MyCommand.Path", (result.repo_root / "install-vocr.ps1").read_text(encoding="utf-8"))
-            self.assertIn("git clone $RepoUrl $target", (result.repo_root / "install-vocr.ps1").read_text(encoding="utf-8"))
+            self.assertIn("function Invoke-Checked", (result.repo_root / "install-vocr.ps1").read_text(encoding="utf-8"))
+            self.assertIn('Invoke-Checked -Exe "git"', (result.repo_root / "install-vocr.ps1").read_text(encoding="utf-8"))
             self.assertIn("[string]$InstallDir", (result.repo_root / "install-vocr.ps1").read_text(encoding="utf-8"))
             self.assertIn("sys.version_info >= (3, 11)", (result.repo_root / "install-vocr.ps1").read_text(encoding="utf-8"))
             self.assertIn("%~dp0", (result.repo_root / "Start-VOCR.bat").read_text(encoding="utf-8"))
@@ -115,7 +116,7 @@ class BootstrapTests(unittest.TestCase):
         self.assertTrue((repo_root / "install-vocr.ps1").exists())
         self.assertTrue((repo_root / "start-vocr.ps1").exists())
         self.assertTrue((repo_root / "Start-VOCR.bat").exists())
-        self.assertIn("git clone $RepoUrl $target", (repo_root / "install-vocr.ps1").read_text(encoding="utf-8"))
+        self.assertIn('Invoke-Checked -Exe "git"', (repo_root / "install-vocr.ps1").read_text(encoding="utf-8"))
 
     def test_bootstrap_does_not_overwrite_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

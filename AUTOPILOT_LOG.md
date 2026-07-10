@@ -4,7 +4,7 @@
 
 - Branch: `vocr-autopilot-2026-07-10`
 - Phasen fertig / angefangen: 0 angefangen; Installer-Fix abgeschlossen; Phase-Spec `VOCR_Phasen_Upgrade.md` fehlt.
-- Tasks done / blocked / needs-human: 4 done / 0 blocked / 1 needs-human.
+- Tasks done / blocked / needs-human: 5 done / 0 blocked / 1 needs-human.
 - Commits: noch keine auf diesem Branch.
 - Beta-ready: sichtbarer Windows-Installer im Repo-Root, Clone-aus-leerem-Ordner, portable Script-Generierung, Bootstrap-Tests gruen.
 - Rollout offen: echte Review durch User, fehlende Phasen-Spec nachreichen, Installer manuell auf Windows doppelklicken.
@@ -23,3 +23,4 @@
 [19:23] PHASE installer - Clone-Flow fuer leere Ordner - DONE (Score 4/4) - commit pending - lokal: compileall/unittest/PS syntax gruen - install-vocr.ps1 kann ohne pyproject nach Codex-VOCR klonen.
 [19:27] PHASE installer - Python-Version im Script hart pruefen - DONE (Score 3/3) - commit pending - lokal: compileall/unittest/PS syntax gruen - Fallback `python` muss jetzt 3.11+ sein.
 [19:31] PHASE installer - BAT-Fallback Python 3.11 haerten - DONE (Score 3/3) - commit pending - lokal: compileall/unittest gruen - Start-VOCR.bat nutzt bevorzugt py -3.11 und stoppt bei altem Python.
+[19:36] PHASE installer - Native Commands hart auswerten - DONE (Score 4/4) - commit pending - lokal: compileall/unittest/PS syntax gruen - git/pip/bootstrap/start koennen nicht mehr still fehlschlagen.

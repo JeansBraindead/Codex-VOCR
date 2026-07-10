@@ -268,6 +268,11 @@ function Write-Step($Message) {
     Write-Host "[VOCR] $Message" -ForegroundColor Cyan
 }
 
+function Invoke-Checked($Exe, $Arguments, $FailureMessage) {
+    & $Exe @Arguments
+    if ($LASTEXITCODE -ne 0) { throw $FailureMessage }
+}
+
 function Resolve-Python {
     $py = Get-Command py -ErrorAction SilentlyContinue
     if ($py) {
@@ -299,7 +304,7 @@ try {
             throw "Zielordner existiert bereits, ist aber kein VOCR-Repo: $target. Bitte gib mit -InstallDir einen leeren oder passenden Ordner an."
         } else {
             Write-Step "Kein VOCR-Repo gefunden. Klone nach: $target"
-            git clone $RepoUrl $target
+            Invoke-Checked -Exe "git" -Arguments @("clone", $RepoUrl, $target) -FailureMessage "Git clone ist fehlgeschlagen. Pruefe Repo-URL, Netzwerk und Git-Anmeldung."
         }
         Set-Location -LiteralPath $target
         $repoRoot = $target
@@ -314,7 +319,7 @@ try {
 
     if (-not (Test-Path ".venv")) {
         Write-Step "Lege .venv an"
-        & $pythonCmd.Exe @($pythonCmd.Args) -m venv .venv
+        Invoke-Checked -Exe $pythonCmd.Exe -Arguments ($pythonCmd.Args + @("-m", "venv", ".venv")) -FailureMessage "Virtuelle Umgebung konnte nicht angelegt werden."
     } else {
         Write-Step "Nutze vorhandene .venv"
     }
@@ -325,17 +330,17 @@ try {
     }
 
     Write-Step "Installiere VOCR editable"
-    & $venvPython -m pip install -e .
+    Invoke-Checked -Exe $venvPython -Arguments @("-m", "pip", "install", "-e", ".") -FailureMessage "pip install -e . ist fehlgeschlagen."
 
     $bootstrapArgs = @("bootstrap", "--no-start", "--write-scripts")
     if ($Tests) { $bootstrapArgs += "--tests" }
 
     Write-Step "Fuehre VOCR Bootstrap aus"
-    & $venvPython -m vocr.main @bootstrapArgs
+    Invoke-Checked -Exe $venvPython -Arguments (@("-m", "vocr.main") + $bootstrapArgs) -FailureMessage "VOCR Bootstrap ist fehlgeschlagen."
 
     if (-not $NoStart) {
         Write-Step "Starte VOCR Normalmodus"
-        & $venvPython -m vocr.main start
+        Invoke-Checked -Exe $venvPython -Arguments @("-m", "vocr.main", "start") -FailureMessage "VOCR Start ist fehlgeschlagen."
     } else {
         Write-Step "Installation fertig. Starte spaeter mit: .\start-vocr.ps1"
     }
