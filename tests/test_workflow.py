@@ -27,6 +27,7 @@ from vocr.models import (
     ReviewDecision,
     ReviewResult,
     RunTelemetry,
+    TaskStatus,
     TokenUsage,
     VocrTask,
 )
@@ -212,6 +213,47 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("vocr_plan", tool_names)
         self.assertIn("vocr_review", tool_names)
         self.assertIn("vocr_promote_preview", tool_names)
+        self.assertIn("vocr_promote", tool_names)
+
+    def test_mcp_promote_requires_confirm_and_uses_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / ".vocr"
+            ledger = MemoryLedger(root)
+            task = VocrTask(
+                id="task-promote",
+                slice_id="slice-promote",
+                title="Promote me",
+                summary="Ready to promote",
+                scope=["docs"],
+                acceptance_criteria=[AcceptanceCriterion(text="Docs updated")],
+                tests=["Syntax-Check"],
+                status=TaskStatus.accepted,
+                branch_name="vocr/task-promote",
+            )
+            ledger.append(LedgerEventType.task_created, task)
+            server = VocrMcpServer(root)
+
+            blocked = server.handle(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "vocr_promote", "arguments": {"task_id": task.id, "confirm": False}},
+                }
+            )
+            with patch("vocr.mcp.server.promote_task") as promote:
+                promoted = server.handle(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/call",
+                        "params": {"name": "vocr_promote", "arguments": {"task_id": task.id, "confirm": True}},
+                    }
+                )
+
+        self.assertIn("Promotion not started", blocked["result"]["content"][0]["text"])
+        promote.assert_called_once()
+        self.assertIn("Task promoted", promoted["result"]["content"][0]["text"])
 
     def test_env_file_helpers_configure_local_model_without_printing_secret(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

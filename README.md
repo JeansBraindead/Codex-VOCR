@@ -336,6 +336,5 @@ Das Ziel ist: neue Agents bekommen eine Repo-Karte und nur die naechsten relevan
 
 1. Reviewer Agent mit echten inline PR-Review-Kommentaren erweitern.
 2. Echte Token-Usage aus Agents SDK/Codex auslesen, sobald stabil verfuegbar.
-3. MCP-Server um explizit bestaetigte Promote-Aktionen erweitern, weiterhin streng gate-gesteuert.
-4. Learning-Signale um Erfolgsdauer, Retry-Anzahl und Clarification-Qualitaet erweitern.
-5. Reviewer-/Learning-Signale nach echten Beta-Laeufen kalibrieren.
+3. Learning-Signale um Erfolgsdauer und Clarification-Qualitaet erweitern.
+4. Reviewer-/Learning-Signale nach echten Beta-Laeufen kalibrieren.
