@@ -235,7 +235,7 @@ vocr diff <task-id> --full
 vocr usage
 vocr eval-golden
 vocr learn
-vocr context "scope review" --learning --limit 10
+vocr context "scope review" --learning --limit 10 --budget 1200
 vocr compact --keep-last 200
 vocr secrets scan
 vocr test
@@ -277,8 +277,12 @@ vocr doctor
 - Es gibt keine automatische Merge-Operation ohne Review.
 - `vocr go ... --all` oder `vocr vision ... --go` setzt eine geloggte Approve-All-Freigabe fuer VOCR-interne Nachfragen. Externe Codex-/OS-Permissions muessen spaeter vom jeweiligen Runner respektiert werden.
 - Neue Agents sollen zuerst `vocr context` bzw. `.vocr/graph.json` lesen, nicht blind das ganze Repo. Das reduziert Tokenburn und gibt ihnen eine Karte der relevanten Dateien.
+- `vocr context --budget N` begrenzt Context-Packs ueber ein ungefaehres Token-Budget statt nur ueber fixe Node-Zahlen.
+- Der Live-Agent-Pfad nutzt ein Confidence-Gate: bei hohem deterministischen Vertrauen wird auch mit `--live-agent` kein LLM-Overwrite gestartet.
+- Live-Agent-Fan-out ist im MVP kollabiert; Vision/Organizer erzeugen strukturierte Outputs ohne mehrere Specialist-Tool-Calls.
+- Worker-Retries bekommen nur Delta-Diffs seit dem vorherigen Versuch.
 - `vocr dispatch` erzeugt im isolierten Worktree `.vocr/VOCR_TASK.md` mit Task, Context-Pack und Permission-Modus.
-- `vocr dispatch` erzeugt ausserdem `.vocr/scope.json` und `.vocr/AGENTS.md` als maschinenlesbare und menschenlesbare Scope-Policy fuer Worker.
+- `vocr dispatch` erzeugt ausserdem `.vocr/scope.json` als maschinenlesbare Scope-Policy; `.vocr/AGENTS.md` verweist darauf, statt Scope-Daten zu duplizieren.
 - Scope ist hart: `task.scope` wird in erlaubte Pfad-Globs uebersetzt. Aenderungen ausserhalb werden vor dem Commit blockiert und der Task wird `needs_changes`.
 - Der Pre-Commit Secret-Scanner prueft Diffs inklusive neuer untracked Dateien auf Keyword-Secrets, bekannte Token-Muster und Entropie-Hinweise. Treffer blockieren den Commit ohne Secret-Werte auszugeben.
 - `vocr secrets scan` scannt den aktuellen Diff manuell. Wenn `gitleaks` installiert ist, nutzt VOCR optional `.gitleaks.toml`, `.gitleaks-baseline.json`, `VOCR_GITLEAKS_CONFIG` und `VOCR_GITLEAKS_BASELINE`.
@@ -288,6 +292,7 @@ vocr doctor
 - `vocr review --post-pr-review` postet optional einen GitHub PR-Review. Kommentare mit sicherer Datei-/Zeilenposition werden als Inline-Review-Kommentare gesendet; sonst nutzt VOCR einen normalen PR-Review-Kommentar.
 - `vocr review` schreibt standardmaessig ein Artefakt nach `.vocr/artifacts/<task-id>/review.md`.
 - `vocr review` fuehrt sichere automatische Checks aus, z.B. Syntax-Check. Unbekannte Checks werden als manuell markiert, nicht blind gestartet.
+- Syntax-/Compile-Checks im Task-Worktree kompilieren nur geaenderte Python-Dateien; ohne Python-Diff wird billig uebersprungen.
 - `vocr work` fuehrt den echten Worker aus und erstellt bei Erfolg automatisch einen Task-Commit, wenn Aenderungen vorhanden sind und der Scope Guard keine Verletzung findet.
 - `vocr work --fix --max-retries 2` erlaubt begrenzte Nachbesserungen bis `review_ready`; Promote bleibt trotzdem manuell und review-gated.
 - `vocr dispatch-ready` und `vocr work-ready` bedienen vorbereitete DAG-Tasks, deren Dependencies erfuellt sind.

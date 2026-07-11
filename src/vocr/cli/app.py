@@ -207,12 +207,20 @@ def retry_prompt(attempt: int, issues: list[str], diff_text: str, task_scope: li
             "Failures to fix:",
             "\n".join(f"- {issue}" for issue in issues),
             "",
-            "Current diff:",
+            "Delta diff since previous attempt:",
             "```diff",
             diff_text[-6000:],
             "```",
         ]
     )
+
+
+def diff_delta(previous: str, current: str) -> str:
+    if not previous:
+        return current
+    previous_lines = set(previous.splitlines())
+    delta_lines = [line for line in current.splitlines() if line not in previous_lines]
+    return "\n".join(delta_lines) or "no new diff since previous attempt"
 
 
 def persist_tasks(store: MemoryLedger, tasks: list, *, print_tasks: bool = True) -> None:
@@ -272,6 +280,7 @@ def run_vision_pipeline(
 ) -> None:
     store = ledger()
     store.init()
+    readiness = assess_request_readiness(request)
     if request_clarification(store, request):
         return
 
@@ -280,12 +289,15 @@ def run_vision_pipeline(
         console.print("[green]Graphify complete[/green] Visionary will use token-efficient context.")
 
     item = create_vision(request)
-    if live_agent and live_agents_available():
+    use_live = live_agent and readiness.confidence < 0.92
+    if live_agent and not use_live:
+        console.print("[cyan]Deterministic confidence high; skipping live Visionary overwrite.[/cyan]")
+    if use_live and live_agents_available():
         try:
             item = asyncio.run(create_live_vision(request))
         except Exception as exc:
             print_live_agent_fallback("Live Visionary", exc)
-    elif live_agent:
+    elif use_live:
         console.print("[yellow]No live OpenAI-compatible model config found, using local fallback.[/yellow]")
     store.append(LedgerEventType.vision_created, item)
     if go:
@@ -301,15 +313,15 @@ def run_vision_pipeline(
         return
 
     tasks = organize_slice(item, vocr_home=str(store.root))
-    if live_agent and live_agents_available():
+    if use_live and live_agents_available():
         try:
-            context_pack = graph_store().context_pack(query=item.goal, limit=12)
+            context_pack = "\n\n".join(task.context_pack or "" for task in tasks)
             plan = asyncio.run(create_live_task_plan(item, context_pack))
             tasks = plan.tasks or tasks
             for task in tasks:
                 if not task.context_pack:
                     task.context_query = task.context_query or item.goal
-                    task.context_pack = graph_store().context_pack(query=task.context_query, limit=12)
+                    task.context_pack = graph_store().context_pack(query=task.context_query, limit=12, token_budget=900)
         except Exception as exc:
             print_live_agent_fallback("Live Organizer", exc)
 
@@ -735,12 +747,13 @@ def context(
         help="Optional search terms for a smaller context pack.",
     ),
     limit: int = typer.Option(20, "--limit", "-n", help="Maximum files in the brief."),
+    budget: int = typer.Option(1200, "--budget", help="Approximate token budget for the graph brief."),
     learning: bool = typer.Option(False, "--learning", help="Include compact local learning signals."),
 ) -> None:
     store = graph_store()
     if not store.exists():
         raise typer.BadParameter("No graph found. Run 'vocr graphify' first.")
-    console.print(store.context_pack(query=query, limit=limit))
+    console.print(store.context_pack(query=query, limit=limit, token_budget=budget))
     if learning:
         boosts = learning_store().file_boosts(query=query) if learning_store().exists() else {}
         if boosts:
@@ -872,19 +885,23 @@ def organize(
     if slice_item is None:
         raise typer.BadParameter(f"Unknown slice id: {slice_id}")
     tasks = organize_slice(slice_item, vocr_home=str(store.root))
-    if live_agent and live_agents_available():
+    readiness = assess_request_readiness(slice_item.request)
+    use_live = live_agent and readiness.confidence < 0.92
+    if live_agent and not use_live:
+        console.print("[cyan]Deterministic confidence high; skipping live Organizer overwrite.[/cyan]")
+    if use_live and live_agents_available():
         try:
-            context_pack = graph_store().context_pack(query=slice_item.goal, limit=12)
+            context_pack = "\n\n".join(task.context_pack or "" for task in tasks)
             plan = asyncio.run(create_live_task_plan(slice_item, context_pack))
             tasks = plan.tasks or tasks
         except Exception as exc:
             print_live_agent_fallback("Live Organizer", exc)
-    elif live_agent:
+    elif use_live:
         console.print("[yellow]No live OpenAI-compatible model config found, using local fallback.[/yellow]")
     for task in tasks:
         if not task.context_pack:
             task.context_query = task.context_query or slice_item.goal
-            task.context_pack = graph_store().context_pack(query=task.context_query, limit=12)
+            task.context_pack = graph_store().context_pack(query=task.context_query, limit=12, token_budget=900)
     persist_tasks(store, tasks)
 
 
@@ -934,6 +951,7 @@ def run_worker(
     extra_prompt: str | None = None
     final_result = None
     prompt_text = render_task_template(task)
+    previous_diff = ""
     try:
         for attempt in range(max_retries + 1):
             result = client.run_task(
@@ -948,8 +966,9 @@ def run_worker(
                 if not auto_fix or attempt >= max_retries:
                     break
                 issues = [f"Worker exited with {result.exit_code}", (result.stderr or result.stdout)[-1200:]]
-                diff_text = GitWorktreeManager(task.worktree_path or ".").diff()
-                extra_prompt = retry_prompt(attempt + 1, issues, diff_text, task.scope)
+                current_diff = GitWorktreeManager(task.worktree_path or ".").diff()
+                extra_prompt = retry_prompt(attempt + 1, issues, diff_delta(previous_diff, current_diff), task.scope)
+                previous_diff = current_diff
                 continue
             if commit:
                 worktree_git = GitWorktreeManager(task.worktree_path or ".")
@@ -959,7 +978,9 @@ def run_worker(
                     record_scope_block(store, task.id, scope_issues)
                     if not auto_fix or attempt >= max_retries:
                         raise typer.BadParameter("Scope guard blocked commit: " + "; ".join(scope_issues))
-                    extra_prompt = retry_prompt(attempt + 1, scope_issues, worktree_git.diff(), task.scope)
+                    current_diff = worktree_git.diff()
+                    extra_prompt = retry_prompt(attempt + 1, scope_issues, diff_delta(previous_diff, current_diff), task.scope)
+                    previous_diff = current_diff
                     continue
                 secret_scan = scan_diff_for_secrets(worktree_git.diff_for_scan(), repo_root=worktree_git.repo_root)
                 if secret_scan.blocked:
@@ -971,7 +992,9 @@ def run_worker(
                     record_secret_block(store, task.id, issues)
                     if not auto_fix or attempt >= max_retries:
                         raise typer.BadParameter("Secret scanner blocked commit: " + "; ".join(issues))
-                    extra_prompt = retry_prompt(attempt + 1, issues, worktree_git.diff_for_scan(), task.scope)
+                    current_diff = worktree_git.diff_for_scan()
+                    extra_prompt = retry_prompt(attempt + 1, issues, diff_delta(previous_diff, current_diff), task.scope)
+                    previous_diff = current_diff
                     continue
                 if worktree_git.has_changes():
                     sha = worktree_git.commit_all(f"VOCR task {task.id}: {task.title}")

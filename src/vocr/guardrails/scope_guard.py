@@ -94,10 +94,9 @@ class ScopeGuard:
                     "Do not edit `.git`, `.venv`, `.vocr/ledger.jsonl`, secrets, or unrelated files.",
                     "If the task is unclear, stop and report the missing information.",
                     "",
-                    f"Task ID: {task.id}",
-                    f"Scope: {task.scope}",
-                    f"Allowed globs: {self.scope_to_globs(task.scope)}",
-                    f"Non-goals: {task.non_goals}",
+                    "Authoritative task prompt: `.vocr/VOCR_TASK.md`.",
+                    "Authoritative scope policy: `.vocr/scope.json`.",
+                    "Do not duplicate or reinterpret scope outside those files.",
                 ]
             ),
             encoding="utf-8",

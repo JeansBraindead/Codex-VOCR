@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 from vocr.memory.learning import LearningStore
-from vocr.models import GraphEdge, GraphNode, RepoGraph
+from vocr.models import GraphEdge, GraphNode, RepoGraph, _tokenize
 
 
 DEFAULT_EXCLUDES = {
@@ -44,12 +44,17 @@ class GraphStore:
     def exists(self) -> bool:
         return self.path.exists()
 
-    def context_pack(self, query: str | None = None, limit: int = 20) -> str:
+    def context_pack(self, query: str | None = None, limit: int = 20, token_budget: int | None = None) -> str:
         boosts: dict[str, float] | None = None
         learning = LearningStore(self.vocr_home)
         if learning.exists():
             boosts = learning.file_boosts(query=query)
-        return self.load().context_brief(limit=limit, query=query, learning_boosts=boosts)
+        return self.load().context_brief(
+            limit=limit,
+            query=query,
+            learning_boosts=boosts,
+            token_budget=token_budget,
+        )
 
 
 class RepoGraphBuilder:
@@ -116,6 +121,7 @@ class RepoGraphBuilder:
 
         if path.suffix == ".py":
             imports, symbols = self._parse_python(text)
+        summary = self._summarize(path, lines, symbols)
 
         return GraphNode(
             path=rel,
@@ -123,9 +129,10 @@ class RepoGraphBuilder:
             size_bytes=size_bytes,
             line_count=len(lines),
             content_hash=hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest(),
-            summary=self._summarize(path, lines, symbols),
+            summary=summary,
             imports=imports,
             symbols=symbols,
+            search_tokens=_tokenize(" ".join([rel, summary, " ".join(imports), " ".join(symbols)])),
         )
 
     def _parse_python(self, text: str) -> tuple[list[str], list[str]]:

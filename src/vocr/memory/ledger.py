@@ -74,6 +74,8 @@ class MemoryLedger:
         self.root = Path(root)
         self.path = self.root / "ledger.jsonl"
         self.lock_path = self.root / "ledger.lock"
+        self._events_cache: list[LedgerEvent] | None = None
+        self._events_cache_stat: tuple[int, int] | None = None
 
     def init(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -87,6 +89,8 @@ class MemoryLedger:
             self.path.touch(exist_ok=True)
             with self.path.open("a", encoding="utf-8") as handle:
                 handle.write(event.model_dump_json() + "\n")
+            self._events_cache = None
+            self._events_cache_stat = None
         return event
 
     def events(self) -> Iterable[LedgerEvent]:
@@ -96,11 +100,17 @@ class MemoryLedger:
     def _read_events_unlocked(self) -> list[LedgerEvent]:
         if not self.path.exists():
             return []
+        stat = self.path.stat()
+        cache_stat = (stat.st_mtime_ns, stat.st_size)
+        if self._events_cache is not None and self._events_cache_stat == cache_stat:
+            return list(self._events_cache)
         items: list[LedgerEvent] = []
         with self.path.open("r", encoding="utf-8") as handle:
             for line in handle:
                 if line.strip():
                     items.append(LedgerEvent.model_validate_json(line))
+        self._events_cache = items
+        self._events_cache_stat = cache_stat
         return items
 
     def slices(self) -> list[VisionSlice]:
@@ -226,6 +236,8 @@ class MemoryLedger:
         with self.path.open("w", encoding="utf-8") as handle:
             for event in kept:
                 handle.write(event.model_dump_json() + "\n")
+        self._events_cache = None
+        self._events_cache_stat = None
         return CompactResult(
             original_events=len(events),
             kept_events=len(kept),

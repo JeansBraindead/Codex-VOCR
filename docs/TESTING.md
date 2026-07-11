@@ -202,7 +202,7 @@ Mit Learning:
 
 ```powershell
 vocr learn
-vocr context "scope review" --learning --limit 10
+vocr context "scope review" --learning --limit 10 --budget 1200
 ```
 
 Erfolgskriterien:
@@ -489,3 +489,5 @@ Und diese Regeln gelten:
 - Secret-Funde blockieren Commits.
 - Learning speichert verdichtete Signale, keine Rohprompts oder grossen Diffs.
 - Golden-Eval prueft den LLM-freien Stub-Worker und blockierten Promote vor accepted Review.
+- Context-Packs respektieren `--budget` und ranken Code vor Docs, wenn beides aehnlich relevant ist.
+- Bei hohem deterministischen Vertrauen wird `--live-agent` nicht fuer einen LLM-Overwrite genutzt.

@@ -118,11 +118,17 @@ def infer_context_query(text: str) -> str:
     return " ".join(seen[:5]) or "repo"
 
 
-def build_context_pack(query: str, *, limit: int = 12, vocr_home: str = ".vocr") -> str:
+def build_context_pack(
+    query: str,
+    *,
+    limit: int = 12,
+    token_budget: int = 900,
+    vocr_home: str = ".vocr",
+) -> str:
     store = GraphStore(vocr_home)
     if not store.exists():
         store.save(RepoGraphBuilder(".").build())
-    parts = [store.context_pack(query=query, limit=limit)]
+    parts = [store.context_pack(query=query, limit=limit, token_budget=token_budget)]
     learning = LearningStore(vocr_home)
     if learning.exists():
         parts.append(learning.brief(query=query, limit=6))
@@ -409,7 +415,7 @@ def run_task_checks(task: VocrTask) -> list[TestRunResult]:
     results: list[TestRunResult] = []
     cwd = task.worktree_path
     for check in task.tests:
-        command = normalize_check_command(check)
+        command = normalize_check_command(check, task=task)
         if command is None:
             results.append(
                 TestRunResult(
@@ -439,10 +445,22 @@ def run_task_checks(task: VocrTask) -> list[TestRunResult]:
     return results
 
 
-def normalize_check_command(check: str) -> list[str] | None:
+def normalize_check_command(check: str, task: VocrTask | None = None) -> list[str] | None:
     lowered = check.lower()
     if "compile" in lowered or "syntax" in lowered:
-        return [sys.executable, "-m", "compileall", "src"]
+        if task is None or task.worktree_path is None:
+            return [sys.executable, "-m", "compileall", "src"]
+        changed_python = _changed_python_files(task)
+        if changed_python:
+            return [sys.executable, "-m", "py_compile", *changed_python]
+        return [sys.executable, "-c", "print('no changed python files')"]
     if lowered.strip() in {"pytest", "python -m pytest"} or "pytest" in lowered:
         return [sys.executable, "-m", "pytest"]
     return None
+
+
+def _changed_python_files(task: VocrTask | None) -> list[str]:
+    if task is None or task.worktree_path is None:
+        return []
+    manager = GitWorktreeManager(task.worktree_path)
+    return sorted(path for path in manager.changed_files() if path.endswith(".py"))

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -22,6 +24,7 @@ from vocr.cli.app import (
     build_pr_review_comments,
     clean_archives,
     clean_artifacts,
+    diff_delta,
     _local_api_key,
     latest_open_clarification,
     record_worker_telemetry,
@@ -50,7 +53,7 @@ from vocr.models import (
     VocrTask,
 )
 from vocr.orchestration.golden import run_golden_eval
-from vocr.orchestration.workflow import create_vision, organize_slice
+from vocr.orchestration.workflow import create_vision, normalize_check_command, organize_slice
 
 GOOD_REQUEST = (
     "Ziel: Baue eine Healthcheck-API im Backend. "
@@ -78,7 +81,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("gueltigen LM-Studio-API-Token", diagnosis)
         self.assertIn("lokalen Fallback", diagnosis)
 
-    def test_live_agent_local_401_cli_prints_auth_diagnosis_and_falls_back(self) -> None:
+    def test_live_agent_high_confidence_cli_skips_local_401_path(self) -> None:
         class LocalAuthError(Exception):
             status_code = 401
 
@@ -99,8 +102,25 @@ class WorkflowTests(unittest.TestCase):
                 result = CliRunner().invoke(app, ["ask", GOOD_REQUEST, "--live-agent", "--plan-only"], env=env)
 
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("LM Studio hat die Anfrage wegen API-Key/Auth abgelehnt", result.output)
-        self.assertIn("lokaler Fallback aktiv", result.output)
+        self.assertIn("Deterministic confidence high", result.output)
+        self.assertIn("Created slice", result.output)
+
+    def test_live_agent_is_skipped_for_high_confidence_request(self) -> None:
+        async def should_not_run(_: str):
+            raise AssertionError("live agent should not run for high-confidence request")
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "vocr.cli.app.live_agents_available",
+            return_value=True,
+        ), patch("vocr.cli.app.create_live_vision", should_not_run):
+            result = CliRunner().invoke(
+                app,
+                ["ask", GOOD_REQUEST, "--live-agent", "--plan-only"],
+                env={"VOCR_HOME": str(Path(tmp) / ".vocr")},
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("Deterministic confidence high", result.output)
         self.assertIn("Created slice", result.output)
 
     def test_vision_and_task_use_explicit_sections(self) -> None:
@@ -157,6 +177,57 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(guard.validate_changed_files(task, ["docs/guide.md"]), [])
         self.assertTrue(guard.validate_changed_files(task, ["src/vocr/main.py"]))
 
+    def test_worker_agents_file_points_to_single_scope_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task = VocrTask(
+                slice_id="slice-test",
+                title="Docs only",
+                summary="Update docs",
+                scope=["docs"],
+                acceptance_criteria=[AcceptanceCriterion(text="Docs updated")],
+                tests=["Syntax-Check"],
+                worktree_path=Path(tmp),
+            )
+            path = ScopeGuard().write_worker_agents_file(task)
+            text = path.read_text(encoding="utf-8")
+
+        self.assertIn(".vocr/VOCR_TASK.md", text)
+        self.assertIn(".vocr/scope.json", text)
+        self.assertNotIn("Allowed globs:", text)
+        self.assertNotIn("Non-goals:", text)
+
+    def test_retry_prompt_uses_incremental_diff_delta(self) -> None:
+        previous = "diff --git a/a.py b/a.py\n+old"
+        current = "diff --git a/a.py b/a.py\n+old\n+new"
+
+        self.assertEqual(diff_delta(previous, current), "+new")
+
+    def test_compile_check_targets_changed_python_files_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "vocr@example.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "VOCR Test"], cwd=root, check=True)
+            (root / "src").mkdir()
+            (root / "src" / "a.py").write_text("print('a')\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "initial"], cwd=root, check=True, capture_output=True)
+            (root / "src" / "a.py").write_text("print('changed')\n", encoding="utf-8")
+            task = VocrTask(
+                slice_id="slice-test",
+                title="Compile",
+                summary="Compile",
+                scope=["src"],
+                acceptance_criteria=[AcceptanceCriterion(text="Compiles")],
+                tests=["Syntax-Check"],
+                worktree_path=root,
+            )
+
+            command = normalize_check_command("Syntax-Check", task=task)
+
+        self.assertEqual(command[:3], [sys.executable, "-m", "py_compile"])
+        self.assertEqual(command[3:], ["src/a.py"])
+
     def test_graph_context_uses_bm25_and_import_neighbors(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -177,6 +248,21 @@ class WorkflowTests(unittest.TestCase):
 
         self.assertIn("src/sample/api.py (seed)", brief)
         self.assertIn("src/sample/service.py", brief)
+
+    def test_graph_context_uses_budget_and_downweights_docs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docs").mkdir()
+            (root / "docs" / "feature.md").write_text("# feature api ranking\n", encoding="utf-8")
+            (root / "src").mkdir()
+            (root / "src" / "feature.py").write_text("def feature_api():\n    return True\n", encoding="utf-8")
+
+            graph = RepoGraphBuilder(root).build()
+            brief = graph.context_brief(query="feature api", limit=5, token_budget=50)
+
+        self.assertIn("Token budget: 50", brief)
+        self.assertLess(brief.index("src/feature.py"), brief.index("docs/feature.md"))
+        self.assertTrue(all(node.search_tokens for node in graph.nodes))
 
     def test_secret_scanner_blocks_added_secret_values(self) -> None:
         diff = "\n".join(

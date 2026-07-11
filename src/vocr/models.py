@@ -310,6 +310,7 @@ class GraphNode(BaseModel):
     summary: str
     imports: list[str] = Field(default_factory=list)
     symbols: list[str] = Field(default_factory=list)
+    search_tokens: list[str] = Field(default_factory=list)
 
 
 class GraphEdge(BaseModel):
@@ -329,6 +330,7 @@ class RepoGraph(BaseModel):
         limit: int = 20,
         query: str | None = None,
         learning_boosts: dict[str, float] | None = None,
+        token_budget: int | None = None,
     ) -> str:
         nodes = self.nodes
         ranked_paths: list[str] = []
@@ -336,21 +338,43 @@ class RepoGraph(BaseModel):
             nodes = self._rank_nodes_bm25(query, learning_boosts=learning_boosts)
             ranked_paths = [node.path for node in nodes]
             nodes = self._expand_with_neighbors(nodes, limit=limit)
+        nodes = self._apply_context_budget(nodes, limit=limit, token_budget=token_budget)
 
         lines = ["VOCR repo graph brief:"]
         if query:
             lines.append(f"Query: {query}")
-        for node in nodes[:limit]:
+        if token_budget:
+            lines.append(f"Token budget: {token_budget}")
+        for node in nodes:
             symbol_text = ", ".join(node.symbols[:6]) or "no symbols"
             marker = ""
             if query:
                 marker = " (seed)" if node.path in ranked_paths[:limit] else " (1-hop)"
             lines.append(f"- {node.path}{marker}: {node.summary} ({symbol_text})")
-        if len(nodes) > limit:
-            lines.append(f"- ... {len(nodes) - limit} more matching files omitted")
         if not nodes:
             lines.append("- no matching files")
         return "\n".join(lines)
+
+    def _apply_context_budget(
+        self,
+        nodes: list["GraphNode"],
+        *,
+        limit: int,
+        token_budget: int | None,
+    ) -> list["GraphNode"]:
+        if token_budget is None:
+            return nodes[:limit]
+        selected: list[GraphNode] = []
+        used = 0
+        for node in nodes:
+            cost = max(8, len(node.path + node.summary + " ".join(node.symbols[:6])) // 4)
+            if selected and used + cost > token_budget:
+                break
+            selected.append(node)
+            used += cost
+            if len(selected) >= limit:
+                break
+        return selected
 
     def _rank_nodes_bm25(
         self,
@@ -361,7 +385,7 @@ class RepoGraph(BaseModel):
         if not query_terms:
             return self.nodes
 
-        documents = [(node, _tokenize(_node_search_text(node))) for node in self.nodes]
+        documents = [(node, node.search_tokens or _tokenize(_node_search_text(node))) for node in self.nodes]
         if not documents:
             return []
         average_length = sum(len(tokens) for _, tokens in documents) / max(len(documents), 1)
@@ -383,6 +407,7 @@ class RepoGraph(BaseModel):
                 score += idf * ((frequencies[term] * 2.2) / denominator)
             if learning_boosts:
                 score += learning_boosts.get(node.path, 0.0)
+            score *= _path_weight(node.path)
             if score > 0:
                 scored.append((score, node))
         return [node for _, node in sorted(scored, key=lambda item: (-item[0], item[1].path))]
@@ -408,3 +433,10 @@ def _tokenize(text: str) -> list[str]:
 
 def _node_search_text(node: GraphNode) -> str:
     return " ".join([node.path, node.summary, " ".join(node.imports), " ".join(node.symbols)])
+
+
+def _path_weight(path: str) -> float:
+    lowered = path.lower()
+    if lowered.endswith(".md") or lowered.startswith("docs/"):
+        return 0.72
+    return 1.0
