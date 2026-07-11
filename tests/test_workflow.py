@@ -53,7 +53,15 @@ from vocr.models import (
     VocrTask,
 )
 from vocr.orchestration.golden import run_golden_eval
-from vocr.orchestration.workflow import create_vision, normalize_check_command, organize_slice
+from vocr.orchestration.workflow import (
+    create_vision,
+    dispatch_task,
+    normalize_check_command,
+    organize_slice,
+    revert_task,
+    run_task_checks,
+    validate_task_plan,
+)
 
 GOOD_REQUEST = (
     "Ziel: Baue eine Healthcheck-API im Backend. "
@@ -322,6 +330,113 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(tasks[0].dependencies, [])
         self.assertEqual(tasks[1].dependencies, [])
         self.assertEqual(set(tasks[2].dependencies), {tasks[0].id, tasks[1].id})
+
+    def test_plan_invariants_block_dependency_cycles_before_dispatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / ".vocr"
+            ledger = MemoryLedger(root)
+            first = VocrTask(
+                id="task-a",
+                slice_id="slice-plan",
+                title="A",
+                summary="A",
+                scope=["docs"],
+                acceptance_criteria=[AcceptanceCriterion(text="A done")],
+                tests=["Syntax-Check"],
+                dependencies=["task-b"],
+            )
+            second = VocrTask(
+                id="task-b",
+                slice_id="slice-plan",
+                title="B",
+                summary="B",
+                scope=["docs"],
+                acceptance_criteria=[AcceptanceCriterion(text="B done")],
+                tests=["Syntax-Check"],
+                dependencies=["task-a"],
+            )
+            ledger.append(LedgerEventType.task_created, first)
+            ledger.append(LedgerEventType.task_created, second)
+
+            class NoCreateManager:
+                def create_for_task(self, task_id: str):
+                    raise AssertionError("worktree must not be created for invalid plan")
+
+            issues = validate_task_plan(ledger.tasks(), target_task_id=first.id)
+            with self.assertRaisesRegex(ValueError, "dependency cycle"):
+                dispatch_task(ledger, NoCreateManager(), first.id)  # type: ignore[arg-type]
+
+        self.assertTrue(any("dependency cycle" in issue for issue in issues))
+
+    def test_plan_invariants_require_scope_and_coverage(self) -> None:
+        task = VocrTask(
+            id="task-invalid-plan",
+            slice_id="slice-plan",
+            title="Invalid",
+            summary="Invalid",
+            scope=[],
+            acceptance_criteria=[AcceptanceCriterion(text="Visible result")],
+            tests=[],
+        )
+
+        issues = validate_task_plan([task])
+
+        self.assertTrue(any("Task has no scope" in issue for issue in issues))
+        self.assertTrue(any("no executable check or verification mapping" in issue for issue in issues))
+
+    def test_acceptance_criterion_can_run_executable_check(self) -> None:
+        task = VocrTask(
+            id="task-check",
+            slice_id="slice-check",
+            title="Criterion check",
+            summary="Criterion check",
+            scope=["src"],
+            acceptance_criteria=[
+                AcceptanceCriterion(text="Source compiles", check_command="Syntax-Check"),
+            ],
+            tests=[],
+        )
+
+        issues = validate_task_plan([task])
+        results = run_task_checks(task)
+
+        self.assertEqual(issues, [])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].status, "passed")
+
+    def test_revert_task_uses_recorded_commit_and_logs_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = MemoryLedger(Path(tmp) / ".vocr")
+            task = VocrTask(
+                id="task-revert",
+                slice_id="slice-revert",
+                title="Revert",
+                summary="Revert",
+                scope=["docs"],
+                acceptance_criteria=[AcceptanceCriterion(text="Docs updated")],
+                tests=["Syntax-Check"],
+            )
+            ledger.append(LedgerEventType.task_created, task)
+            ledger.append(LedgerEventType.task_committed, {"task_id": task.id, "commit_sha": "abc123"})
+
+            class FakeManager:
+                def __init__(self) -> None:
+                    self.reverted: list[str] = []
+
+                def revert_commit(self, commit_sha: str) -> str:
+                    self.reverted.append(commit_sha)
+                    return "def456"
+
+            manager = FakeManager()
+
+            revert_sha = revert_task(ledger, manager, task.id, reason="test revert")  # type: ignore[arg-type]
+            current = ledger.get_task(task.id)
+
+        self.assertEqual(manager.reverted, ["abc123"])
+        self.assertEqual(revert_sha, "def456")
+        self.assertIsNotNone(current)
+        self.assertEqual(current.status, TaskStatus.needs_changes)
+        self.assertIsNone(ledger.latest_task_commit(task.id))
 
     def test_mcp_server_lists_vocr_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

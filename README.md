@@ -292,7 +292,9 @@ vocr doctor
 - `vocr review --post-pr-review` postet optional einen GitHub PR-Review. Kommentare mit sicherer Datei-/Zeilenposition werden als Inline-Review-Kommentare gesendet; sonst nutzt VOCR einen normalen PR-Review-Kommentar.
 - `vocr review` schreibt standardmaessig ein Artefakt nach `.vocr/artifacts/<task-id>/review.md`.
 - `vocr review` fuehrt sichere automatische Checks aus, z.B. Syntax-Check. Unbekannte Checks werden als manuell markiert, nicht blind gestartet.
+- Akzeptanzkriterien koennen optional ein `check_command` tragen; VOCR fuehrt diese Checks beim Review ueber dieselbe sichere Allowlist aus wie normale Task-Tests.
 - Syntax-/Compile-Checks im Task-Worktree kompilieren nur geaenderte Python-Dateien; ohne Python-Diff wird billig uebersprungen.
+- `vocr dispatch` blockiert vor dem Worktree, wenn Plan-Invarianten verletzt sind: fehlender Scope, fehlende Verifikation, unbekannte Dependencies oder zyklische Dependencies.
 - `vocr work` fuehrt den echten Worker aus und erstellt bei Erfolg automatisch einen Task-Commit, wenn Aenderungen vorhanden sind und der Scope Guard keine Verletzung findet.
 - `vocr work --fix --max-retries 2` erlaubt begrenzte Nachbesserungen bis `review_ready`; Promote bleibt trotzdem manuell und review-gated.
 - `vocr dispatch-ready` und `vocr work-ready` bedienen vorbereitete DAG-Tasks, deren Dependencies erfuellt sind.
@@ -300,6 +302,7 @@ vocr doctor
 - `vocr check --codex-review` kann zusaetzlich `codex exec review` als Review-Signal ausfuehren.
 - `vocr ship --preview` zeigt Merge-Preview, `vocr ship --pr` erstellt optional eine Draft-PR via GitHub CLI.
 - `vocr promote` fuehrt vor dem Merge einen Preflight aus und blockiert ohne akzeptiertes Review.
+- `vocr revert <task-id> --reason "..."` reverted den im Ledger gespeicherten Task-Commit, loggt den Revert und setzt den Task wieder auf `needs_changes`.
 - `vocr log`, `vocr diff`, `vocr clean` und `vocr abort` sind Housekeeping-Kommandos fuer Timeline, Task-Diff, verwaiste Worktrees und kontrollierten Abbruch.
 - `vocr clean --archives` loescht alte `.vocr/archive`-Segmente dauerhaft per Dateisystem-Unlink; vorher sichern, wenn die Historie erhalten bleiben soll.
 - `.vocr/ledger.jsonl` wird append-only mit plattformsicherem Lock geschrieben, damit parallele VOCR-Prozesse keine Ledger-Zeilen zerreissen.

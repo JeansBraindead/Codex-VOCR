@@ -154,6 +154,10 @@ class MemoryLedger:
                 task_id = event.payload["task_id"]
                 if task_id in task_map:
                     task_map[task_id].status = TaskStatus.aborted
+            elif event.type == LedgerEventType.task_reverted:
+                task_id = event.payload["task_id"]
+                if task_id in task_map:
+                    task_map[task_id].status = TaskStatus.needs_changes
         return list(task_map.values())
 
     def reviews(self) -> list[ReviewResult]:
@@ -207,6 +211,17 @@ class MemoryLedger:
 
     def get_task(self, task_id: str) -> VocrTask | None:
         return next((item for item in self.tasks() if item.id == task_id), None)
+
+    def latest_task_commit(self, task_id: str) -> str | None:
+        commit_sha: str | None = None
+        for event in self.events():
+            if event.type == LedgerEventType.task_committed and event.payload.get("task_id") == task_id:
+                value = event.payload.get("commit_sha")
+                if value:
+                    commit_sha = str(value)
+            elif event.type == LedgerEventType.task_reverted and event.payload.get("task_id") == task_id:
+                commit_sha = None
+        return commit_sha
 
     def dump_json(self) -> str:
         return json.dumps([event.model_dump(mode="json") for event in self.events()], indent=2)

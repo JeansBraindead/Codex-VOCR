@@ -58,6 +58,7 @@ class LedgerEventType(str, Enum):
     task_worker_ran = "task_worker_ran"
     task_committed = "task_committed"
     task_aborted = "task_aborted"
+    task_reverted = "task_reverted"
     review_recorded = "review_recorded"
     task_promoted = "task_promoted"
     telemetry_recorded = "telemetry_recorded"
@@ -69,6 +70,7 @@ class LedgerEventType(str, Enum):
 class AcceptanceCriterion(BaseModel):
     text: str
     verified_by: str = "manual review"
+    check_command: str | None = None
 
 
 class ClarificationQuestion(BaseModel):

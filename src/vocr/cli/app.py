@@ -55,6 +55,7 @@ from vocr.orchestration.workflow import (
     render_review_markdown,
     review_task,
     render_task_template,
+    revert_task,
 )
 from vocr.orchestration.golden import run_golden_eval
 from vocr.orchestration.readiness import assess_request_readiness
@@ -1257,6 +1258,18 @@ def promote(
 
 
 app.command("ship")(promote)
+
+
+@app.command("revert")
+def revert(
+    task_id: str,
+    reason: str = typer.Option("Manual VOCR revert.", "--reason", "-r", help="Why this task commit is reverted."),
+) -> None:
+    try:
+        revert_sha = revert_task(ledger(), GitWorktreeManager(), task_id, reason=reason)
+    except (GitWorktreeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print(f"[green]Reverted[/green] {task_id} -> {revert_sha}")
 
 
 @app.command("log")

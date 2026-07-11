@@ -417,6 +417,25 @@ Erfolgskriterien:
 - Mit accepted Review fuehrt VOCR Merge-Preflight aus
 - Merge passiert erst danach
 
+## 14.1 Plan-Gates und Revert testen
+
+Plan-Invarianten werden automatisch vor `vocr dispatch` geprueft. Ein Task darf keinen leeren Scope, keine fehlende Verifikation, keine unbekannten Dependencies und keine zyklischen Dependencies haben. Akzeptanzkriterien koennen optional ein `check_command` tragen; diese Checks laufen beim Review nur ueber die sichere Check-Allowlist.
+
+Revert eines gespeicherten Task-Commits:
+
+```powershell
+vocr revert <task-id> --reason "Beta-Test Revert"
+vocr log --limit 5
+```
+
+Erfolgskriterien:
+
+- `vocr dispatch` erzeugt bei kaputtem Plan keinen Worktree
+- `vocr review` fuehrt Task-Tests und kriteriumsbezogene Checks aus
+- `vocr revert` erzeugt einen Git-Revert-Commit
+- Ledger enthaelt `task_reverted`
+- Task steht danach wieder auf `needs_changes`
+
 ## 15. Learning und Compact testen
 
 ```powershell

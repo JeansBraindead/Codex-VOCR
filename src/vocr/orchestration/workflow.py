@@ -139,7 +139,10 @@ def render_task_template(task: VocrTask) -> str:
     def bullets(items: list[str]) -> str:
         return "\n".join(f"- {item}" for item in items)
 
-    criteria = [item.text for item in task.acceptance_criteria]
+    criteria = [
+        f"{item.text} (check: {item.check_command})" if item.check_command else item.text
+        for item in task.acceptance_criteria
+    ]
     return f"""VOCR Task: {task.title}
 
 Task ID: {task.id}
@@ -178,6 +181,9 @@ def dispatch_task(ledger: MemoryLedger, manager: GitWorktreeManager, task_id: st
     task = ledger.get_task(task_id)
     if task is None:
         raise ValueError(f"Task not found: {task_id}")
+    invariant_issues = validate_task_plan(ledger.tasks(), target_task_id=task_id)
+    if invariant_issues:
+        raise ValueError("Plan invariants failed: " + "; ".join(invariant_issues))
     blocked_dependencies = _blocked_dependencies(ledger, task)
     if blocked_dependencies:
         raise ValueError(
@@ -196,6 +202,80 @@ def dispatch_task(ledger: MemoryLedger, manager: GitWorktreeManager, task_id: st
     task.branch_name = info.branch_name
     task.worktree_path = info.path
     return task
+
+
+def validate_task_plan(tasks: list[VocrTask], target_task_id: str | None = None) -> list[str]:
+    task_by_id = {task.id: task for task in tasks}
+    if target_task_id and target_task_id not in task_by_id:
+        return [f"Task not found: {target_task_id}"]
+
+    selected = [task_by_id[target_task_id]] if target_task_id else tasks
+    plan_tasks = [task for task in tasks if task.slice_id == selected[0].slice_id] if target_task_id else tasks
+    issues: list[str] = []
+    graph: dict[str, list[str]] = {task.id: list(task.dependencies) for task in plan_tasks}
+
+    for task in selected:
+        for issue in ScopeGuard().validate_task(task):
+            issues.append(f"{task.id}: {issue}")
+        for issue in _acceptance_coverage_issues(task):
+            issues.append(f"{task.id}: {issue}")
+        for dependency_id in task.dependencies:
+            if dependency_id not in task_by_id:
+                issues.append(f"{task.id}: unknown dependency {dependency_id}")
+
+    cycle = _dependency_cycle(graph)
+    if cycle:
+        issues.append("dependency cycle: " + " -> ".join(cycle))
+    return sorted(set(issues))
+
+
+def _acceptance_coverage_issues(task: VocrTask) -> list[str]:
+    issues: list[str] = []
+    for criterion in task.acceptance_criteria:
+        text = criterion.text.strip()
+        if not text:
+            issues.append("Acceptance criterion is empty.")
+            continue
+        verified_by = criterion.verified_by.strip().lower()
+        if criterion.check_command and criterion.check_command.strip():
+            continue
+        if task.tests:
+            continue
+        if verified_by and verified_by not in {"manual", "manual review", "review"}:
+            continue
+        issues.append(f"Acceptance criterion has no executable check or verification mapping: {text}")
+    return issues
+
+
+def _dependency_cycle(graph: dict[str, list[str]]) -> list[str]:
+    visiting: set[str] = set()
+    visited: set[str] = set()
+    stack: list[str] = []
+
+    def walk(task_id: str) -> list[str] | None:
+        if task_id in visiting:
+            start = stack.index(task_id)
+            return stack[start:] + [task_id]
+        if task_id in visited:
+            return None
+        visiting.add(task_id)
+        stack.append(task_id)
+        for dependency_id in graph.get(task_id, []):
+            if dependency_id not in graph:
+                continue
+            found = walk(dependency_id)
+            if found:
+                return found
+        stack.pop()
+        visiting.remove(task_id)
+        visited.add(task_id)
+        return None
+
+    for task_id in graph:
+        found = walk(task_id)
+        if found:
+            return found
+    return []
 
 
 def _blocked_dependencies(ledger: MemoryLedger, task: VocrTask) -> list[str]:
@@ -282,7 +362,7 @@ def review_task(
         summary=review_summary,
         risks=issues,
         required_changes=issues,
-        tests_reviewed=task.tests,
+        tests_reviewed=_task_check_commands(task),
         test_results=test_results,
         comments=comments,
         git_status=git_status,
@@ -411,10 +491,36 @@ def promote_task(ledger: MemoryLedger, manager: GitWorktreeManager, task_id: str
     ledger.append(LedgerEventType.task_promoted, {"task_id": task.id, "branch_name": task.branch_name})
 
 
+def revert_task(
+    ledger: MemoryLedger,
+    manager: GitWorktreeManager,
+    task_id: str,
+    *,
+    reason: str = "Manual VOCR revert.",
+) -> str:
+    task = ledger.get_task(task_id)
+    if task is None:
+        raise ValueError(f"Task not found: {task_id}")
+    commit_sha = ledger.latest_task_commit(task_id)
+    if not commit_sha:
+        raise ValueError("Task has no unreverted commit recorded in the ledger.")
+    revert_sha = manager.revert_commit(commit_sha)
+    ledger.append(
+        LedgerEventType.task_reverted,
+        {
+            "task_id": task.id,
+            "commit_sha": commit_sha,
+            "revert_sha": revert_sha,
+            "reason": reason,
+        },
+    )
+    return revert_sha
+
+
 def run_task_checks(task: VocrTask) -> list[TestRunResult]:
     results: list[TestRunResult] = []
     cwd = task.worktree_path
-    for check in task.tests:
+    for check in _task_check_commands(task):
         command = normalize_check_command(check, task=task)
         if command is None:
             results.append(
@@ -443,6 +549,16 @@ def run_task_checks(task: VocrTask) -> list[TestRunResult]:
             )
         )
     return results
+
+
+def _task_check_commands(task: VocrTask) -> list[str]:
+    checks = list(task.tests)
+    checks.extend(
+        criterion.check_command.strip()
+        for criterion in task.acceptance_criteria
+        if criterion.check_command and criterion.check_command.strip()
+    )
+    return checks
 
 
 def normalize_check_command(check: str, task: VocrTask | None = None) -> list[str] | None:

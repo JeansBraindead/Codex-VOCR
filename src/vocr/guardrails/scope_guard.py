@@ -43,7 +43,11 @@ class ScopeGuard:
             issues.append("Task has no scope.")
         if not task.acceptance_criteria:
             issues.append("Task has no acceptance criteria.")
-        if not task.tests:
+        has_acceptance_checks = any(
+            criterion.check_command and criterion.check_command.strip()
+            for criterion in task.acceptance_criteria
+        )
+        if not task.tests and not has_acceptance_checks:
             issues.append("Task has no tests or verification steps.")
         return issues
 

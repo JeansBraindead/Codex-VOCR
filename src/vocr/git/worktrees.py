@@ -56,6 +56,16 @@ class GitWorktreeManager:
         if result.returncode != 0:
             raise GitWorktreeError(result.stderr.strip() or result.stdout.strip())
 
+    def revert_commit(self, commit_sha: str) -> str:
+        self.ensure_git_repo()
+        result = self._git("revert", "--no-edit", commit_sha)
+        if result.returncode != 0:
+            raise GitWorktreeError(result.stderr.strip() or result.stdout.strip())
+        sha_result = self._git("rev-parse", "HEAD")
+        if sha_result.returncode != 0:
+            raise GitWorktreeError(sha_result.stderr.strip() or sha_result.stdout.strip())
+        return sha_result.stdout.strip()
+
     def merge_preview(self, branch_name: str) -> str:
         self.ensure_git_repo()
         stat = self._git("diff", "--stat", f"HEAD...{branch_name}")
