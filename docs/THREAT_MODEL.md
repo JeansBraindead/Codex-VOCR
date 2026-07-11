@@ -65,9 +65,9 @@ Expected behavior:
 
 ## MCP Surface
 
-`vocr serve-mcp` exposes status, context, plan, review, and promote-preview
-tools. MCP promote is preview-only in this MVP. Actual merge/promotion remains
-behind the normal accepted-review gate and explicit CLI command.
+`vocr serve-mcp` exposes status, context, plan, review, promote-preview, and a
+confirmed promote tool. MCP promotion requires `confirm=true` and still uses the
+normal accepted-review gate. Preview remains the safe default.
 
 ## ATT&CK-Aligned Notes
 
@@ -82,3 +82,34 @@ behind the normal accepted-review gate and explicit CLI command.
 Local OpenAI-compatible models through `OPENAI_BASE_URL` reduce cloud dependency,
 but they do not change trust boundaries. Local model output still goes through
 scope, review, and promote gates.
+
+## Phase 4 Hybrid Routing (experimental, review-pending)
+
+`vocr hybrid-vision` and `vocr hybrid-plan` are an isolated, default-off second
+path, gated behind `VOCR_HYBRID_ENABLED=true`. Neither `vocr vision`/`vocr ask`
+nor `vocr organize` call into this path; it wraps the existing deterministic
+pipeline and falls back to it on any hybrid failure instead of forking it.
+
+Both `hybrid-vision` and `hybrid-plan` are cloud-only, one attempt. A locally
+hosted model (e.g. LM Studio) never authors VisionSlice/TaskPlan content in
+VOCR, for two independent reasons:
+
+- **Trust of the input:** `hybrid-plan` needs repo context (untrusted input)
+  for task planning. A local model is known from prior testing (see
+  `F:\LM\LM Studio\lmstudio-mcp-tools`, templates `task_plan_prompt_injection`
+  and `task_plan_code_in_json`) to be prompt-injection prone and to break on
+  code-in-JSON when handling that kind of content.
+- **Stakes of the output**, independent of input trust: `hybrid-vision`'s
+  prompt is only the user's own request text, which is not untrusted repo
+  content -- but its output (goal, acceptance criteria) is still authoritative
+  planning that every downstream task, scope, and review decision is built on.
+  A local model's role in VOCR's design was always to be a cheap,
+  non-authoritative signal, never the author of real planning content, so it
+  does not get a bounded local attempt here either, regardless of how
+  trustworthy the input looks.
+- Hybrid cloud model config (`VOCR_HYBRID_CLOUD_MODEL`, `OPENAI_API_KEY`) is
+  separate from the persistent `.env` model config used by `vocr model ...`;
+  hybrid calls never write `.env` or mutate process environment.
+- Output is still an ordinary `VisionSlice`/`TaskPlan` that goes through the
+  same readiness, scope, review, and promote gates as any other task. Hybrid
+  changes only where the plan text comes from, never the gates around it.

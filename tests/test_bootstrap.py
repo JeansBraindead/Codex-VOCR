@@ -34,6 +34,9 @@ class FakeRunner:
             python_path.parent.mkdir(parents=True, exist_ok=True)
             python_path.write_text("", encoding="utf-8")
             return subprocess.CompletedProcess(args, 0, "", "")
+        if args[:2] == ["git", "clone"]:
+            make_repo(Path(args[3]))
+            return subprocess.CompletedProcess(args, 0, "cloned", "")
         if args[-2:] == ["-c", "import vocr"]:
             return subprocess.CompletedProcess(args, 0 if self.importable else 1, "", "not importable")
         if args[-4:] == ["pip", "install", "-e", "."] or "pip" in args:
@@ -58,6 +61,18 @@ class BootstrapTests(unittest.TestCase):
 
         self.assertIn("Hier liegt kein VOCR-Repo", str(raised.exception))
         self.assertIn("git clone", str(raised.exception))
+
+    def test_bootstrap_can_clone_when_explicitly_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = FakeRunner(importable=True)
+            result = Bootstrapper(Path(tmp), runner=runner, which=lambda _: "git").bootstrap(
+                clone_if_missing=True,
+                install_dir="Codex-VOCR",
+            )
+
+        self.assertEqual(result.repo_root.name, "Codex-VOCR")
+        self.assertTrue(any(step.name == "clone" and step.status == "changed" for step in result.steps))
+        self.assertTrue(any(command[:2] == ["git", "clone"] for command in runner.commands))
 
     def test_missing_git_gets_install_help(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -101,6 +116,23 @@ class BootstrapTests(unittest.TestCase):
             self.assertTrue((result.repo_root / "install-vocr.ps1").exists())
             self.assertTrue((result.repo_root / "start-vocr.ps1").exists())
             self.assertTrue((result.repo_root / "Start-VOCR.bat").exists())
+            self.assertIn("$MyInvocation.MyCommand.Path", (result.repo_root / "install-vocr.ps1").read_text(encoding="utf-8"))
+            self.assertIn("function Invoke-Checked", (result.repo_root / "install-vocr.ps1").read_text(encoding="utf-8"))
+            self.assertIn('Invoke-Checked -Exe "git"', (result.repo_root / "install-vocr.ps1").read_text(encoding="utf-8"))
+            self.assertIn("[string]$InstallDir", (result.repo_root / "install-vocr.ps1").read_text(encoding="utf-8"))
+            self.assertIn("sys.version_info >= (3, 11)", (result.repo_root / "install-vocr.ps1").read_text(encoding="utf-8"))
+            self.assertIn("%~dp0", (result.repo_root / "Start-VOCR.bat").read_text(encoding="utf-8"))
+            self.assertIn("py -3.11 -m venv .venv", (result.repo_root / "Start-VOCR.bat").read_text(encoding="utf-8"))
+            self.assertIn("function Invoke-Checked", (result.repo_root / "start-vocr.ps1").read_text(encoding="utf-8"))
+            self.assertNotIn(str(root), (result.repo_root / "start-vocr.ps1").read_text(encoding="utf-8"))
+
+    def test_repo_contains_visible_windows_installer_scripts(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+
+        self.assertTrue((repo_root / "install-vocr.ps1").exists())
+        self.assertTrue((repo_root / "start-vocr.ps1").exists())
+        self.assertTrue((repo_root / "Start-VOCR.bat").exists())
+        self.assertIn('Invoke-Checked -Exe "git"', (repo_root / "install-vocr.ps1").read_text(encoding="utf-8"))
 
     def test_bootstrap_does_not_overwrite_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

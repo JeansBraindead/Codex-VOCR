@@ -68,12 +68,16 @@ Erfolgskriterien:
 Bootstrap pruefen:
 
 ```powershell
+Test-Path .\install-vocr.ps1
+Test-Path .\start-vocr.ps1
+Test-Path .\Start-VOCR.bat
 vocr bootstrap --tests --write-scripts --no-start
 vocr bootstrap --no-start
 ```
 
 Erfolgskriterien:
 
+- Die drei Installer-/Startskripte liegen sichtbar im Repo-Root.
 - Mehrfaches Ausfuehren bleibt sicher.
 - `.venv` wird angelegt oder wiederverwendet.
 - `.env` wird nicht ueberschrieben.
@@ -169,6 +173,7 @@ Erfolgskriterien:
 vocr doctor
 vocr worker doctor
 vocr model status
+vocr model check
 ```
 
 Erfolgskriterien:
@@ -197,7 +202,7 @@ Mit Learning:
 
 ```powershell
 vocr learn
-vocr context "scope review" --learning --limit 10
+vocr context "scope review" --learning --limit 10 --budget 1200
 ```
 
 Erfolgskriterien:
@@ -247,6 +252,8 @@ Mit LM Studio:
 4. Dann:
 
 ```powershell
+vocr model check --model "modellname-aus-list"
+vocr model check --api-key "test-token"
 vocr model list
 vocr model lmstudio --model "modellname-aus-list"
 vocr model status
@@ -254,6 +261,7 @@ vocr model status
 
 Erfolgskriterien:
 
+- `model check` erreicht den lokalen OpenAI-kompatiblen Endpoint
 - `model list` zeigt Modelle
 - `model status` zeigt Provider `local-openai-compatible`
 - API-Key wird nur als `[set]` gezeigt
@@ -262,6 +270,8 @@ Erfolgskriterien:
 
 ```powershell
 vocr model list --base-url http://localhost:1234/v1
+vocr model check --base-url http://localhost:1234/v1 --model "modellname-aus-list"
+vocr model check --base-url http://localhost:1234/v1 --api-key "test-token"
 vocr ask "Ziel: Teste lokalen Live-Agent. Arbeitsbereich: src. Akzeptanz: klare Diagnose. Verifikation: unittest. Nicht-Ziele: kein Merge. Ausfuehrung: nur planen." --live-agent --plan-only
 ```
 
@@ -318,6 +328,46 @@ Erfolgskriterien:
 - Kein Worktree wird dispatcht
 - `vocr inspect` zeigt Slice und Task
 
+## 10.1 Hybrid Phase 4 testen
+
+Ohne `VOCR_HYBRID_ENABLED`:
+
+```powershell
+vocr hybrid-vision "Ziel: Smoke. Arbeitsbereich: docs. Akzeptanz: geht. Verifikation: Syntax-Check. Nicht-Ziele: keine. Ausfuehrung: nur planen."
+```
+
+Erfolgskriterien:
+
+- VOCR bricht mit klarer Fehlermeldung ab ("default-off")
+- Kein `.vocr`-Ordner und kein Ledger-Eintrag entstehen
+- `vocr vision`/`vocr ask`/`vocr organize` bleiben davon vollstaendig unberuehrt (Isolationstest)
+
+Mit `VOCR_HYBRID_ENABLED=true`. Beide Hybrid-Befehle sind Cloud-only -- ein
+lokales Modell darf hier nie planende/authoritative VOCR-Inhalte erzeugen,
+egal wie vertrauenswuerdig der Eingabetext ist:
+
+```powershell
+$env:VOCR_HYBRID_ENABLED = "true"
+vocr hybrid-vision "Ziel: Smoke. Arbeitsbereich: docs. Akzeptanz: geht. Verifikation: Syntax-Check. Nicht-Ziele: keine. Ausfuehrung: nur planen."
+```
+
+Erfolgskriterien:
+
+- Zeigt `Hybrid route: cloud`, oder faellt bei Fehlern sichtbar auf den deterministischen Pfad zurueck
+- Ohne `OPENAI_API_KEY` entsteht trotzdem eine Slice (deterministischer Fallback)
+- Kein Secret/API-Key wird in der Ausgabe angezeigt
+
+Mit einer bereits erstellten Slice, `vocr hybrid-plan <slice-id>` testen:
+
+```powershell
+vocr hybrid-plan <slice-id>
+```
+
+Erfolgskriterien:
+
+- Fuer die Planung wird ausschliesslich das Cloud-Modell verwendet
+- Ohne `OPENAI_API_KEY` bricht der Befehl mit klarer Meldung ab und faellt auf den deterministischen Plan zurueck
+
 ## 11. Worktree Dispatch testen
 
 Nur ausfuehren, wenn das Repo sauber ist:
@@ -349,14 +399,17 @@ Erfolgskriterien:
 Wenn mehrere Tasks existieren:
 
 ```powershell
-vocr dispatch-ready
-vocr work-ready --limit 1
+vocr dispatch-ready --parallel 4
+vocr work-ready --limit 1 --parallel 1
+vocr orchestrate --max-waves 2 --parallel-dispatch 4 --parallel-work 2 --no-workers
 ```
 
 Erfolgskriterien:
 
 - `dispatch-ready` nimmt nur Tasks ohne offene Dependencies
+- `dispatch-ready` refreshed Graphify genau einmal pro Dispatch-Welle
 - `work-ready` nimmt nur dispatchte Tasks
+- `orchestrate` zeigt Wellen, Dispatch-/Work-Schritte und Stop-Grund
 - Keine Promotion passiert automatisch
 
 ## 13. Review testen
@@ -407,31 +460,71 @@ Erfolgskriterien:
 - Mit accepted Review fuehrt VOCR Merge-Preflight aus
 - Merge passiert erst danach
 
+## 14.1 Plan-Gates und Revert testen
+
+Plan-Invarianten werden automatisch vor `vocr dispatch` geprueft. Ein Task darf keinen leeren Scope, keine fehlende Verifikation, keine unbekannten Dependencies und keine zyklischen Dependencies haben. Akzeptanzkriterien koennen optional ein `check_command` tragen; diese Checks laufen beim Review nur ueber die sichere Check-Allowlist.
+
+Revert eines gespeicherten Task-Commits:
+
+```powershell
+vocr revert <task-id> --reason "Beta-Test Revert"
+vocr log --limit 5
+```
+
+Erfolgskriterien:
+
+- `vocr dispatch` erzeugt bei kaputtem Plan keinen Worktree
+- `vocr review` fuehrt Task-Tests und kriteriumsbezogene Checks aus
+- `vocr revert` erzeugt einen Git-Revert-Commit
+- Ledger enthaelt `task_reverted`
+- Task steht danach wieder auf `needs_changes`
+
 ## 15. Learning und Compact testen
 
 ```powershell
 vocr learn
 vocr usage
+vocr eval-golden
 vocr compact --keep-last 200
 ```
 
 Erfolgskriterien:
 
 - `.vocr/learning.json` existiert
+- `vocr usage` zeigt eine `Source`-Spalte fuer `actual` oder `estimated`
+- `vocr eval-golden` meldet PASS fuer Stub-Worker, Token-Metering und Promote-Gates
 - alte Ledger-Events werden bei Bedarf nach `.vocr/archive/` geschrieben
 - `.vocr/ledger.jsonl` bleibt kleiner
+
+## 15.1 Replay testen
+
+Slice-ID aus einem vorherigen Schritt (z.B. `vocr log --limit 30` oder `vocr status`):
+
+```powershell
+vocr replay <slice-id>
+```
+
+Erfolgskriterien:
+
+- Timeline zeigt Ereignisse in chronologischer Reihenfolge (Vision, Tasks, Dispatch, Commit, Review, Promote/Abort/Revert)
+- „Files touched" listet die Dateien aus den Review-Diffs der Slice
+- „Decisions" zeigt die letzte Review-Entscheidung je Task
+- „Cost" summiert Token ueber `actual`/`estimated` getrennt
+- Unbekannte Slice-ID liefert eine klare Fehlermeldung statt Traceback
 
 ## 16. Housekeeping testen
 
 ```powershell
 vocr clean
 vocr clean --artifacts --older-than-days 30
+vocr clean --archives --archive-older-than-days 90
 ```
 
 Erfolgskriterien:
 
 - Git Worktree Prune laeuft
 - Alte Artefakte werden nur geloescht, wenn `--artifacts` gesetzt ist
+- Alte Ledger-Archive werden nur geloescht, wenn `--archives` gesetzt ist; das Loeschen ist dauerhaft und nutzt keinen Papierkorb.
 
 ## 17. MCP Smoke testen
 
@@ -448,6 +541,7 @@ Erfolgskriterien:
   - `vocr_plan`
   - `vocr_review`
   - `vocr_promote_preview`
+  - `vocr_promote`
 
 ## 18. Abnahmekriterien fuer Teststadium
 
@@ -459,6 +553,7 @@ vocr doctor
 vocr worker doctor
 vocr graphify
 vocr learn
+vocr eval-golden
 vocr context "scope review" --learning --limit 10
 vocr secrets scan
 ```
@@ -471,3 +566,6 @@ Und diese Regeln gelten:
 - Scope-Verletzungen blockieren Commits.
 - Secret-Funde blockieren Commits.
 - Learning speichert verdichtete Signale, keine Rohprompts oder grossen Diffs.
+- Golden-Eval prueft den LLM-freien Stub-Worker und blockierten Promote vor accepted Review.
+- Context-Packs respektieren `--budget` und ranken Code vor Docs, wenn beides aehnlich relevant ist.
+- Bei hohem deterministischen Vertrauen wird `--live-agent` nicht fuer einen LLM-Overwrite genutzt.
