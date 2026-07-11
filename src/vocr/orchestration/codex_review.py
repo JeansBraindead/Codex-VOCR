@@ -26,15 +26,18 @@ def run_codex_review(task: VocrTask, base_ref: str | None = None, timeout_second
         f"Non-goals: {task.non_goals}\n"
         f"Acceptance: {[item.text for item in task.acceptance_criteria]}\n"
     )
-    completed = subprocess.run(
-        command,
-        cwd=Path(task.worktree_path),
-        input=prompt,
-        text=True,
-        capture_output=True,
-        timeout=timeout_seconds,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=Path(task.worktree_path),
+            input=prompt,
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
     body = "\n".join(part for part in [completed.stdout.strip(), completed.stderr.strip()] if part).strip()
     if not body:
         return None

@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import json
 import os
 import re
+import time
 from pathlib import Path
 import threading
 from typing import Iterable
@@ -285,11 +286,35 @@ def _thread_lock(path: Path):
         yield
 
 
+_LOCK_MAX_ATTEMPTS = 6
+_LOCK_RETRY_BASE_SECONDS = 0.25
+
+
 def _lock_file(handle) -> None:
-    if os.name == "nt":
-        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-    else:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    """Acquire the exclusive ledger lock, retrying with backoff on contention.
+
+    Windows `msvcrt.locking(LK_LOCK, ...)` already retries internally for a
+    few seconds before raising `OSError`; under heavy parallel orchestration
+    that single internal retry ceiling is not enough headroom, so this wraps
+    both platform primitives in a bounded outer retry instead of surfacing a
+    crash on transient contention.
+    """
+    last_error: OSError | None = None
+    for attempt in range(_LOCK_MAX_ATTEMPTS):
+        try:
+            if os.name == "nt":
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            return
+        except OSError as exc:
+            last_error = exc
+            if attempt < _LOCK_MAX_ATTEMPTS - 1:
+                time.sleep(_LOCK_RETRY_BASE_SECONDS * (attempt + 1))
+    raise TimeoutError(
+        f"Could not acquire VOCR ledger lock after {_LOCK_MAX_ATTEMPTS} attempts "
+        "(sustained contention). Retry the command."
+    ) from last_error
 
 
 def _unlock_file(handle) -> None:

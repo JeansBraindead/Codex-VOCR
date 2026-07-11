@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,6 +9,9 @@ from shutil import which
 
 class GitWorktreeError(RuntimeError):
     pass
+
+
+MIN_GIT_VERSION_FOR_MERGE_TREE = (2, 38)
 
 
 @dataclass(slots=True)
@@ -199,6 +203,15 @@ class GitWorktreeManager:
         result = self._git("rev-parse", "--verify", branch_name)
         return result.returncode == 0
 
+    def git_version(self) -> tuple[int, int] | None:
+        result = self._git("--version")
+        if result.returncode != 0:
+            return None
+        match = re.search(r"(\d+)\.(\d+)", result.stdout)
+        if not match:
+            return None
+        return (int(match.group(1)), int(match.group(2)))
+
     def preflight_merge(self, branch_name: str) -> list[str]:
         self.ensure_git_repo()
         issues: list[str] = []
@@ -206,6 +219,15 @@ class GitWorktreeManager:
             issues.append("main worktree is not clean")
         if not self.branch_exists(branch_name):
             issues.append(f"branch does not exist: {branch_name}")
+
+        version = self.git_version()
+        if version is not None and version < MIN_GIT_VERSION_FOR_MERGE_TREE:
+            raise GitWorktreeError(
+                "Merge preflight needs git >= "
+                f"{'.'.join(map(str, MIN_GIT_VERSION_FOR_MERGE_TREE))} for the two-argument "
+                f"`git merge-tree` real-merge mode; found {'.'.join(map(str, version))}. "
+                "Upgrade git before promoting."
+            )
 
         if not issues:
             result = self._git("merge-tree", "HEAD", branch_name)
