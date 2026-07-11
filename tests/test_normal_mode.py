@@ -6,6 +6,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
+from tests._ansi import strip_ansi
 from vocr.cli.app import app
 from vocr.models import NormalModePhase
 from vocr.ui.normal_mode import NormalModeController, normal_mode_surface_decision
@@ -62,10 +63,11 @@ class NormalModeTests(unittest.TestCase):
 
     def test_start_command_is_available_for_normal_users(self) -> None:
         result = CliRunner().invoke(app, ["start", "--help"])
+        output = strip_ansi(result.output)
 
         self.assertEqual(result.exit_code, 0)
-        self.assertIn("local GUI Visionary conversation", result.output)
-        self.assertIn("--console", result.output)
+        self.assertIn("local GUI Visionary conversation", output)
+        self.assertIn("--console", output)
 
     def test_normal_mode_surface_decision_uses_local_gui_without_buildchain(self) -> None:
         decision = normal_mode_surface_decision()

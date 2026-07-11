@@ -16,6 +16,7 @@ from unittest.mock import patch
 from agents import Model as _AgentModel
 from typer.testing import CliRunner
 
+from tests._ansi import strip_ansi
 from vocr.agents.hybrid import (
     HybridDisabledError,
     HybridRoutingError,
@@ -487,7 +488,7 @@ class WorkflowTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(refresh_count, 1)
-        self.assertIn("dispatched=2", result.output)
+        self.assertIn("dispatched=2", strip_ansi(result.output))
 
     def test_plan_invariants_block_dependency_cycles_before_dispatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -962,7 +963,7 @@ class WorkflowTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0, result.output)
         fetch.assert_called_once_with("http://localhost:1234/v1", api_key="local-token")
-        self.assertIn("Models visible: 1", result.output)
+        self.assertIn("Models visible: 1", strip_ansi(result.output))
         self.assertNotIn("local-token", result.output)
 
     def test_model_check_uses_chat_completion_when_model_is_given(self) -> None:
