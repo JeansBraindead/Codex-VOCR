@@ -204,6 +204,55 @@ def dispatch_task(ledger: MemoryLedger, manager: GitWorktreeManager, task_id: st
     return task
 
 
+def task_dag_waves(tasks: list[VocrTask]) -> list[list[VocrTask]]:
+    issues = validate_task_plan(tasks)
+    if issues:
+        raise ValueError("Plan invariants failed: " + "; ".join(issues))
+    remaining = {task.id: task for task in tasks}
+    completed: set[str] = set()
+    waves: list[list[VocrTask]] = []
+    while remaining:
+        ready = sorted(
+            [
+                task
+                for task in remaining.values()
+                if all(dependency_id in completed for dependency_id in task.dependencies)
+            ],
+            key=lambda task: (task.created_at, task.id),
+        )
+        if not ready:
+            raise ValueError("Plan invariants failed: dependency cycle")
+        waves.append(ready)
+        for task in ready:
+            completed.add(task.id)
+            remaining.pop(task.id, None)
+    return waves
+
+
+def ready_dispatch_tasks(tasks: list[VocrTask], *, limit: int | None = None) -> list[VocrTask]:
+    task_by_id = {task.id: task for task in tasks}
+    ready = [
+        task
+        for task in tasks
+        if task.status == TaskStatus.planned
+        and all(
+            task_by_id.get(dependency_id) is not None
+            and task_by_id[dependency_id].status == TaskStatus.promoted
+            for dependency_id in task.dependencies
+        )
+    ]
+    ready = sorted(ready, key=lambda task: (task.created_at, task.id))
+    return ready[:limit] if limit is not None else ready
+
+
+def ready_work_tasks(tasks: list[VocrTask], *, limit: int | None = None) -> list[VocrTask]:
+    ready = sorted(
+        [task for task in tasks if task.status == TaskStatus.dispatched],
+        key=lambda task: (task.created_at, task.id),
+    )
+    return ready[:limit] if limit is not None else ready
+
+
 def validate_task_plan(tasks: list[VocrTask], target_task_id: str | None = None) -> list[str]:
     task_by_id = {task.id: task for task in tasks}
     if target_task_id and target_task_id not in task_by_id:

@@ -359,14 +359,17 @@ Erfolgskriterien:
 Wenn mehrere Tasks existieren:
 
 ```powershell
-vocr dispatch-ready
-vocr work-ready --limit 1
+vocr dispatch-ready --parallel 4
+vocr work-ready --limit 1 --parallel 1
+vocr orchestrate --max-waves 2 --parallel-dispatch 4 --parallel-work 2 --no-workers
 ```
 
 Erfolgskriterien:
 
 - `dispatch-ready` nimmt nur Tasks ohne offene Dependencies
+- `dispatch-ready` refreshed Graphify genau einmal pro Dispatch-Welle
 - `work-ready` nimmt nur dispatchte Tasks
+- `orchestrate` zeigt Wellen, Dispatch-/Work-Schritte und Stop-Grund
 - Keine Promotion passiert automatisch
 
 ## 13. Review testen

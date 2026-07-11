@@ -8,6 +8,8 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from shutil import which
@@ -39,9 +41,13 @@ from vocr.memory.learning import LearningStore
 from vocr.mcp.server import serve_stdio
 from vocr.models import (
     ClarificationSession,
+    CodexRunResult,
     LedgerEventType,
     PermissionGrant,
     PermissionMode,
+    OrchestrationRunResult,
+    OrchestrationStep,
+    OrchestrationWave,
     ReviewDecision,
     ReviewResult,
     RunTelemetry,
@@ -52,6 +58,8 @@ from vocr.orchestration.workflow import (
     dispatch_task,
     organize_slice,
     promote_task,
+    ready_dispatch_tasks,
+    ready_work_tasks,
     render_review_markdown,
     review_task,
     render_task_template,
@@ -232,7 +240,18 @@ def persist_tasks(store: MemoryLedger, tasks: list, *, print_tasks: bool = True)
             console.print(render_task_template(task))
 
 
-def write_dispatch_handoff(store: MemoryLedger, task_id: str) -> None:
+@dataclass(slots=True)
+class DispatchHandoffResult:
+    task_id: str
+    worktree_path: str
+    manifest_path: str
+    scope_path: str
+    agents_path: str
+    permission_mode: str
+    permission_scope: str
+
+
+def prepare_dispatch_handoff(store: MemoryLedger, task_id: str) -> DispatchHandoffResult:
     task = dispatch_task(store, GitWorktreeManager(), task_id)
     MessageBus(store).publish("dispatch", "vocr", f"Task {task.id} dispatched to {task.worktree_path}")
     permission = store.active_permission(task.slice_id) or store.active_permission("global")
@@ -240,15 +259,154 @@ def write_dispatch_handoff(store: MemoryLedger, task_id: str) -> None:
     guard = ScopeGuard()
     scope_path = guard.write_worker_policy(task)
     agents_path = guard.write_worker_agents_file(task)
-    console.print(f"[green]Dispatched[/green] {task.id} to {task.worktree_path}")
-    if permission:
-        console.print(f"[yellow]Permission mode:[/yellow] {permission.mode.value} ({permission.scope})")
+    return DispatchHandoffResult(
+        task_id=task.id,
+        worktree_path=str(task.worktree_path),
+        manifest_path=str(manifest_path),
+        scope_path=str(scope_path),
+        agents_path=str(agents_path),
+        permission_mode=permission.mode.value if permission else PermissionMode.ask_each_time.value,
+        permission_scope=permission.scope if permission else "none",
+    )
+
+
+def print_dispatch_handoff(result: DispatchHandoffResult) -> None:
+    console.print(f"[green]Dispatched[/green] {result.task_id} to {result.worktree_path}")
+    if result.permission_mode != PermissionMode.ask_each_time.value:
+        console.print(f"[yellow]Permission mode:[/yellow] {result.permission_mode} ({result.permission_scope})")
     else:
         console.print("[yellow]Permission mode:[/yellow] ask_each_time")
-    console.print(f"[cyan]Task manifest:[/cyan] {manifest_path}")
-    console.print(f"[cyan]Scope policy:[/cyan] {scope_path}")
-    console.print(f"[cyan]Worker guidance:[/cyan] {agents_path}")
+    console.print(f"[cyan]Task manifest:[/cyan] {result.manifest_path}")
+    console.print(f"[cyan]Scope policy:[/cyan] {result.scope_path}")
+    console.print(f"[cyan]Worker guidance:[/cyan] {result.agents_path}")
     console.print("Codex MCP execution is prepared but not implemented yet.")
+
+
+def write_dispatch_handoff(store: MemoryLedger, task_id: str) -> None:
+    result = prepare_dispatch_handoff(store, task_id)
+    print_dispatch_handoff(result)
+
+
+def execute_worker_task(
+    store: MemoryLedger,
+    task_id: str,
+    *,
+    timeout_seconds: int,
+    commit: bool,
+    auto_fix: bool,
+    max_retries: int,
+) -> CodexRunResult:
+    task = store.get_task(task_id)
+    if task is None:
+        raise ValueError(f"Unknown task id: {task_id}")
+    permission = store.active_permission(task.slice_id) or store.active_permission("global")
+    client = CodexMcpClient()
+    extra_prompt: str | None = None
+    final_result = None
+    prompt_text = render_task_template(task)
+    previous_diff = ""
+    for attempt in range(max_retries + 1):
+        result = client.run_task(
+            task,
+            permission=permission,
+            timeout_seconds=timeout_seconds,
+            extra_prompt=extra_prompt,
+        )
+        final_result = result
+        record_worker_telemetry(store, task_id, result, prompt_text + (extra_prompt or ""))
+        if result.exit_code != 0:
+            if not auto_fix or attempt >= max_retries:
+                break
+            issues = [f"Worker exited with {result.exit_code}", (result.stderr or result.stdout)[-1200:]]
+            current_diff = GitWorktreeManager(task.worktree_path or ".").diff()
+            extra_prompt = retry_prompt(attempt + 1, issues, diff_delta(previous_diff, current_diff), task.scope)
+            previous_diff = current_diff
+            continue
+        if commit:
+            worktree_git = GitWorktreeManager(task.worktree_path or ".")
+            scope_issues = ScopeGuard().validate_changed_files(task, worktree_git.changed_files())
+            if scope_issues:
+                store.append(LedgerEventType.task_worker_ran, result)
+                record_scope_block(store, task.id, scope_issues)
+                if not auto_fix or attempt >= max_retries:
+                    raise ValueError("Scope guard blocked commit: " + "; ".join(scope_issues))
+                current_diff = worktree_git.diff()
+                extra_prompt = retry_prompt(attempt + 1, scope_issues, diff_delta(previous_diff, current_diff), task.scope)
+                previous_diff = current_diff
+                continue
+            secret_scan = scan_diff_for_secrets(worktree_git.diff_for_scan(), repo_root=worktree_git.repo_root)
+            if secret_scan.blocked:
+                issues = [
+                    f"{finding.rule_id}: {finding.path or 'unknown'}:{finding.line or '?'} {finding.summary}"
+                    for finding in secret_scan.findings
+                ]
+                store.append(LedgerEventType.task_worker_ran, result)
+                record_secret_block(store, task.id, issues)
+                if not auto_fix or attempt >= max_retries:
+                    raise ValueError("Secret scanner blocked commit: " + "; ".join(issues))
+                current_diff = worktree_git.diff_for_scan()
+                extra_prompt = retry_prompt(attempt + 1, issues, diff_delta(previous_diff, current_diff), task.scope)
+                previous_diff = current_diff
+                continue
+            if worktree_git.has_changes():
+                sha = worktree_git.commit_all(f"VOCR task {task.id}: {task.title}")
+                result.committed = True
+                result.commit_sha = sha
+                store.append(LedgerEventType.task_committed, {"task_id": task.id, "commit_sha": sha})
+        break
+    if final_result is None:
+        raise ValueError("Worker did not run.")
+    store.append(LedgerEventType.task_worker_ran, final_result)
+    return final_result
+
+
+def print_worker_result(result: CodexRunResult) -> None:
+    console.print(f"[green]Worker finished[/green] exit={result.exit_code}")
+    if result.committed:
+        console.print(f"[green]Committed[/green] {result.commit_sha}")
+    if result.stdout:
+        console.print(safe_text(result.stdout[-2000:]))
+    if result.stderr:
+        console.print(f"[yellow]{safe_text(result.stderr[-2000:])}[/yellow]")
+
+
+def refresh_graph_for_wave() -> None:
+    graph_store().refresh(Path("."))
+
+
+def run_parallel(items: list[str], max_workers: int, fn) -> list[tuple[str, object | None, str | None]]:
+    if not items:
+        return []
+    workers = max(1, min(max_workers, len(items)))
+    results: list[tuple[str, object | None, str | None]] = []
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(fn, item): item for item in items}
+        for future in as_completed(futures):
+            item = futures[future]
+            try:
+                results.append((item, future.result(), None))
+            except Exception as exc:
+                results.append((item, None, str(exc)))
+    return sorted(results, key=lambda entry: entry[0])
+
+
+def print_orchestration_summary(result: OrchestrationRunResult) -> None:
+    table = Table(title="VOCR Orchestration")
+    table.add_column("Wave")
+    table.add_column("Action")
+    table.add_column("Task")
+    table.add_column("Status")
+    table.add_column("Detail")
+    for wave in result.waves:
+        if wave.graph_refreshed:
+            table.add_row(str(wave.index), "graphify", "-", "ok", "refreshed once for wave")
+        for step in wave.steps:
+            table.add_row(str(wave.index), step.action, step.task_id, step.status, safe_text(step.detail))
+    console.print(table)
+    console.print(
+        f"[green]Orchestration stopped:[/green] {safe_text(result.stopped_reason)} "
+        f"dispatched={result.dispatched} worked={result.worked} promoted={result.promoted}"
+    )
 
 
 def request_clarification(store: MemoryLedger, request: str) -> bool:
@@ -329,11 +487,19 @@ def run_vision_pipeline(
     persist_tasks(store, tasks)
 
     if go and dispatch_workers:
-        for task in tasks:
-            try:
-                write_dispatch_handoff(store, task.id)
-            except (GitWorktreeError, ValueError) as exc:
-                console.print(f"[yellow]Dispatch skipped for {task.id}:[/yellow] {safe_text(str(exc))}")
+        dispatchable = ready_dispatch_tasks(store.tasks(), limit=len(tasks))
+        if dispatchable:
+            refresh_graph_for_wave()
+            console.print("[green]Graphify refreshed[/green] once for initial dispatch wave.")
+        for task_id, result, error in run_parallel(
+            [task.id for task in dispatchable],
+            4,
+            lambda item: prepare_dispatch_handoff(store, item),
+        ):
+            if error:
+                console.print(f"[yellow]Dispatch skipped for {task_id}:[/yellow] {safe_text(error)}")
+            else:
+                print_dispatch_handoff(result)
     elif not go:
         console.print("[yellow]Dispatch paused:[/yellow] pass --go when the Visionary should continue unattended.")
 
@@ -916,22 +1082,24 @@ def dispatch(task_id: str) -> None:
 
 
 @app.command("dispatch-ready")
-def dispatch_ready(limit: int = typer.Option(10, "--limit", help="Maximum ready tasks to dispatch.")) -> None:
+def dispatch_ready(
+    limit: int = typer.Option(10, "--limit", help="Maximum ready tasks to dispatch."),
+    parallel: int = typer.Option(4, "--parallel", min=1, max=16, help="Maximum parallel worktree dispatches."),
+    refresh_graph_once: bool = typer.Option(True, "--graphify/--no-graphify", help="Refresh Graphify once before this dispatch wave."),
+) -> None:
     store = ledger()
+    tasks = ready_dispatch_tasks(store.tasks(), limit=limit)
+    if tasks and refresh_graph_once:
+        refresh_graph_for_wave()
+        console.print("[green]Graphify refreshed[/green] once for dispatch wave.")
+    results = run_parallel([task.id for task in tasks], parallel, lambda task_id: prepare_dispatch_handoff(store, task_id))
     dispatched = 0
-    task_ids = {task.id: task for task in store.tasks()}
-    for task in task_ids.values():
-        if dispatched >= limit:
-            break
-        if task.status != TaskStatus.planned:
+    for task_id, result, error in results:
+        if error:
+            console.print(f"[yellow]Dispatch skipped for {task_id}:[/yellow] {safe_text(error)}")
             continue
-        if any(task_ids.get(dep) is None or task_ids[dep].status != TaskStatus.promoted for dep in task.dependencies):
-            continue
-        try:
-            write_dispatch_handoff(store, task.id)
-            dispatched += 1
-        except (GitWorktreeError, ValueError) as exc:
-            console.print(f"[yellow]Dispatch skipped for {task.id}:[/yellow] {safe_text(str(exc))}")
+        print_dispatch_handoff(result)
+        dispatched += 1
     console.print(f"[green]Ready dispatch complete[/green] dispatched={dispatched}")
 
 
@@ -944,78 +1112,18 @@ def run_worker(
     max_retries: int = typer.Option(2, "--max-retries", min=0, max=3, help="Bounded worker retry count."),
 ) -> None:
     store = ledger()
-    task = store.get_task(task_id)
-    if task is None:
-        raise typer.BadParameter(f"Unknown task id: {task_id}")
-    permission = store.active_permission(task.slice_id) or store.active_permission("global")
-    client = CodexMcpClient()
-    extra_prompt: str | None = None
-    final_result = None
-    prompt_text = render_task_template(task)
-    previous_diff = ""
     try:
-        for attempt in range(max_retries + 1):
-            result = client.run_task(
-                task,
-                permission=permission,
-                timeout_seconds=timeout_seconds,
-                extra_prompt=extra_prompt,
-            )
-            final_result = result
-            record_worker_telemetry(store, task_id, result, prompt_text + (extra_prompt or ""))
-            if result.exit_code != 0:
-                if not auto_fix or attempt >= max_retries:
-                    break
-                issues = [f"Worker exited with {result.exit_code}", (result.stderr or result.stdout)[-1200:]]
-                current_diff = GitWorktreeManager(task.worktree_path or ".").diff()
-                extra_prompt = retry_prompt(attempt + 1, issues, diff_delta(previous_diff, current_diff), task.scope)
-                previous_diff = current_diff
-                continue
-            if commit:
-                worktree_git = GitWorktreeManager(task.worktree_path or ".")
-                scope_issues = ScopeGuard().validate_changed_files(task, worktree_git.changed_files())
-                if scope_issues:
-                    store.append(LedgerEventType.task_worker_ran, result)
-                    record_scope_block(store, task.id, scope_issues)
-                    if not auto_fix or attempt >= max_retries:
-                        raise typer.BadParameter("Scope guard blocked commit: " + "; ".join(scope_issues))
-                    current_diff = worktree_git.diff()
-                    extra_prompt = retry_prompt(attempt + 1, scope_issues, diff_delta(previous_diff, current_diff), task.scope)
-                    previous_diff = current_diff
-                    continue
-                secret_scan = scan_diff_for_secrets(worktree_git.diff_for_scan(), repo_root=worktree_git.repo_root)
-                if secret_scan.blocked:
-                    issues = [
-                        f"{finding.rule_id}: {finding.path or 'unknown'}:{finding.line or '?'} {finding.summary}"
-                        for finding in secret_scan.findings
-                    ]
-                    store.append(LedgerEventType.task_worker_ran, result)
-                    record_secret_block(store, task.id, issues)
-                    if not auto_fix or attempt >= max_retries:
-                        raise typer.BadParameter("Secret scanner blocked commit: " + "; ".join(issues))
-                    current_diff = worktree_git.diff_for_scan()
-                    extra_prompt = retry_prompt(attempt + 1, issues, diff_delta(previous_diff, current_diff), task.scope)
-                    previous_diff = current_diff
-                    continue
-                if worktree_git.has_changes():
-                    sha = worktree_git.commit_all(f"VOCR task {task.id}: {task.title}")
-                    result.committed = True
-                    result.commit_sha = sha
-                    store.append(LedgerEventType.task_committed, {"task_id": task.id, "commit_sha": sha})
-            break
+        result = execute_worker_task(
+            store,
+            task_id,
+            timeout_seconds=timeout_seconds,
+            commit=commit,
+            auto_fix=auto_fix,
+            max_retries=max_retries,
+        )
     except (RuntimeError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
-    if final_result is None:
-        raise typer.BadParameter("Worker did not run.")
-    result = final_result
-    store.append(LedgerEventType.task_worker_ran, result)
-    console.print(f"[green]Worker finished[/green] exit={result.exit_code}")
-    if result.committed:
-        console.print(f"[green]Committed[/green] {result.commit_sha}")
-    if result.stdout:
-        console.print(safe_text(result.stdout[-2000:]))
-    if result.stderr:
-        console.print(f"[yellow]{safe_text(result.stderr[-2000:])}[/yellow]")
+    print_worker_result(result)
 
 
 app.command("work")(run_worker)
@@ -1040,16 +1148,112 @@ def work_ready(
     limit: int = typer.Option(3, "--limit", help="Maximum dispatched tasks to work."),
     timeout_seconds: int = typer.Option(3600, "--timeout", help="Worker timeout in seconds."),
     auto_fix: bool = typer.Option(False, "--fix", help="Retry bounded fixes until review_ready."),
+    parallel: int = typer.Option(2, "--parallel", min=1, max=8, help="Maximum parallel isolated workers."),
 ) -> None:
+    store = ledger()
+    tasks = ready_work_tasks(store.tasks(), limit=limit)
+    results = run_parallel(
+        [task.id for task in tasks],
+        parallel,
+        lambda task_id: execute_worker_task(
+            store,
+            task_id,
+            timeout_seconds=timeout_seconds,
+            commit=True,
+            auto_fix=auto_fix,
+            max_retries=2,
+        ),
+    )
     worked = 0
-    for task in ledger().tasks():
-        if worked >= limit:
-            break
-        if task.status != TaskStatus.dispatched:
+    for task_id, result, error in results:
+        if error:
+            console.print(f"[yellow]Work skipped for {task_id}:[/yellow] {safe_text(error)}")
             continue
-        run_worker(task.id, timeout_seconds=timeout_seconds, commit=True, auto_fix=auto_fix, max_retries=2)
+        print_worker_result(result)
         worked += 1
     console.print(f"[green]Ready work complete[/green] worked={worked}")
+
+
+@app.command("orchestrate")
+def orchestrate(
+    max_waves: int = typer.Option(10, "--max-waves", min=1, max=50, help="Maximum DAG waves to process."),
+    dispatch_limit: int = typer.Option(8, "--dispatch-limit", min=1, help="Maximum ready dispatches per wave."),
+    work_limit: int = typer.Option(4, "--work-limit", min=1, help="Maximum ready workers per wave."),
+    parallel_dispatch: int = typer.Option(4, "--parallel-dispatch", min=1, max=16, help="Parallel worktree dispatches."),
+    parallel_work: int = typer.Option(2, "--parallel-work", min=1, max=8, help="Parallel isolated workers."),
+    timeout_seconds: int = typer.Option(3600, "--timeout", help="Worker timeout in seconds."),
+    auto_fix: bool = typer.Option(True, "--fix/--no-fix", help="Run bounded fix retries until review_ready."),
+    workers: bool = typer.Option(True, "--workers/--no-workers", help="Run worker tasks after dispatch."),
+) -> None:
+    """Run supervised DAG waves until tasks are review-ready. Never promotes."""
+
+    store = ledger()
+    result = OrchestrationRunResult(promoted=0)
+    for wave_index in range(1, max_waves + 1):
+        wave = OrchestrationWave(index=wave_index)
+        dispatchable = ready_dispatch_tasks(store.tasks(), limit=dispatch_limit)
+        if dispatchable:
+            refresh_graph_for_wave()
+            wave.graph_refreshed = True
+            wave.dispatch_task_ids = [task.id for task in dispatchable]
+            for task_id, handoff, error in run_parallel(
+                wave.dispatch_task_ids,
+                parallel_dispatch,
+                lambda item: prepare_dispatch_handoff(store, item),
+            ):
+                if error:
+                    wave.steps.append(OrchestrationStep(task_id=task_id, action="dispatch", status="skipped", detail=error))
+                else:
+                    result.dispatched += 1
+                    wave.steps.append(
+                        OrchestrationStep(
+                            task_id=task_id,
+                            action="dispatch",
+                            status="ok",
+                            detail=f"worktree={handoff.worktree_path}",
+                        )
+                    )
+
+        workable = ready_work_tasks(store.tasks(), limit=work_limit) if workers else []
+        if workable:
+            wave.work_task_ids = [task.id for task in workable]
+            for task_id, worker_result, error in run_parallel(
+                wave.work_task_ids,
+                parallel_work,
+                lambda item: execute_worker_task(
+                    store,
+                    item,
+                    timeout_seconds=timeout_seconds,
+                    commit=True,
+                    auto_fix=auto_fix,
+                    max_retries=2,
+                ),
+            ):
+                if error:
+                    wave.steps.append(OrchestrationStep(task_id=task_id, action="work", status="skipped", detail=error))
+                else:
+                    result.worked += 1
+                    wave.steps.append(
+                        OrchestrationStep(
+                            task_id=task_id,
+                            action="work",
+                            status="ok" if worker_result.exit_code == 0 else "failed",
+                            detail=f"exit={worker_result.exit_code}",
+                        )
+                    )
+
+        if not wave.steps:
+            result.stopped_reason = "no ready dispatch or work tasks"
+            break
+        result.waves.append(wave)
+    else:
+        result.stopped_reason = f"max waves reached ({max_waves})"
+    if not result.stopped_reason:
+        result.stopped_reason = "wave loop complete"
+    print_orchestration_summary(result)
+
+
+app.command("afk")(orchestrate)
 
 
 @app.command()

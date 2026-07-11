@@ -9,6 +9,7 @@ import time
 import unittest
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from typer.testing import CliRunner
@@ -58,8 +59,11 @@ from vocr.orchestration.workflow import (
     dispatch_task,
     normalize_check_command,
     organize_slice,
+    ready_dispatch_tasks,
+    ready_work_tasks,
     revert_task,
     run_task_checks,
+    task_dag_waves,
     validate_task_plan,
 )
 
@@ -330,6 +334,133 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(tasks[0].dependencies, [])
         self.assertEqual(tasks[1].dependencies, [])
         self.assertEqual(set(tasks[2].dependencies), {tasks[0].id, tasks[1].id})
+
+    def test_task_dag_waves_group_parallel_tasks_then_dependents(self) -> None:
+        first = VocrTask(
+            id="task-first",
+            slice_id="slice-dag",
+            title="First",
+            summary="First",
+            scope=["docs"],
+            acceptance_criteria=[AcceptanceCriterion(text="First done")],
+            tests=["Syntax-Check"],
+        )
+        second = VocrTask(
+            id="task-second",
+            slice_id="slice-dag",
+            title="Second",
+            summary="Second",
+            scope=["docs"],
+            acceptance_criteria=[AcceptanceCriterion(text="Second done")],
+            tests=["Syntax-Check"],
+        )
+        third = VocrTask(
+            id="task-third",
+            slice_id="slice-dag",
+            title="Third",
+            summary="Third",
+            scope=["docs"],
+            acceptance_criteria=[AcceptanceCriterion(text="Third done")],
+            tests=["Syntax-Check"],
+            dependencies=[first.id, second.id],
+        )
+
+        waves = task_dag_waves([third, first, second])
+
+        self.assertEqual({task.id for task in waves[0]}, {first.id, second.id})
+        self.assertEqual([task.id for task in waves[1]], [third.id])
+
+    def test_ready_task_selectors_respect_review_gated_dependencies(self) -> None:
+        dependency = VocrTask(
+            id="task-dependency",
+            slice_id="slice-ready",
+            title="Dependency",
+            summary="Dependency",
+            scope=["docs"],
+            acceptance_criteria=[AcceptanceCriterion(text="Dependency done")],
+            tests=["Syntax-Check"],
+            status=TaskStatus.accepted,
+        )
+        blocked = VocrTask(
+            id="task-blocked",
+            slice_id="slice-ready",
+            title="Blocked",
+            summary="Blocked",
+            scope=["docs"],
+            acceptance_criteria=[AcceptanceCriterion(text="Blocked done")],
+            tests=["Syntax-Check"],
+            dependencies=[dependency.id],
+        )
+        independent = VocrTask(
+            id="task-independent",
+            slice_id="slice-ready",
+            title="Independent",
+            summary="Independent",
+            scope=["docs"],
+            acceptance_criteria=[AcceptanceCriterion(text="Independent done")],
+            tests=["Syntax-Check"],
+        )
+        dispatched = VocrTask(
+            id="task-dispatched",
+            slice_id="slice-ready",
+            title="Dispatched",
+            summary="Dispatched",
+            scope=["docs"],
+            acceptance_criteria=[AcceptanceCriterion(text="Dispatched done")],
+            tests=["Syntax-Check"],
+            status=TaskStatus.dispatched,
+        )
+
+        self.assertEqual([task.id for task in ready_dispatch_tasks([dependency, blocked, independent, dispatched])], [independent.id])
+        self.assertEqual([task.id for task in ready_work_tasks([dependency, blocked, independent, dispatched])], [dispatched.id])
+
+    def test_dispatch_ready_refreshes_graph_once_for_parallel_wave(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / ".vocr"
+            ledger = MemoryLedger(root)
+            for task_id in ["task-wave-a", "task-wave-b"]:
+                ledger.append(
+                    LedgerEventType.task_created,
+                    VocrTask(
+                        id=task_id,
+                        slice_id="slice-wave",
+                        title=task_id,
+                        summary=task_id,
+                        scope=["docs"],
+                        acceptance_criteria=[AcceptanceCriterion(text=f"{task_id} done")],
+                        tests=["Syntax-Check"],
+                    ),
+                )
+            refresh_count = 0
+
+            def fake_refresh() -> None:
+                nonlocal refresh_count
+                refresh_count += 1
+
+            def fake_prepare(store: MemoryLedger, task_id: str) -> SimpleNamespace:
+                return SimpleNamespace(
+                    task_id=task_id,
+                    worktree_path=f"C:/tmp/{task_id}",
+                    manifest_path=f"C:/tmp/{task_id}/.vocr/VOCR_TASK.md",
+                    scope_path=f"C:/tmp/{task_id}/.vocr/scope.json",
+                    agents_path=f"C:/tmp/{task_id}/.vocr/AGENTS.md",
+                    permission_mode="ask_each_time",
+                    permission_scope="none",
+                )
+
+            with patch("vocr.cli.app.refresh_graph_for_wave", fake_refresh), patch(
+                "vocr.cli.app.prepare_dispatch_handoff",
+                fake_prepare,
+            ):
+                result = CliRunner().invoke(
+                    app,
+                    ["dispatch-ready", "--limit", "2", "--parallel", "2"],
+                    env={"VOCR_HOME": str(root)},
+                )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(refresh_count, 1)
+        self.assertIn("dispatched=2", result.output)
 
     def test_plan_invariants_block_dependency_cycles_before_dispatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

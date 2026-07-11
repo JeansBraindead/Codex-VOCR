@@ -222,10 +222,12 @@ vocr go global --all --reason "AFK run approved"
 vocr organize <slice-id>
 vocr organize <slice-id> --live-agent
 vocr dispatch <task-id>
-vocr dispatch-ready
+vocr dispatch-ready --parallel 4
 vocr work <task-id>
 vocr work <task-id> --fix --max-retries 2
-vocr work-ready --fix
+vocr work-ready --fix --parallel 2
+vocr orchestrate --fix --parallel-dispatch 4 --parallel-work 2
+vocr afk --max-waves 10
 vocr worker doctor
 vocr worker profile safe
 vocr worker profile unattended
@@ -297,7 +299,9 @@ vocr doctor
 - `vocr dispatch` blockiert vor dem Worktree, wenn Plan-Invarianten verletzt sind: fehlender Scope, fehlende Verifikation, unbekannte Dependencies oder zyklische Dependencies.
 - `vocr work` fuehrt den echten Worker aus und erstellt bei Erfolg automatisch einen Task-Commit, wenn Aenderungen vorhanden sind und der Scope Guard keine Verletzung findet.
 - `vocr work --fix --max-retries 2` erlaubt begrenzte Nachbesserungen bis `review_ready`; Promote bleibt trotzdem manuell und review-gated.
-- `vocr dispatch-ready` und `vocr work-ready` bedienen vorbereitete DAG-Tasks, deren Dependencies erfuellt sind.
+- `vocr dispatch-ready` bedient die naechste DAG-Welle parallel und refreshed Graphify genau einmal vor dieser Welle.
+- `vocr work-ready` arbeitet dispatchte Tasks parallel in isolierten Worktrees ab; Review und Promote bleiben manuell.
+- `vocr orchestrate` / `vocr afk` fuehrt einen ueberwachten Wellen-Loop aus: ready dispatchen, optional worker starten, bounded fixes erlauben, niemals automatisch reviewen/promoten/mergen.
 - `vocr worker doctor` und `vocr worker profile ...` konfigurieren Codex-Worker ohne Dateiedits.
 - `vocr check --codex-review` kann zusaetzlich `codex exec review` als Review-Signal ausfuehren.
 - `vocr ship --preview` zeigt Merge-Preview, `vocr ship --pr` erstellt optional eine Draft-PR via GitHub CLI.

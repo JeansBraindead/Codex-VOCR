@@ -213,6 +213,29 @@ class TaskPlan(BaseModel):
     tasks: list[VocrTask] = Field(default_factory=list)
 
 
+class OrchestrationStep(BaseModel):
+    task_id: str
+    action: str
+    status: str
+    detail: str = ""
+
+
+class OrchestrationWave(BaseModel):
+    index: int
+    dispatch_task_ids: list[str] = Field(default_factory=list)
+    work_task_ids: list[str] = Field(default_factory=list)
+    graph_refreshed: bool = False
+    steps: list[OrchestrationStep] = Field(default_factory=list)
+
+
+class OrchestrationRunResult(BaseModel):
+    waves: list[OrchestrationWave] = Field(default_factory=list)
+    dispatched: int = 0
+    worked: int = 0
+    promoted: int = 0
+    stopped_reason: str = ""
+
+
 class CodexRunResult(BaseModel):
     task_id: str
     command: list[str]
