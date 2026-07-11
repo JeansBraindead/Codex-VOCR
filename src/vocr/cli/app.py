@@ -54,6 +54,7 @@ from vocr.models import (
     TaskStatus,
 )
 from vocr.orchestration.workflow import (
+    build_slice_replay,
     create_vision,
     dispatch_task,
     organize_slice,
@@ -1522,6 +1523,48 @@ def show_diff(
         console.print("[cyan]Files:[/cyan]")
         for path in files:
             console.print(f"- {safe_text(path)}")
+
+
+@app.command("replay")
+def replay_slice(slice_id: str) -> None:
+    """Reconstruct a VisionSlice timeline: events, files touched, decisions, cost."""
+    try:
+        result = build_slice_replay(ledger(), slice_id)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    console.print(f"[bold]VOCR Replay[/bold] slice={safe_text(result.slice_id)}: {safe_text(result.goal)}")
+
+    table = Table(title="Timeline")
+    table.add_column("Time")
+    table.add_column("Type")
+    table.add_column("Task")
+    table.add_column("Detail")
+    for event in result.events:
+        table.add_row(
+            event.created_at.isoformat(),
+            event.type,
+            safe_text(event.task_id or "-"),
+            safe_text(event.detail),
+        )
+    console.print(table)
+
+    console.print("[cyan]Files touched:[/cyan]")
+    if result.files_touched:
+        for path in result.files_touched:
+            console.print(f"- {safe_text(path)}")
+    else:
+        console.print("- none")
+
+    console.print("[cyan]Decisions:[/cyan]")
+    if result.decisions:
+        for task_id, decision in result.decisions.items():
+            console.print(f"- {safe_text(task_id)}: {safe_text(decision)}")
+    else:
+        console.print("- none")
+
+    sources = ", ".join(f"{source}={amount}" for source, amount in result.token_by_source.items()) or "-"
+    console.print(f"[cyan]Cost:[/cyan] total_tokens={result.token_total} ({sources})")
 
 
 @app.command("usage")

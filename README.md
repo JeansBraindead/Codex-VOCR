@@ -235,6 +235,7 @@ vocr log --limit 30
 vocr diff <task-id>
 vocr diff <task-id> --full
 vocr usage
+vocr replay <slice-id>
 vocr eval-golden
 vocr learn
 vocr context "scope review" --learning --limit 10 --budget 1200
@@ -311,6 +312,7 @@ vocr doctor
 - `vocr clean --archives` loescht alte `.vocr/archive`-Segmente dauerhaft per Dateisystem-Unlink; vorher sichern, wenn die Historie erhalten bleiben soll.
 - `.vocr/ledger.jsonl` wird append-only mit plattformsicherem Lock geschrieben, damit parallele VOCR-Prozesse keine Ledger-Zeilen zerreissen.
 - `vocr usage` zeigt Token-/Provider-Telemetrie pro Task/Slice. Wenn der Worker echte Usage-Daten meldet, werden diese als `actual` angezeigt; sonst nutzt VOCR einen Estimate-Fallback.
+- `vocr replay <slice-id>` rekonstruiert aus dem Ledger die Slice-Timeline: Ereignisse in Reihenfolge, betroffene Dateien aus Reviews, letzte Entscheidung pro Task und Token-Kosten nach `actual`/`estimated` aufgeschluesselt. Rein lesend, kein Recompute von Diffs.
 - `vocr eval-golden` fuehrt einen LLM-freien Stub-Worker-Gate-Test aus: Dispatch, echtes Usage-Parsing, Promote-vor-Review-Block und Promote-nach-accepted-Review.
 - `vocr learn` verdichtet lokale Ledger-, Review- und Telemetrie-Signale in `.vocr/learning.json`.
 - `vocr compact` aktualisiert Learning und archiviert alte Ledger-Events unter `.vocr/archive/`, damit `.vocr/ledger.jsonl` klein bleibt.

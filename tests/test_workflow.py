@@ -51,10 +51,12 @@ from vocr.models import (
     RunTelemetry,
     TaskStatus,
     TokenUsage,
+    VisionSlice,
     VocrTask,
 )
 from vocr.orchestration.golden import run_golden_eval
 from vocr.orchestration.workflow import (
+    build_slice_replay,
     create_vision,
     dispatch_task,
     normalize_check_command,
@@ -568,6 +570,88 @@ class WorkflowTests(unittest.TestCase):
         self.assertIsNotNone(current)
         self.assertEqual(current.status, TaskStatus.needs_changes)
         self.assertIsNone(ledger.latest_task_commit(task.id))
+
+    def test_build_slice_replay_reconstructs_timeline_files_decisions_and_cost(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = MemoryLedger(Path(tmp) / ".vocr")
+            slice_item = VisionSlice(
+                id="slice-replay",
+                request=GOOD_REQUEST,
+                goal="Healthcheck-API bauen",
+                acceptance_criteria=[AcceptanceCriterion(text="GET /health liefert 200")],
+            )
+            ledger.append(LedgerEventType.vision_created, slice_item)
+            task = VocrTask(
+                id="task-replay",
+                slice_id=slice_item.id,
+                title="Healthcheck-Endpoint",
+                summary="Implement healthcheck",
+                scope=["backend"],
+                acceptance_criteria=[AcceptanceCriterion(text="GET /health liefert 200")],
+                tests=["Syntax-Check"],
+            )
+            ledger.append(LedgerEventType.task_created, task)
+            ledger.append(
+                LedgerEventType.task_dispatched,
+                {"task_id": task.id, "branch_name": "vocr/task-replay", "worktree_path": str(Path(tmp) / "wt")},
+            )
+            ledger.append(LedgerEventType.task_committed, {"task_id": task.id, "commit_sha": "abc123"})
+            ledger.append(
+                LedgerEventType.telemetry_recorded,
+                RunTelemetry(
+                    provider="codex-cli",
+                    slice_id=slice_item.id,
+                    task_id=task.id,
+                    agent="codex-worker",
+                    token_usage=TokenUsage(total_tokens=120, source="actual"),
+                ),
+            )
+            review = ReviewResult(
+                task_id=task.id,
+                decision=ReviewDecision.accepted,
+                summary="Looks good",
+                diff_files=["src/vocr/backend/health.py"],
+            )
+            ledger.append(LedgerEventType.review_recorded, review)
+            ledger.append(LedgerEventType.task_promoted, {"task_id": task.id, "branch_name": "vocr/task-replay"})
+
+            result = build_slice_replay(ledger, slice_item.id)
+
+        self.assertEqual(result.slice_id, slice_item.id)
+        self.assertEqual(result.goal, "Healthcheck-API bauen")
+        event_types = [event.type for event in result.events]
+        self.assertEqual(
+            event_types,
+            [
+                "vision_created",
+                "task_created",
+                "task_dispatched",
+                "task_committed",
+                "review_recorded",
+                "task_promoted",
+            ],
+        )
+        self.assertEqual(result.files_touched, ["src/vocr/backend/health.py"])
+        self.assertEqual(result.decisions, {task.id: "accepted"})
+        self.assertEqual(result.token_total, 120)
+        self.assertEqual(result.token_by_source, {"actual": 120})
+
+    def test_build_slice_replay_rejects_unknown_slice(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = MemoryLedger(Path(tmp) / ".vocr")
+            with self.assertRaises(ValueError):
+                build_slice_replay(ledger, "missing-slice")
+
+    def test_replay_cli_reports_unknown_slice(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = CliRunner().invoke(
+                app,
+                ["replay", "missing-slice"],
+                env={"VOCR_HOME": str(Path(tmp) / ".vocr")},
+            )
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("Slice not found", result.output)
 
     def test_mcp_server_lists_vocr_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

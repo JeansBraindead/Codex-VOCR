@@ -13,9 +13,11 @@ from vocr.memory.learning import LearningStore
 from vocr.models import (
     AcceptanceCriterion,
     LedgerEventType,
+    ReplayEvent,
     ReviewDecision,
     ReviewComment,
     ReviewResult,
+    SliceReplay,
     TaskStatus,
     TestRunResult,
     VisionSlice,
@@ -23,6 +25,7 @@ from vocr.models import (
 )
 from vocr.orchestration.codex_review import run_codex_review
 from vocr.orchestration.readiness import parse_request_sections
+from vocr.telemetry import token_total
 
 
 def create_vision(request: str) -> VisionSlice:
@@ -629,3 +632,92 @@ def _changed_python_files(task: VocrTask | None) -> list[str]:
         return []
     manager = GitWorktreeManager(task.worktree_path)
     return sorted(path for path in manager.changed_files() if path.endswith(".py"))
+
+
+def build_slice_replay(ledger: MemoryLedger, slice_id: str) -> SliceReplay:
+    slice_item = ledger.get_slice(slice_id)
+    if slice_item is None:
+        raise ValueError(f"Slice not found: {slice_id}")
+
+    task_ids = {task.id for task in ledger.tasks() if task.slice_id == slice_id}
+    events: list[ReplayEvent] = []
+    files_touched: set[str] = set()
+    decisions: dict[str, str] = {}
+
+    for event in ledger.events():
+        parsed = _replay_event_detail(event, slice_id, task_ids)
+        if parsed is None:
+            continue
+        task_id, detail = parsed
+        events.append(
+            ReplayEvent(
+                created_at=event.created_at,
+                type=event.type.value,
+                task_id=task_id,
+                detail=detail,
+            )
+        )
+        if event.type == LedgerEventType.review_recorded:
+            review = ReviewResult.model_validate(event.payload)
+            files_touched.update(review.diff_files)
+            decisions[review.task_id] = review.decision.value
+
+    token_total_amount = 0
+    token_by_source: dict[str, int] = {}
+    for telemetry in ledger.telemetry():
+        if telemetry.slice_id != slice_id and telemetry.task_id not in task_ids:
+            continue
+        amount = token_total(telemetry.token_usage)
+        token_total_amount += amount
+        source = telemetry.token_usage.source
+        token_by_source[source] = token_by_source.get(source, 0) + amount
+
+    return SliceReplay(
+        slice_id=slice_id,
+        goal=slice_item.goal,
+        events=events,
+        files_touched=sorted(files_touched),
+        decisions=decisions,
+        token_total=token_total_amount,
+        token_by_source=token_by_source,
+    )
+
+
+def _replay_event_detail(
+    event,
+    slice_id: str,
+    task_ids: set[str],
+) -> tuple[str | None, str] | None:
+    payload = event.payload
+    if event.type == LedgerEventType.vision_created:
+        if payload.get("id") != slice_id:
+            return None
+        return None, f"Vision erstellt: {payload.get('goal', '')}"
+    if event.type == LedgerEventType.task_created:
+        if payload.get("slice_id") != slice_id:
+            return None
+        return payload.get("id"), f"Task erstellt: {payload.get('title', '')}"
+
+    task_id = payload.get("task_id") if isinstance(payload, dict) else None
+    if task_id is None or task_id not in task_ids:
+        return None
+
+    if event.type == LedgerEventType.task_dispatched:
+        return task_id, f"Dispatched -> branch {payload.get('branch_name', '-')}"
+    if event.type == LedgerEventType.task_worker_ran:
+        return task_id, f"Worker exit={payload.get('exit_code', '?')}"
+    if event.type == LedgerEventType.task_committed:
+        return task_id, f"Commit {payload.get('commit_sha', '-')}"
+    if event.type == LedgerEventType.review_recorded:
+        return task_id, f"Review {payload.get('decision', '?')}: {payload.get('summary', '')}"
+    if event.type == LedgerEventType.task_promoted:
+        return task_id, f"Promoted (branch {payload.get('branch_name', '-')})"
+    if event.type == LedgerEventType.task_aborted:
+        return task_id, f"Aborted: {payload.get('reason', '-')}"
+    if event.type == LedgerEventType.task_reverted:
+        return (
+            task_id,
+            f"Reverted {payload.get('commit_sha', '-')} -> {payload.get('revert_sha', '-')}: "
+            f"{payload.get('reason', '-')}",
+        )
+    return None

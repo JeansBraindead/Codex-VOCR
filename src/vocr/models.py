@@ -312,6 +312,23 @@ class GoldenEvalResult(BaseModel):
     steps: list[GoldenEvalStep] = Field(default_factory=list)
 
 
+class ReplayEvent(BaseModel):
+    created_at: datetime
+    type: str
+    task_id: str | None = None
+    detail: str
+
+
+class SliceReplay(BaseModel):
+    slice_id: str
+    goal: str = ""
+    events: list[ReplayEvent] = Field(default_factory=list)
+    files_touched: list[str] = Field(default_factory=list)
+    decisions: dict[str, str] = Field(default_factory=dict)
+    token_total: int = 0
+    token_by_source: dict[str, int] = Field(default_factory=dict)
+
+
 class LedgerEvent(BaseModel):
     id: str = Field(default_factory=lambda: new_id("evt"))
     type: LedgerEventType

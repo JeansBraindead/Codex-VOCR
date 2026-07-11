@@ -456,6 +456,22 @@ Erfolgskriterien:
 - alte Ledger-Events werden bei Bedarf nach `.vocr/archive/` geschrieben
 - `.vocr/ledger.jsonl` bleibt kleiner
 
+## 15.1 Replay testen
+
+Slice-ID aus einem vorherigen Schritt (z.B. `vocr log --limit 30` oder `vocr status`):
+
+```powershell
+vocr replay <slice-id>
+```
+
+Erfolgskriterien:
+
+- Timeline zeigt Ereignisse in chronologischer Reihenfolge (Vision, Tasks, Dispatch, Commit, Review, Promote/Abort/Revert)
+- „Files touched" listet die Dateien aus den Review-Diffs der Slice
+- „Decisions" zeigt die letzte Review-Entscheidung je Task
+- „Cost" summiert Token ueber `actual`/`estimated` getrennt
+- Unbekannte Slice-ID liefert eine klare Fehlermeldung statt Traceback
+
 ## 16. Housekeeping testen
 
 ```powershell
