@@ -286,7 +286,7 @@ vocr doctor
 - Der Live-Agent-Pfad nutzt ein Confidence-Gate: bei hohem deterministischen Vertrauen wird auch mit `--live-agent` kein LLM-Overwrite gestartet.
 - Live-Agent-Fan-out ist im MVP kollabiert; Vision/Organizer erzeugen strukturierte Outputs ohne mehrere Specialist-Tool-Calls.
 - `vocr hybrid-vision`/`vocr hybrid-plan` sind ein experimenteller, default-off Phase-4-Pfad (`VOCR_HYBRID_ENABLED=true`), der die bestehende Pipeline umschliesst statt sie zu forken. Ohne das Flag laufen `vocr vision`/`vocr ask`/`vocr organize` unveraendert weiter und die Hybrid-Funktionen werden nie aufgerufen.
-- `vocr hybrid-vision` darf ein lokales Modell (`VOCR_HYBRID_LOCAL_MODEL`/`VOCR_HYBRID_LOCAL_BASE_URL`) fuer genau einen Versuch nutzen, danach genau einen Cloud-Fallback-Versuch, weil der Prompt nur der eigene Nutzertext ist. `vocr hybrid-plan` braucht Repo-Kontext (untrusted) und ist deshalb Cloud-only, nie lokal.
+- `vocr hybrid-vision` und `vocr hybrid-plan` sind beide Cloud-only, ein Versuch. Ein lokales Modell erzeugt in VOCR nie planende/authoritative Inhalte -- weder weil der Repo-Kontext untrusted ist (`hybrid-plan`) noch weil VisionSlice-Output (Ziel, Akzeptanzkriterien) trotz vertrauenswuerdigem Eingabetext downstream authoritativ bleibt (`hybrid-vision`).
 - Hybrid-Modellconfig ist getrennt von der persistenten `.env`-Modellconfig und schreibt nie `.env` oder Prozess-Umgebungsvariablen.
 - Worker-Retries bekommen nur Delta-Diffs seit dem vorherigen Versuch.
 - `vocr dispatch` erzeugt im isolierten Worktree `.vocr/VOCR_TASK.md` mit Task, Context-Pack und Permission-Modus.

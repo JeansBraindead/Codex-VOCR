@@ -9,12 +9,8 @@ from dotenv import load_dotenv
 from vocr.models import TaskPlan, VisionSlice
 
 HYBRID_ENABLE_ENV = "VOCR_HYBRID_ENABLED"
-LOCAL_MODEL_ENV = "VOCR_HYBRID_LOCAL_MODEL"
-LOCAL_BASE_URL_ENV = "VOCR_HYBRID_LOCAL_BASE_URL"
-LOCAL_API_KEY_ENV = "VOCR_HYBRID_LOCAL_API_KEY"
 CLOUD_MODEL_ENV = "VOCR_HYBRID_CLOUD_MODEL"
 CLOUD_API_KEY_ENV = "OPENAI_API_KEY"
-DEFAULT_LOCAL_BASE_URL = "http://localhost:1234/v1"
 DEFAULT_CLOUD_MODEL = "gpt-4.1-mini"
 
 
@@ -23,7 +19,7 @@ class HybridDisabledError(RuntimeError):
 
 
 class HybridRoutingError(RuntimeError):
-    """Neither local nor cloud hybrid routing produced a usable result."""
+    """Hybrid cloud routing did not produce a usable result."""
 
 
 @dataclass
@@ -45,18 +41,6 @@ def _require_enabled() -> None:
         )
 
 
-def _local_model() -> OpenAIChatCompletionsModel | None:
-    load_dotenv()
-    model_name = os.getenv(LOCAL_MODEL_ENV)
-    if not model_name:
-        return None
-    client = AsyncOpenAI(
-        base_url=os.getenv(LOCAL_BASE_URL_ENV, DEFAULT_LOCAL_BASE_URL),
-        api_key=os.getenv(LOCAL_API_KEY_ENV, "lm-studio"),
-    )
-    return OpenAIChatCompletionsModel(model=model_name, openai_client=client)
-
-
 def _cloud_model() -> OpenAIChatCompletionsModel | None:
     load_dotenv()
     api_key = os.getenv(CLOUD_API_KEY_ENV)
@@ -67,13 +51,24 @@ def _cloud_model() -> OpenAIChatCompletionsModel | None:
 
 
 async def hybrid_create_vision(request: str) -> HybridResult:
-    """Local-first, single-attempt cloud fallback.
+    """Cloud-only, single attempt.
 
-    Safe for local: the prompt is only the user's own request text, never repo content.
+    VisionSlice creation is authoritative planning: its goal and acceptance criteria
+    become the basis for every downstream task, scope, and review decision. A local
+    model's job in VOCR's design was always to be a cheap, non-authoritative signal,
+    never the author of real planning content -- and it stays that way here regardless
+    of whether the input text itself is "trusted", because the risk is in the output
+    being wrong, not in the input being hostile. So this never routes to a local model,
+    even for a single bounded attempt.
     """
     _require_enabled()
-    agent_kwargs = dict(
-        name="VOCR Hybrid Visionary",
+    cloud_model = _cloud_model()
+    if cloud_model is None:
+        raise HybridRoutingError(f"Hybrid vision creation is cloud-only; set {CLOUD_API_KEY_ENV} to use it.")
+
+    agent = Agent(
+        name="VOCR Hybrid Visionary (cloud-only)",
+        model=cloud_model,
         output_type=VisionSlice,
         instructions=(
             "Create a concise VOCR VisionSlice. Capture the goal, assumptions, "
@@ -81,38 +76,19 @@ async def hybrid_create_vision(request: str) -> HybridResult:
         ),
         tools=[],
     )
-
-    errors: list[str] = []
-    local_model = _local_model()
-    if local_model is not None:
-        try:
-            agent = Agent(model=local_model, **agent_kwargs)
-            result = await Runner.run(agent, request, max_turns=1)
-            return HybridResult(output=VisionSlice.model_validate(result.final_output), route="local")
-        except Exception as exc:
-            errors.append(f"local attempt failed: {exc}")
-
-    cloud_model = _cloud_model()
-    if cloud_model is not None:
-        try:
-            agent = Agent(model=cloud_model, **agent_kwargs)
-            result = await Runner.run(agent, request, max_turns=1)
-            return HybridResult(output=VisionSlice.model_validate(result.final_output), route="cloud")
-        except Exception as exc:
-            errors.append(f"cloud attempt failed: {exc}")
-
-    raise HybridRoutingError(
-        "; ".join(errors)
-        or f"No hybrid model configured. Set {LOCAL_MODEL_ENV} and/or {CLOUD_API_KEY_ENV}."
-    )
+    try:
+        result = await Runner.run(agent, request, max_turns=1)
+    except Exception as exc:
+        raise HybridRoutingError(f"cloud attempt failed: {exc}") from exc
+    return HybridResult(output=VisionSlice.model_validate(result.final_output), route="cloud")
 
 
 async def hybrid_create_task_plan(slice_item: VisionSlice, context_pack: str) -> HybridResult:
     """Cloud-only, single attempt.
 
-    Task planning needs repo context, which is untrusted input. The local model is
-    known to be prompt-injection prone and to break on code-in-JSON, so this never
-    routes to it, even when a local model is configured for hybrid_create_vision.
+    Task planning is authoritative planning over untrusted repo context. A local
+    model is known to be prompt-injection prone and to break on code-in-JSON, so
+    this never routes to it.
     """
     _require_enabled()
     cloud_model = _cloud_model()

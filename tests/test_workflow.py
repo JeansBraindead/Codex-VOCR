@@ -685,32 +685,33 @@ class WorkflowTests(unittest.TestCase):
             with self.assertRaises(HybridDisabledError):
                 asyncio.run(hybrid_create_vision(GOOD_REQUEST))
 
-    def test_hybrid_vision_tries_local_once_then_falls_back_to_cloud(self) -> None:
-        local_model = _FakeHybridModel("local")
+    def test_hybrid_vision_is_cloud_only(self) -> None:
         cloud_model = _FakeHybridModel("cloud")
         calls: list[str] = []
 
         async def fake_run(agent, prompt, *, max_turns=None, **kwargs):
             calls.append(agent.model.label)
-            if agent.model is local_model:
-                raise RuntimeError("local endpoint unreachable")
             return SimpleNamespace(
                 final_output=VisionSlice(request=prompt, goal="Aus der Cloud geplant").model_dump()
             )
 
-        with patch("vocr.agents.hybrid._local_model", return_value=local_model), patch(
-            "vocr.agents.hybrid._cloud_model", return_value=cloud_model
-        ), patch("vocr.agents.hybrid.Runner.run", side_effect=fake_run), patch.dict(
-            os.environ, {"VOCR_HYBRID_ENABLED": "true"}, clear=False
-        ):
+        with patch("vocr.agents.hybrid._cloud_model", return_value=cloud_model), patch(
+            "vocr.agents.hybrid.Runner.run", side_effect=fake_run
+        ), patch.dict(os.environ, {"VOCR_HYBRID_ENABLED": "true"}, clear=False):
             result = asyncio.run(hybrid_create_vision(GOOD_REQUEST))
 
-        self.assertEqual(calls, ["local", "cloud"])
+        self.assertEqual(calls, ["cloud"])
         self.assertEqual(result.route, "cloud")
         self.assertEqual(result.output.goal, "Aus der Cloud geplant")
 
+    def test_hybrid_vision_refuses_without_cloud_key(self) -> None:
+        with patch("vocr.agents.hybrid._cloud_model", return_value=None), patch.dict(
+            os.environ, {"VOCR_HYBRID_ENABLED": "true"}, clear=False
+        ):
+            with self.assertRaises(HybridRoutingError):
+                asyncio.run(hybrid_create_vision(GOOD_REQUEST))
+
     def test_hybrid_task_plan_never_routes_untrusted_context_to_local(self) -> None:
-        local_model = _FakeHybridModel("local")
         cloud_model = _FakeHybridModel("cloud")
         calls: list[str] = []
 
@@ -724,11 +725,9 @@ class WorkflowTests(unittest.TestCase):
             acceptance_criteria=[AcceptanceCriterion(text="GET /health liefert 200")],
         )
 
-        with patch("vocr.agents.hybrid._local_model", return_value=local_model), patch(
-            "vocr.agents.hybrid._cloud_model", return_value=cloud_model
-        ), patch("vocr.agents.hybrid.Runner.run", side_effect=fake_run), patch.dict(
-            os.environ, {"VOCR_HYBRID_ENABLED": "true"}, clear=False
-        ):
+        with patch("vocr.agents.hybrid._cloud_model", return_value=cloud_model), patch(
+            "vocr.agents.hybrid.Runner.run", side_effect=fake_run
+        ), patch.dict(os.environ, {"VOCR_HYBRID_ENABLED": "true"}, clear=False):
             result = asyncio.run(hybrid_create_task_plan(slice_item, "<repo context from untrusted files>"))
 
         self.assertEqual(calls, ["cloud"])
@@ -785,6 +784,28 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("vocr_review", tool_names)
         self.assertIn("vocr_promote_preview", tool_names)
         self.assertIn("vocr_promote", tool_names)
+
+    def test_mcp_context_tool_honors_token_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docs").mkdir()
+            (root / "docs" / "feature.md").write_text("# feature api ranking\n", encoding="utf-8")
+            (root / "src").mkdir()
+            (root / "src" / "feature.py").write_text("def feature_api():\n    return True\n", encoding="utf-8")
+            vocr_home = root / ".vocr"
+            GraphStore(vocr_home).save(RepoGraphBuilder(root).build())
+
+            server = VocrMcpServer(vocr_home)
+            response = server.handle(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "vocr_context", "arguments": {"query": "feature api", "budget": 50}},
+                }
+            )
+
+        self.assertIn("Token budget: 50", response["result"]["content"][0]["text"])
 
     def test_mcp_promote_requires_confirm_and_uses_gate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

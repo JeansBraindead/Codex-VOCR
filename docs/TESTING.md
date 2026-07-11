@@ -342,7 +342,9 @@ Erfolgskriterien:
 - Kein `.vocr`-Ordner und kein Ledger-Eintrag entstehen
 - `vocr vision`/`vocr ask`/`vocr organize` bleiben davon vollstaendig unberuehrt (Isolationstest)
 
-Mit `VOCR_HYBRID_ENABLED=true` (optional zusaetzlich `VOCR_HYBRID_LOCAL_MODEL` fuer einen echten LM-Studio-Test):
+Mit `VOCR_HYBRID_ENABLED=true`. Beide Hybrid-Befehle sind Cloud-only -- ein
+lokales Modell darf hier nie planende/authoritative VOCR-Inhalte erzeugen,
+egal wie vertrauenswuerdig der Eingabetext ist:
 
 ```powershell
 $env:VOCR_HYBRID_ENABLED = "true"
@@ -351,11 +353,11 @@ vocr hybrid-vision "Ziel: Smoke. Arbeitsbereich: docs. Akzeptanz: geht. Verifika
 
 Erfolgskriterien:
 
-- Zeigt entweder `Hybrid route: local` oder `Hybrid route: cloud`, oder faellt bei Fehlern sichtbar auf den deterministischen Pfad zurueck
-- Ohne konfiguriertes lokales oder Cloud-Modell entsteht trotzdem eine Slice (deterministischer Fallback)
+- Zeigt `Hybrid route: cloud`, oder faellt bei Fehlern sichtbar auf den deterministischen Pfad zurueck
+- Ohne `OPENAI_API_KEY` entsteht trotzdem eine Slice (deterministischer Fallback)
 - Kein Secret/API-Key wird in der Ausgabe angezeigt
 
-Mit einer bereits erstellten Slice, `vocr hybrid-plan <slice-id>` testen. Dieser Pfad ist Cloud-only:
+Mit einer bereits erstellten Slice, `vocr hybrid-plan <slice-id>` testen:
 
 ```powershell
 vocr hybrid-plan <slice-id>
@@ -363,7 +365,7 @@ vocr hybrid-plan <slice-id>
 
 Erfolgskriterien:
 
-- Auch mit gesetztem `VOCR_HYBRID_LOCAL_MODEL` wird fuer die Planung ausschliesslich das Cloud-Modell verwendet
+- Fuer die Planung wird ausschliesslich das Cloud-Modell verwendet
 - Ohne `OPENAI_API_KEY` bricht der Befehl mit klarer Meldung ab und faellt auf den deterministischen Plan zurueck
 
 ## 11. Worktree Dispatch testen

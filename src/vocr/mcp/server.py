@@ -37,6 +37,7 @@ TOOLS = [
             "properties": {
                 "query": {"type": "string"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "budget": {"type": "integer", "minimum": 1, "description": "Approximate token budget for the brief."},
             },
             "additionalProperties": False,
         },
@@ -168,12 +169,14 @@ class VocrMcpServer:
         if name == "vocr_context":
             query = arguments.get("query")
             limit = int(arguments.get("limit", 20))
+            budget = arguments.get("budget")
+            token_budget = int(budget) if budget is not None else None
             store = GraphStore(self.vocr_home)
             if not store.exists():
                 graph = store.refresh(".")
-                context = graph.context_brief(query=query, limit=limit)
+                context = graph.context_brief(query=query, limit=limit, token_budget=token_budget)
             else:
-                context = store.context_pack(query=query, limit=limit)
+                context = store.context_pack(query=query, limit=limit, token_budget=token_budget)
             return self._text_result(context)
         if name == "vocr_plan":
             request = str(arguments.get("request", ""))
