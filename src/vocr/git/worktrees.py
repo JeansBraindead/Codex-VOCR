@@ -207,7 +207,7 @@ class GitWorktreeManager:
         result = self._git("--version")
         if result.returncode != 0:
             return None
-        match = re.search(r"(\d+)\.(\d+)", result.stdout)
+        match = re.search(r"git version (\d+)\.(\d+)", result.stdout)
         if not match:
             return None
         return (int(match.group(1)), int(match.group(2)))
@@ -222,10 +222,10 @@ class GitWorktreeManager:
 
         version = self.git_version()
         if version is not None and version < MIN_GIT_VERSION_FOR_MERGE_TREE:
-            raise GitWorktreeError(
-                "Merge preflight needs git >= "
-                f"{'.'.join(map(str, MIN_GIT_VERSION_FOR_MERGE_TREE))} for the two-argument "
-                f"`git merge-tree` real-merge mode; found {'.'.join(map(str, version))}. "
+            issues.append(
+                "git >= "
+                f"{'.'.join(map(str, MIN_GIT_VERSION_FOR_MERGE_TREE))} is required for the "
+                f"two-argument `git merge-tree` real-merge mode; found {'.'.join(map(str, version))}. "
                 "Upgrade git before promoting."
             )
 

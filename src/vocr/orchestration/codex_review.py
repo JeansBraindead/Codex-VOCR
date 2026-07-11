@@ -36,8 +36,13 @@ def run_codex_review(task: VocrTask, base_ref: str | None = None, timeout_second
             timeout=timeout_seconds,
             check=False,
         )
-    except (subprocess.TimeoutExpired, OSError):
-        return None
+    except subprocess.TimeoutExpired:
+        return ReviewComment(
+            source="codex-review",
+            body=f"Codex review unavailable: timed out after {timeout_seconds}s.",
+        )
+    except OSError as exc:
+        return ReviewComment(source="codex-review", body=f"Codex review unavailable: {exc}")
     body = "\n".join(part for part in [completed.stdout.strip(), completed.stderr.strip()] if part).strip()
     if not body:
         return None

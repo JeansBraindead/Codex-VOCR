@@ -385,7 +385,7 @@ class RepoGraph(BaseModel):
         lines = ["VOCR repo graph brief:"]
         if query:
             lines.append(f"Query: {query}")
-        if token_budget:
+        if token_budget is not None:
             lines.append(f"Token budget: {token_budget}")
         for node in nodes:
             symbol_text = ", ".join(node.symbols[:6]) or "no symbols"

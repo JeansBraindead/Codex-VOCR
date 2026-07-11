@@ -1090,7 +1090,7 @@ def organize(
 
 @app.command("hybrid-vision")
 def hybrid_vision(request: str) -> None:
-    """Experimental Phase 4: local-first, cloud-fallback VisionSlice creation.
+    """Experimental Phase 4: cloud-only VisionSlice creation.
 
     Default-off and isolated from `vocr vision`: this never runs unless VOCR_HYBRID_ENABLED
     is set, and `vocr vision`/`vocr ask` never call into this path. Review-pending, not for
@@ -1143,7 +1143,10 @@ def hybrid_plan(slice_id: str) -> None:
     context_pack = "\n\n".join(task.context_pack or "" for task in tasks)
     try:
         hybrid_result = asyncio.run(hybrid_create_task_plan(slice_item, context_pack))
-        tasks = hybrid_result.output.tasks or tasks
+        if hybrid_result.output.tasks:
+            tasks = hybrid_result.output.tasks
+            for task in tasks:
+                task.slice_id = slice_item.id
         console.print(f"[cyan]Hybrid route:[/cyan] {hybrid_result.route}")
     except Exception as exc:
         console.print("[yellow]Hybrid Organizer nicht verfuegbar, deterministischer Fallback aktiv.[/yellow]")
