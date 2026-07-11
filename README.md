@@ -1,20 +1,63 @@
+<div align="center">
+
 # VOCR
 
-VOCR ist ein lokaler Python-MVP nach dem Muster **Vision / Organize / Code / Review**.
+**Vision · Organize · Code · Review**
 
-VOCR ist architektonisch von [VOIT](https://github.com/yesitsfebreeze/voit) inspiriert, insbesondere vom Gedanken, Arbeit ueber klare Phasen, isolierte Worktrees, Scope-Regeln, Review-Gates und Promote-Flows zu strukturieren. VOCR ist eine eigenstaendige Python/Codex-Umsetzung dieser Ideen und kein Fork oder vendored Copy von VOIT.
+A local-first orchestrator that turns a plain-language request into small,
+scoped, reviewed changes — never merged until you explicitly say so.
 
-Der Visionary Agent ist der Single Contact Point fuer den User. Er nimmt Nutzerwuensche entgegen, baut automatisch einen tokenarmen Graphify-Kontext, haelt Ziel und Akzeptanzkriterien fest, zerlegt Arbeit in kleine Tasks, dispatcht bei `--go` in isolierte Git-Worktrees und promotet Aenderungen erst nach Review.
+[![CI](https://github.com/JeansBraindead/Codex-VOCR/actions/workflows/ci.yml/badge.svg)](https://github.com/JeansBraindead/Codex-VOCR/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](pyproject.toml)
+[![Platform: Windows](https://img.shields.io/badge/platform-windows-lightgrey)](docs/INSTALLATION.md)
 
-Der normale Einstieg ist `vocr start`: eine einfache Dialogoberflaeche mit Textfeld, in der der User natuerlichsprachlich mit dem Visionaer spricht. Der Visionaer klaert fehlende Informationen, fasst den Intake zusammen, erklaert die Ausfuehrung und wartet auf Freigabe, bevor Tasks oder Worktrees entstehen.
+[Quick start](#quick-start) ·
+[How it works](#how-it-works) ·
+[Safety model](#safety-model) ·
+[Normal mode](#normal-mode-the-way-most-people-should-use-vocr) ·
+[CLI reference](docs/CLI_REFERENCE.md) ·
+[Contributing](CONTRIBUTING.md)
 
-## Setup
+</div>
 
-Sehr genaue Anleitungen:
+---
 
-- [Installationsanleitung](docs/INSTALLATION.md)
-- [Testanleitung](docs/TESTING.md)
-- [Normalmodus-Oberflaeche](docs/NORMAL_MODE_SURFACE.md)
+## What is VOCR
+
+VOCR is a local Python MVP built around one idea: an autonomous coding agent
+is only trustworthy if the *process around it* is trustworthy. So VOCR wraps
+Codex-style AI workers in a strict pipeline — **Vision → Organize → Code →
+Review** — where every change is scoped, isolated in its own git worktree,
+and gated behind an explicit human review before it can be promoted (merged).
+
+Nothing merges automatically. Nothing executes before you confirm what it's
+about to do. That's not a limitation bolted on afterward — it's the whole
+point.
+
+VOCR is architecturally inspired by [VOIT](https://github.com/yesitsfebreeze/voit),
+particularly the idea of structuring work through clear phases, isolated
+worktrees, scope rules, review gates, and promote flows. VOCR is an
+independent Python/Codex implementation of those ideas, not a fork or vendored
+copy of VOIT.
+
+## Quick start
+
+The safest, simplest path for most people:
+
+```powershell
+git clone https://github.com/JeansBraindead/Codex-VOCR.git
+cd Codex-VOCR
+.\install-vocr.ps1
+```
+
+`install-vocr.ps1` creates `.venv` if needed, installs VOCR editable, runs
+bootstrap/graphify, and starts normal mode — all idempotently, so re-running
+it is always safe. If PowerShell blocks script execution, double-click
+`Start-VOCR.bat` instead.
+
+Prefer to do it by hand, or already have the repo cloned into an empty
+folder?
 
 ```powershell
 python -m venv .venv
@@ -24,305 +67,170 @@ vocr setup
 vocr start
 ```
 
-Einfacher und robuster fuer normale Nutzer:
+Full step-by-step instructions (including what to do if PowerShell's
+execution policy blocks you, or you have multiple Python versions installed)
+are in [`docs/INSTALLATION.md`](docs/INSTALLATION.md).
 
-```powershell
-.\install-vocr.ps1
+## How it works
+
+```mermaid
+flowchart LR
+    U["You:\nplain-language request"] --> V["Vision\n(clarifies goal,\nscope, acceptance)"]
+    V -->|"missing info?"| Q["Ask you\n(no guessing)"]
+    Q --> V
+    V -->|"confirmed"| O["Organize\n(small, scoped tasks)"]
+    O --> D["Dispatch\n(isolated git worktree\nper task)"]
+    D --> C["Code\n(Codex worker,\nscope-guarded)"]
+    C --> R["Review\n(scope + secrets +\ntests + human)"]
+    R -->|"needs changes"| C
+    R -->|"accepted"| P["Promote\n(explicit merge,\nnever automatic)"]
 ```
 
-Alternativ bei blockierter PowerShell:
+Every task carries its own scope, non-goals, acceptance criteria, and tests.
+Workers only ever touch files inside their declared scope — anything outside
+it is blocked before commit, and the task is marked `needs_changes`
+automatically.
 
-```powershell
-.\Start-VOCR.bat
-```
+## Safety model
 
-Die Installer-Skripte liegen sichtbar im Repo-Root: `install-vocr.ps1`,
-`start-vocr.ps1` und `Start-VOCR.bat`. Sie wechseln automatisch in ihr eigenes
-Repo-Verzeichnis, legen `.venv` bei Bedarf an, installieren VOCR editable,
-fuehren Bootstrap/Graphify aus und starten den Normalmodus.
+This is the part that matters most, so it gets its own section instead of
+being buried in a feature list.
 
-Wenn `install-vocr.ps1` in einem leeren Ordner liegt, klont es das Repo nach
-`Codex-VOCR` und fuehrt die Installation dort fort. Ein anderer Zielordner geht
-mit `.\install-vocr.ps1 -InstallDir D:\Tools\Codex-VOCR`.
+- **Nothing executes without confirmation.** Normal mode always shows a
+  summary — goal, scope, acceptance criteria, verification, non-goals,
+  execution mode, planned internal steps, safety boundaries — and waits for
+  you to say "yes" before creating a single task or worktree.
+- **Missing information stays a question, never an assumption.** If your
+  request doesn't make goal, scope, acceptance, verification, non-goals, or
+  execution bounds clear, VOCR asks — it does not fill in the blank itself.
+- **Workers run in isolated git worktrees, never your main branch.** Scope is
+  translated into path globs and enforced before commit, not just described
+  in a prompt.
+- **Review is a real gate.** A task can only be `accepted`, `needs_changes`,
+  or `blocked`. Promotion requires an `accepted` review — there is no code
+  path that merges without one, including through the MCP server (which
+  additionally requires an explicit `confirm=true`).
+- **Secrets are scanned, not just trusted.** Every diff — including new
+  untracked files — is checked for keyword-style secrets, known token
+  patterns, and high-entropy values before `git add`/`git commit`. A match
+  blocks the commit without ever printing the secret itself.
+- **Repository content is treated as data, not instructions.** Context pulled
+  from your repo is wrapped and marked untrusted; a prompt-injection attempt
+  hidden in a file cannot override VOCR's own scope or review rules.
 
-`vocr bootstrap` bleibt der Expert-/CLI-Pfad. Er erkennt, ob er im VOCR-Repo
-laeuft, installiert nur neben einem echten `pyproject.toml`, initialisiert
-`.vocr`, erzeugt Graphify und respektiert vorhandene `.env`-Werte.
+The full reasoning — trust boundaries, prompt-injection handling, what the
+secret scanner actually checks — is in
+[`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md). The exhaustive list of
+design rules the codebase is held to lives in [`AGENTS.md`](AGENTS.md).
 
-Wenn VOCR bereits global verfuegbar ist, kann auch die CLI aus einem leeren
-Ordner clonen:
-
-```powershell
-vocr bootstrap --clone --install-dir Codex-VOCR
-```
-
-Optional kann VOCR lokale oder Cloud-Modelle fuer den Live-Agent-Pfad nutzen. Der User muss dafuer nicht in `.env` schreiben:
-
-```powershell
-vocr model lmstudio --model "dein-lm-studio-modell"
-vocr model check --model "dein-lm-studio-modell"
-vocr model check --api-key "dein-lm-studio-token"
-vocr model list
-vocr model status
-vocr model off
-```
-
-Fuer OpenAI:
-
-```powershell
-vocr model openai --model gpt-4.1-mini
-```
-
-VOCR schreibt die noetigen Werte in `.env`, beruecksichtigt zusaetzlich gesetzte Prozess-Umgebungsvariablen und zeigt Secrets nur als `[set]`. VOCR bleibt Codex-first: lokale Modelle helfen Vision/Organizer-Pfaden, aber Codex-Worker, Scope, Review und Promote bleiben die Sicherheitslinie.
-
-Wenn LM Studio oder ein lokaler OpenAI-kompatibler Server mit 401 antwortet,
-ordnet VOCR das lokal ein: Auth ist im Server vermutlich aktiv oder der
-gesetzte Token ist ungueltig. Dann wird der Live-Agent nicht als Erfolg
-behandelt; VOCR nutzt den lokalen Fallback und fordert dazu auf, Auth im
-LM-Studio-Server zu deaktivieren oder einen gueltigen lokalen Token zu setzen:
-
-```powershell
-vocr model lmstudio --model "dein-lm-studio-modell" --api-key "dein-lm-studio-token"
-vocr model check --model "dein-lm-studio-modell"
-vocr model list --api-key "dein-lm-studio-token"
-```
-
-Optional kann `VOCR_CODEX_COMMAND` gesetzt werden. Dann startet `vocr work <task-id>` diesen echten Worker-Befehl im isolierten Worktree und uebergibt den Task-Prompt ueber stdin. Ohne `VOCR_CODEX_COMMAND` nutzt VOCR, wenn vorhanden, `codex exec - --cd <worktree> --sandbox workspace-write`. Bei `approve_all` wird `--ask-for-approval never` gesetzt. Unsandboxed-Ausfuehrung gibt es nur explizit mit `VOCR_CODEX_UNSANDBOXED=true`.
-
-`vocr setup` schreibt zusaetzlich `.vocr/codex-mcp.json` fuer Codex als MCP-Server (`codex mcp-server`). `vocr codex-config` kann diese Datei neu erzeugen.
-
-## Normaler Ablauf
-
-Der User spricht im Normalfall nur mit dem Visionaer:
+## Normal mode: the way most people should use VOCR
 
 ```powershell
 vocr start
 ```
 
-`vocr start` prueft vor dem Start Repo, Python, Git, `.env`, `.vocr` und Graphify.
-Falls etwas Lokales fehlt, wird es idempotent vorbereitet; falls der Ordner
-falsch ist, stoppt VOCR mit einer verstaendlichen Meldung.
-
-`vocr start` oeffnet im MVP bewusst eine lokale Tkinter-GUI: Python-stdlib, keine Cloud-Pflicht, keine Frontend-Buildchain, zentrale Texteingabe und kompakter Status. Textual/TUI und lokale Web-GUI bleiben sinnvolle spaetere Upgrades, aber fuer den MVP ist die lokale GUI der kleinste robuste Normalmodus.
-
-Falls kein Fenster verfuegbar ist oder du im Terminal bleiben willst:
+This opens a small local Tkinter window — plain Python standard library, no
+cloud dependency, no frontend build chain. If no window system is available,
+or you'd rather stay in the terminal:
 
 ```powershell
 vocr start --console
 ```
 
-Im Normalmodus kennt der User keine technischen Rueckfrage-Codes, Task-IDs, Worktrees oder Dispatch-Begriffe. Der Dialog laeuft phasenweise:
+You never see task IDs, worktree paths, or dispatch jargon in normal mode.
+You just talk:
 
-1. Wunsch frei beschreiben.
-2. Visionaer interpretiert die Absicht und schlaegt einen passenden Rahmen vor.
-3. Visionaer setzt genau einen aktiven Intake-Punkt, z.B. Arbeitsbereich.
-4. User bestaetigt oder korrigiert diesen Punkt natuerlichsprachlich.
-5. Visionaer aktualisiert den Intake-State und fragt den naechsten logisch fehlenden Punkt.
-6. Visionaer zeigt ein klares Bestaetigungs-Gate mit Zusammenfassung, internen VOCR-Schritten und Sicherheitsgrenzen.
-7. User bestaetigt ausdruecklich oder aendert noch etwas natuerlichsprachlich.
-8. Erst danach entstehen Tasks und, falls freigegeben, isolierte Arbeitsbereiche.
+```
+You:  I want a start shell for VOCR.
+VOCR: I understand — you want an easier entry point for regular VOCR users.
+      Likely relevant areas:
+      - src/vocr/cli/app.py
+      - a new start/dialog component under src/vocr/ui
+      - tests
+      - optionally the README/docs
 
-Die UI ist dabei nur der Gespraechsraum. Sie bietet keine primaeren Prozess-Buttons fuer Planen, Dispatch, Worktree, Review oder Promote. Der Visionaer schlaegt den naechsten sinnvollen Schritt vor, erklaert die Konsequenzen und wartet auf Bestaetigung oder Korrektur.
+      Proposed acceptance:
+      - you can run `vocr start`
+      - it opens a normal VOCR dialog
+      - no technical clarification codes are shown to you
+      - the existing expert CLI flow keeps working
 
-Der Intake ist keine Pflichtfeldliste. Auch kurze Initialnachrichten sollen zu einem sinnvollen Vorschlag fuehren:
+      Verification:
+      - python -m compileall src tests
+      - python -m unittest discover -s tests
 
-```text
-User: Ich will eine Startshell fuer VOCR.
-Visionaer: Ich verstehe: Du willst einen einfacheren Einstieg fuer normale VOCR-Nutzer.
-Vermutlich passende Bereiche:
-- src/vocr/cli/app.py
-- neue Start-/Dialog-Komponente unter src/vocr/ui
-- tests
-- optional README/docs
+      Non-goals and risks:
+      - no changes to review, promote, or worker sandboxing
 
-Ich schlage als Akzeptanz vor:
-- User kann vocr start ausfuehren
-- danach oeffnet sich ein normaler Visionaer-Dialog
-- User sieht keine technischen Rueckfrage-Codes
-- der bestehende Expert-CLI-Flow bleibt erhalten
-
-Verifikation:
-- python -m compileall src tests
-- python -m unittest discover -s tests
-
-Nicht-Ziele und Risiken:
-- keine Aenderungen an Review, Promote oder Worker-Sandboxing
-
-Ausfuehrungsgrenzen:
-- Erst planen
-- danach optional getrennten Arbeitsbereich vorbereiten
-- nie automatisch veroeffentlichen
+      Execution bounds:
+      - plan first
+      - then optionally prepare an isolated workspace
+      - never publish automatically
 ```
 
-Beispiel:
+Each reply updates exactly one thing at a time — you never have to copy an
+ID, pick a clarification number, or type an expert command. Natural
+corrections like "sounds good, but skip the docs for now" or "just plan, no
+worktree yet" are understood and update the plan before anything executes.
 
-```text
-User: Ich will die Rueckfrage-UX verbessern.
-Visionaer: Ich verstehe ... Ich schlage diesen Rahmen vor. Naechster Punkt: Arbeitsbereich. Passt das?
-User: Passt, aber keine Docs erstmal.
-Visionaer: Okay. Dokumentationsaenderungen sind ausgeschlossen. Naechster Punkt: Akzeptanz. Passt das?
-User: ja
-Visionaer: Naechster Punkt: Verifikation. Ich schlage compileall und unittest vor. Passt das?
-```
+## Optional: local or cloud models
 
-Ein normaler Dialog hat genau einen aktiven Intake-Zustand pro Fenster oder Console-Session. Jede User-Antwort bezieht sich automatisch auf die aktuelle Frage; der User muss keine IDs kopieren, keine Rueckfrage auswaehlen und keinen Expert-Befehl eingeben. Wenn der User ein neues Ziel formuliert, startet der Visionaer bewusst einen neuen Intake. Wenn der User fortsetzt, wird der aktuelle Intake fortgefuehrt.
-
-Wenn Informationen fehlen, legt der Visionaer nicht los. Er fragt stattdessen konkret nach und erstellt keine Tasks, keine Worktrees und keine Dispatches. Der Request muss Zielbild, Arbeitsbereich, Akzeptanzkriterien, Verifikation, Nicht-Ziele und Ausfuehrungsgrenzen ausreichend klar machen.
-
-Wenn der Intake vollstaendig ist, zeigt der Visionaer vor jeder Ausfuehrung:
-
-- Ziel
-- Arbeitsbereich
-- Akzeptanzkriterien
-- Verifikation
-- Nicht-Ziele
-- Ausfuehrungsmodus
-- geplante interne VOCR-Schritte
-- Sicherheitsgrenzen
-
-Danach fragt er `Soll ich so fortfahren?`. Tasks, Arbeitsbereiche und Dispatches entstehen im Normalmodus erst nach dieser ausdruecklichen Freigabe. Eine Antwort wie `Ja, Worktree vorbereiten, aber nichts mergen` aktualisiert den Ausfuehrungsmodus noch vor dem Start und laesst Review-/Promote-Gates aktiv.
-
-Expertmodus bleibt verfuegbar:
+VOCR is Codex-first. Local or cloud models are optional and only assist the
+Vision/Organizer paths — Codex worker execution, scope enforcement, review,
+and promote remain the actual safety line no matter what model you configure.
 
 ```powershell
-vocr ask "Ziel: Baue eine Healthcheck-API im Backend. Arbeitsbereich: FastAPI-App und Tests. Akzeptanz: GET /health liefert 200 und JSON status=ok. Verifikation: pytest oder Syntax-Check. Nicht-Ziele: keine Auth, keine Deployment-Aenderungen. Ausfuehrung: nur planen, Review vor Promote."
-vocr ask "Ziel: Baue eine Healthcheck-API im Backend. Arbeitsbereich: FastAPI-App und Tests. Akzeptanz: GET /health liefert 200 und JSON status=ok. Verifikation: pytest oder Syntax-Check. Nicht-Ziele: keine Auth, keine Deployment-Aenderungen. Ausfuehrung: mit go Worktree vorbereiten, Review vor Promote." --go
-vocr reply "Ziel: ... Arbeitsbereich: ... Akzeptanz: ... Verifikation: ... Nicht-Ziele: ... Ausfuehrung: ..." --go
-```
-
-Was der Visionaer intern macht:
-
-1. Pruefen, ob genug Wissen vorhanden ist.
-2. Fehlende Informationen explizit abfragen und stoppen.
-3. Erst bei ausreichendem Wissen: Graphify aktualisieren.
-4. Tokenarmen Context-Pack fuer die Anfrage erzeugen.
-5. VisionSlice mit Ziel, Annahmen und Akzeptanzkriterien speichern.
-6. Tasks mit Scope, Nicht-Zielen, Akzeptanzkriterien, Tests und Context-Pack anlegen.
-7. Mit `--go`: Approve-All fuer diesen Slice setzen und Tasks in isolierte Worktrees dispatchen.
-8. Review und Promote bleiben Gate-gesteuert und werden nicht automatisch uebersprungen.
-
-## Debug- und Admin-Kommandos
-
-Diese Kommandos sind der Expertmodus. Sie sind fuer Inspektion, Reparatur und manuelle Eingriffe gedacht, nicht als normaler User-Flow. Der Expertmodus darf technische Details zeigen: Task-IDs, Clarification-IDs, Slice-IDs, Worktree-Pfade, Ledger-Events, Diffs, Review-Artefakte, Model-Status, Doctor-Details und Promote-Previews.
-
-Bestehende Expert-Kommandos bleiben kompatibel:
-
-```powershell
-vocr bootstrap --tests --write-scripts
-vocr install
-vocr graphify
+vocr model lmstudio --model "your-lm-studio-model"
+vocr model check --model "your-lm-studio-model"
 vocr model status
-vocr model list
-vocr model local --model "dein-modell" --base-url http://localhost:1234/v1
-vocr model openai --model gpt-4.1-mini
 vocr model off
-vocr context --limit 20
-vocr context "git worktree review" --limit 10
-vocr go global --all --reason "AFK run approved"
-vocr organize <slice-id>
-vocr organize <slice-id> --live-agent
-vocr hybrid-vision "..." # experimental, needs VOCR_HYBRID_ENABLED=true
-vocr hybrid-plan <slice-id> # experimental, needs VOCR_HYBRID_ENABLED=true
-vocr dispatch <task-id>
-vocr dispatch-ready --parallel 4
-vocr work <task-id>
-vocr work <task-id> --fix --max-retries 2
-vocr work-ready --fix --parallel 2
-vocr orchestrate --fix --parallel-dispatch 4 --parallel-work 2
-vocr afk --max-waves 10
-vocr worker doctor
-vocr worker profile safe
-vocr worker profile unattended
-vocr log --limit 30
-vocr diff <task-id>
-vocr diff <task-id> --full
-vocr usage
-vocr replay <slice-id>
-vocr eval-golden
-vocr learn
-vocr context "scope review" --learning --limit 10 --budget 1200
-vocr compact --keep-last 200
-vocr secrets scan
-vocr test
-vocr clean
-vocr clean --artifacts --older-than-days 30
-vocr clean --archives --archive-older-than-days 90
-vocr abort <task-id> --reason "Nicht mehr benoetigt"
-vocr serve-mcp
-vocr codex-config
-vocr inspect
-vocr review <task-id>
-vocr check <task-id> --decision accepted --summary "Manual review passed"
-vocr ship <task-id>
-vocr tweak "Kleine risikoarme Aenderung"
-vocr doctor
 ```
 
-## Designregeln
+Secrets are never printed — configured API keys always show as `[set]`. If a
+local server returns 401, VOCR treats that as "auth is likely on, or your
+token is wrong," falls back to the deterministic path, and tells you so
+instead of silently pretending it worked.
 
-- Vision haelt Ziel, Annahmen und Akzeptanzkriterien.
-- Der User spricht im Normalfall nur mit `vocr start`.
-- `vocr vision`, `vocr ask`, `vocr reply`, `vocr graphify`, `vocr organize` und `vocr dispatch` bleiben Expert-/Debug-Befehle.
-- Technische Rueckfrage-IDs bleiben nur im Expert-/Debugmodus sichtbar.
-- Die Normalmodus-UI fuehrt nicht den Prozess; der Visionaer fuehrt ihn dialogisch.
-- Der Visionaer fragt fehlende Informationen explizit ab und blockiert Planung, bis der Wissensstand hoch genug ist.
-- Der Visionaer darf Rahmen vorschlagen, aber Tasks entstehen erst nach natuerlicher Bestaetigung.
-- Der Normalmodus haelt genau einen aktiven Intake-State pro Session und fragt sequenziell den naechsten fehlenden Punkt.
-- Natuerliche Antworten wie `ja`, `ohne Docs`, `nimm Docs doch mit rein`, `nur planen` oder `mit Worktree, aber nicht mergen` aktualisieren diesen Intake-State.
-- Nach vollstaendigem Intake muss der Normalmodus immer eine menschenlesbare Zusammenfassung zeigen und auf Freigabe warten.
-- Keine halben Annahmen: unklare Details werden nicht erfunden.
-- Graphify wird vom Visionaer automatisch aktualisiert und fuer Context-Packs genutzt.
-- Organize zerlegt Arbeit in kleine, reviewbare Tasks.
-- Code/Codex arbeitet nur in isolierten Git-Worktrees.
-- Review entscheidet `accepted`, `needs_changes` oder `blocked`.
-- Promote merged nur Tasks mit akzeptiertem Review.
-- Tweak ist nur fuer kleine, risikoarme Aenderungen.
-- Jeder Task hat Scope, Nicht-Ziele, Akzeptanzkriterien und Tests.
-- Secrets werden nicht geloggt.
-- Es gibt keine automatische Merge-Operation ohne Review.
-- `vocr go ... --all` oder `vocr vision ... --go` setzt eine geloggte Approve-All-Freigabe fuer VOCR-interne Nachfragen. Externe Codex-/OS-Permissions muessen spaeter vom jeweiligen Runner respektiert werden.
-- Neue Agents sollen zuerst `vocr context` bzw. `.vocr/graph.json` lesen, nicht blind das ganze Repo. Das reduziert Tokenburn und gibt ihnen eine Karte der relevanten Dateien.
-- `vocr context --budget N` begrenzt Context-Packs ueber ein ungefaehres Token-Budget statt nur ueber fixe Node-Zahlen.
-- Der Live-Agent-Pfad nutzt ein Confidence-Gate: bei hohem deterministischen Vertrauen wird auch mit `--live-agent` kein LLM-Overwrite gestartet.
-- Live-Agent-Fan-out ist im MVP kollabiert; Vision/Organizer erzeugen strukturierte Outputs ohne mehrere Specialist-Tool-Calls.
-- `vocr hybrid-vision`/`vocr hybrid-plan` sind ein experimenteller, default-off Phase-4-Pfad (`VOCR_HYBRID_ENABLED=true`), der die bestehende Pipeline umschliesst statt sie zu forken. Ohne das Flag laufen `vocr vision`/`vocr ask`/`vocr organize` unveraendert weiter und die Hybrid-Funktionen werden nie aufgerufen.
-- `vocr hybrid-vision` und `vocr hybrid-plan` sind beide Cloud-only, ein Versuch. Ein lokales Modell erzeugt in VOCR nie planende/authoritative Inhalte -- weder weil der Repo-Kontext untrusted ist (`hybrid-plan`) noch weil VisionSlice-Output (Ziel, Akzeptanzkriterien) trotz vertrauenswuerdigem Eingabetext downstream authoritativ bleibt (`hybrid-vision`).
-- Hybrid-Modellconfig ist getrennt von der persistenten `.env`-Modellconfig und schreibt nie `.env` oder Prozess-Umgebungsvariablen.
-- Worker-Retries bekommen nur Delta-Diffs seit dem vorherigen Versuch.
-- `vocr dispatch` erzeugt im isolierten Worktree `.vocr/VOCR_TASK.md` mit Task, Context-Pack und Permission-Modus.
-- `vocr dispatch` erzeugt ausserdem `.vocr/scope.json` als maschinenlesbare Scope-Policy; `.vocr/AGENTS.md` verweist darauf, statt Scope-Daten zu duplizieren.
-- Scope ist hart: `task.scope` wird in erlaubte Pfad-Globs uebersetzt. Aenderungen ausserhalb werden vor dem Commit blockiert und der Task wird `needs_changes`.
-- Der Pre-Commit Secret-Scanner prueft Diffs inklusive neuer untracked Dateien auf Keyword-Secrets, bekannte Token-Muster und Entropie-Hinweise. Treffer blockieren den Commit ohne Secret-Werte auszugeben.
-- `vocr secrets scan` scannt den aktuellen Diff manuell. Wenn `gitleaks` installiert ist, nutzt VOCR optional `.gitleaks.toml`, `.gitleaks-baseline.json`, `VOCR_GITLEAKS_CONFIG` und `VOCR_GITLEAKS_BASELINE`.
-- `vocr review` sammelt lokale Git-Signale aus dem Worktree und akzeptiert nur mit expliziter Entscheidung.
-- `vocr review` erzeugt einfache Diff-Kommentare fuer geaenderte Dateien und riskante Added-Lines.
-- `vocr review --export-comments review.md` schreibt Review-Kommentare als Markdown; `--post-pr-comments` postet optional einen PR-Kommentar via GitHub CLI.
-- `vocr review --post-pr-review` postet optional einen GitHub PR-Review. Kommentare mit sicherer Datei-/Zeilenposition werden als Inline-Review-Kommentare gesendet; sonst nutzt VOCR einen normalen PR-Review-Kommentar.
-- `vocr review` schreibt standardmaessig ein Artefakt nach `.vocr/artifacts/<task-id>/review.md`.
-- `vocr review` fuehrt sichere automatische Checks aus, z.B. Syntax-Check. Unbekannte Checks werden als manuell markiert, nicht blind gestartet.
-- Akzeptanzkriterien koennen optional ein `check_command` tragen; VOCR fuehrt diese Checks beim Review ueber dieselbe sichere Allowlist aus wie normale Task-Tests.
-- Syntax-/Compile-Checks im Task-Worktree kompilieren nur geaenderte Python-Dateien; ohne Python-Diff wird billig uebersprungen.
-- `vocr dispatch` blockiert vor dem Worktree, wenn Plan-Invarianten verletzt sind: fehlender Scope, fehlende Verifikation, unbekannte Dependencies oder zyklische Dependencies.
-- `vocr work` fuehrt den echten Worker aus und erstellt bei Erfolg automatisch einen Task-Commit, wenn Aenderungen vorhanden sind und der Scope Guard keine Verletzung findet.
-- `vocr work --fix --max-retries 2` erlaubt begrenzte Nachbesserungen bis `review_ready`; Promote bleibt trotzdem manuell und review-gated.
-- `vocr dispatch-ready` bedient die naechste DAG-Welle parallel und refreshed Graphify genau einmal vor dieser Welle.
-- `vocr work-ready` arbeitet dispatchte Tasks parallel in isolierten Worktrees ab; Review und Promote bleiben manuell.
-- `vocr orchestrate` / `vocr afk` fuehrt einen ueberwachten Wellen-Loop aus: ready dispatchen, optional worker starten, bounded fixes erlauben, niemals automatisch reviewen/promoten/mergen.
-- `vocr worker doctor` und `vocr worker profile ...` konfigurieren Codex-Worker ohne Dateiedits.
-- `vocr check --codex-review` kann zusaetzlich `codex exec review` als Review-Signal ausfuehren.
-- `vocr ship --preview` zeigt Merge-Preview, `vocr ship --pr` erstellt optional eine Draft-PR via GitHub CLI.
-- `vocr promote` fuehrt vor dem Merge einen Preflight aus und blockiert ohne akzeptiertes Review.
-- `vocr revert <task-id> --reason "..."` reverted den im Ledger gespeicherten Task-Commit, loggt den Revert und setzt den Task wieder auf `needs_changes`.
-- `vocr log`, `vocr diff`, `vocr clean` und `vocr abort` sind Housekeeping-Kommandos fuer Timeline, Task-Diff, verwaiste Worktrees und kontrollierten Abbruch.
-- `vocr clean --archives` loescht alte `.vocr/archive`-Segmente dauerhaft per Dateisystem-Unlink; vorher sichern, wenn die Historie erhalten bleiben soll.
-- `.vocr/ledger.jsonl` wird append-only mit plattformsicherem Lock geschrieben, damit parallele VOCR-Prozesse keine Ledger-Zeilen zerreissen.
-- `vocr usage` zeigt Token-/Provider-Telemetrie pro Task/Slice. Wenn der Worker echte Usage-Daten meldet, werden diese als `actual` angezeigt; sonst nutzt VOCR einen Estimate-Fallback.
-- `vocr replay <slice-id>` rekonstruiert aus dem Ledger die Slice-Timeline: Ereignisse in Reihenfolge, betroffene Dateien aus Reviews, letzte Entscheidung pro Task und Token-Kosten nach `actual`/`estimated` aufgeschluesselt. Rein lesend, kein Recompute von Diffs.
-- `vocr eval-golden` fuehrt einen LLM-freien Stub-Worker-Gate-Test aus: Dispatch, echtes Usage-Parsing, Promote-vor-Review-Block und Promote-nach-accepted-Review.
-- `vocr learn` verdichtet lokale Ledger-, Review- und Telemetrie-Signale in `.vocr/learning.json`.
-- `vocr compact` aktualisiert Learning und archiviert alte Ledger-Events unter `.vocr/archive/`, damit `.vocr/ledger.jsonl` klein bleibt.
-- `vocr test` fuehrt Syntax- und Unit-Test-Smoke lokal aus.
-- `vocr serve-mcp` startet einen minimalen MCP-Server fuer Status, Graphify-Kontext, VOCR-Planung, Review und Promote-Preview. MCP merged nicht.
+## Expert / CLI mode
+
+Everything normal mode does under the hood is also directly available:
+
+```powershell
+vocr ask "Goal: ... Scope: ... Acceptance: ... Verification: ... Non-goals: ... Execution: plan only, review before promote."
+vocr ask "..." --go
+vocr work <task-id>
+vocr review <task-id>
+vocr promote <task-id>
+```
+
+The full command surface — model config, graphify/context internals, the
+dispatch/work/review/promote pipeline, orchestration, housekeeping, and the
+experimental hybrid path — is documented in
+[`docs/CLI_REFERENCE.md`](docs/CLI_REFERENCE.md).
+
+## Why VOCR costs less to run
+
+Token efficiency isn't an afterthought — it's engineered in, and it's real
+code, not just a claim:
+
+- **Graphify** builds a BM25-ranked, import-graph-aware index of your repo
+  once, then serves workers a compact, relevant context brief instead of raw
+  file dumps — capped to an explicit token budget, rebuilt incrementally via
+  content hashing so unchanged files are never re-processed.
+- **Learning overlay** boosts files/scopes that were part of past successful
+  reviews directly into that ranking, so recurring work gets cheaper context
+  over time.
+- **A deterministic, zero-token readiness gate** decides whether a request
+  has enough information *before* anything reaches an LLM.
+- **Live-agent fan-out is collapsed** to a single structured call instead of
+  a chain of specialist-agent hand-offs.
+- **Retries send deltas, not full context again.** A fix attempt gets the
+  scope, the failing checks, and only the diff lines new since the previous
+  attempt — not the full repo context pack a second and third time.
+
+See [`BETA_KICKOFF_REVIEW.md`](BETA_KICKOFF_REVIEW.md) for an honest
+assessment of what's proven here versus what's architecturally sound but not
+yet benchmarked against a non-tuned baseline.
 
 ## Tests
 
@@ -331,41 +239,33 @@ python -m compileall src tests
 $env:PYTHONPATH="src"; python -m unittest discover -s tests
 ```
 
-## Speicherorte
+## Where VOCR stores things
 
-- `.vocr/ledger.jsonl` speichert Events, Slices, Tasks und Reviews.
-- `.vocr/ledger.jsonl` bleibt im Repo als lokaler Ablauf-Speicher.
-- `.vocr/graph.json` speichert den kompakten Graphify-Index fuer tokenarme Agent-Kontexte.
-- `.vocr/learning.json` speichert verdichtete lokale Signale statt Rohprompts oder grosser Diffs.
-- `.vocr/archive/` enthaelt kompaktierte alte Ledger-Segmente.
-- Telemetrie-Events protokollieren Provider, Modell, Slice/Task und echte oder geschaetzte Token pro Worker-Lauf.
-- `docs/THREAT_MODEL.md` beschreibt Prompt-Injection-Grenzen, Scope Guard und Secret-Scanning.
+- `.vocr/ledger.jsonl` — append-only event/task/review log, local, git-ignored.
+- `.vocr/graph.json` — the compact graphify index.
+- `.vocr/learning.json` — compressed local signals, never raw prompts or large diffs.
+- `.vocr/archive/` — compacted old ledger segments.
+- `<repo>.vocr-worktrees/` — isolated per-task worktrees, next to the repo.
 
-## Token-effizientes Arbeiten
+## Project status
 
-Vor jeder neuen Agent-Runde:
+VOCR is in beta. See [`BETA_KICKOFF_REVIEW.md`](BETA_KICKOFF_REVIEW.md) for
+the current readiness assessment and [`docs/BETA_TESTING.md`](docs/BETA_TESTING.md)
+for the active test schedule if you're helping test it.
 
-1. `vocr vision` aktualisiert Graphify automatisch.
-2. Graphify rankt per BM25, zieht 1-Hop-Import-Nachbarn relevanter Dateien dazu und nutzt vorhandene Content-Hashes fuer inkrementelle Rebuilds.
-3. Das Learning-Overlay boostet bekannte Scope/Datei/Test-Signale direkt im Graphify-Ranking.
-4. Der Visionaer erzeugt daraus taskbezogene Context-Packs.
-5. Worker-Tasks bekommen ihren Context-Pack automatisch im Task-Template.
-6. Context-Packs sind als untrusted Repo-Inhalt markiert und duerfen keine Instruktionen ueberschreiben.
-7. Debug-Agenten sollen `vocr context "<suchbegriffe>" --learning --limit 10` verwenden, statt breit Dateien zu lesen.
-8. Erst danach werden gezielt die wenigen Dateien gelesen, die der Context-Pack nennt.
+## Contributing
 
-Das Ziel ist: neue Agents bekommen eine Repo-Karte und nur die naechsten relevanten Dateien, nicht den kompletten Codebestand.
-- Der Standard-Ort fuer isolierte Task-Worktrees liegt neben dem Repo: `<repo>.vocr-worktrees/`.
-- `src/vocr/codex/mcp_client.py` ist nur die Adapter-Grenze fuer spaetere Codex-CLI/MCP-Anbindung.
+Contributions are welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md) for dev
+setup, conventions, and how the safety gates apply to PRs too.
 
-## Referenz und Attribution
+## Reference and attribution
 
-- Referenzarchitektur: [yesitsfebreeze/voit](https://github.com/yesitsfebreeze/voit)
-- VOCR uebernimmt keine VOIT-Dateien, sondern nutzt VOIT als Architektur-Inspiration fuer Vision/Organize/Worker/Review/Promote-artige Abläufe.
-- Falls VOCR spaeter VOIT-Code oder Assets uebernimmt, muss die jeweilige Lizenz und Attribution separat im betroffenen Codepfad dokumentiert werden.
+- Reference architecture: [yesitsfebreeze/voit](https://github.com/yesitsfebreeze/voit).
+- VOCR does not vendor any VOIT files; it uses VOIT purely as an architectural
+  inspiration for Vision/Organize/Worker/Review/Promote-style flows.
+- If VOCR ever adopts VOIT code or assets directly, the relevant license and
+  attribution must be documented separately in the affected code path.
 
-## Naechste Schritte
+## License
 
-1. PR-Review-Posting gegen einen echten GitHub-Test-PR live validieren.
-2. Codex-/Agents-SDK-spezifische Usage-Formate erweitern, sobald neue stabile Felder verfuegbar sind.
-3. Reviewer-/Learning-Signale nach echten Beta-Laeufen kalibrieren.
+[MIT](LICENSE)
