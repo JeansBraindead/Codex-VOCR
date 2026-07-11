@@ -211,6 +211,9 @@ def record_secret_block(store: MemoryLedger, task_id: str, issues: list[str]) ->
     store.append(LedgerEventType.review_recorded, review)
 
 
+RETRY_DIFF_CHAR_CAP = 2500
+
+
 def retry_prompt(attempt: int, issues: list[str], diff_text: str, task_scope: list[str]) -> str:
     return "\n".join(
         [
@@ -225,7 +228,7 @@ def retry_prompt(attempt: int, issues: list[str], diff_text: str, task_scope: li
             "",
             "Delta diff since previous attempt:",
             "```diff",
-            diff_text[-6000:],
+            diff_text[-RETRY_DIFF_CHAR_CAP:],
             "```",
         ]
     )
@@ -286,7 +289,9 @@ def print_dispatch_handoff(result: DispatchHandoffResult) -> None:
     console.print(f"[cyan]Task manifest:[/cyan] {result.manifest_path}")
     console.print(f"[cyan]Scope policy:[/cyan] {result.scope_path}")
     console.print(f"[cyan]Worker guidance:[/cyan] {result.agents_path}")
-    console.print("Codex MCP execution is prepared but not implemented yet.")
+    console.print(
+        f"Worktree prepared. Run [bold]vocr work {result.task_id}[/bold] to execute the worker in it."
+    )
 
 
 def write_dispatch_handoff(store: MemoryLedger, task_id: str) -> None:
@@ -310,17 +315,21 @@ def execute_worker_task(
     client = CodexMcpClient()
     extra_prompt: str | None = None
     final_result = None
-    prompt_text = render_task_template(task)
+    full_prompt_text = render_task_template(task, include_context_pack=True)
+    retry_prompt_text = render_task_template(task, include_context_pack=False)
     previous_diff = ""
     for attempt in range(max_retries + 1):
+        include_context_pack = attempt == 0
         result = client.run_task(
             task,
             permission=permission,
             timeout_seconds=timeout_seconds,
             extra_prompt=extra_prompt,
+            include_context_pack=include_context_pack,
         )
         final_result = result
-        record_worker_telemetry(store, task_id, result, prompt_text + (extra_prompt or ""))
+        attempt_prompt_text = full_prompt_text if include_context_pack else retry_prompt_text
+        record_worker_telemetry(store, task_id, result, attempt_prompt_text + (extra_prompt or ""))
         if result.exit_code != 0:
             if not auto_fix or attempt >= max_retries:
                 break

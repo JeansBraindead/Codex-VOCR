@@ -32,10 +32,11 @@ class CodexMcpClient:
         task: VocrTask,
         permission: PermissionGrant | None = None,
         extra_prompt: str | None = None,
+        include_context_pack: bool = True,
     ) -> CodexDispatchPayload:
         if task.worktree_path is None:
             raise ValueError("Task must be dispatched to a worktree before Codex can run.")
-        prompt = render_task_template(task)
+        prompt = render_task_template(task, include_context_pack=include_context_pack)
         if extra_prompt:
             prompt = f"{prompt}\n\n## Bounded retry context\n\n{extra_prompt}"
         return CodexDispatchPayload(
@@ -78,8 +79,14 @@ class CodexMcpClient:
         permission: PermissionGrant | None = None,
         timeout_seconds: int = 3600,
         extra_prompt: str | None = None,
+        include_context_pack: bool = True,
     ) -> CodexRunResult:
-        payload = self.build_payload(task, permission=permission, extra_prompt=extra_prompt)
+        payload = self.build_payload(
+            task,
+            permission=permission,
+            extra_prompt=extra_prompt,
+            include_context_pack=include_context_pack,
+        )
         command = self._resolve_command(payload, permission)
         if not command:
             raise RuntimeError(
