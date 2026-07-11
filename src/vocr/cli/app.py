@@ -21,6 +21,12 @@ from rich.markup import escape
 from rich.table import Table
 
 from vocr.agents.common import live_model_config
+from vocr.agents.hybrid import (
+    HYBRID_ENABLE_ENV,
+    hybrid_create_task_plan,
+    hybrid_create_vision,
+    hybrid_enabled,
+)
 from vocr.agents.runtime import (
     create_live_task_plan,
     create_live_vision,
@@ -1071,6 +1077,75 @@ def organize(
             task.context_query = task.context_query or slice_item.goal
             task.context_pack = graph_store().context_pack(query=task.context_query, limit=12, token_budget=900)
     persist_tasks(store, tasks)
+
+
+@app.command("hybrid-vision")
+def hybrid_vision(request: str) -> None:
+    """Experimental Phase 4: local-first, cloud-fallback VisionSlice creation.
+
+    Default-off and isolated from `vocr vision`: this never runs unless VOCR_HYBRID_ENABLED
+    is set, and `vocr vision`/`vocr ask` never call into this path. Review-pending, not for
+    production rollout.
+    """
+    if not hybrid_enabled():
+        raise typer.BadParameter(
+            f"Hybrid routing is default-off (experimental, review-pending). "
+            f"Set {HYBRID_ENABLE_ENV}=true to opt in."
+        )
+    store = ledger()
+    store.init()
+    if request_clarification(store, request):
+        return
+
+    item = create_vision(request)
+    try:
+        hybrid_result = asyncio.run(hybrid_create_vision(request))
+        item = hybrid_result.output
+        console.print(f"[cyan]Hybrid route:[/cyan] {hybrid_result.route}")
+    except Exception as exc:
+        console.print("[yellow]Hybrid Visionary nicht verfuegbar, deterministischer Fallback aktiv.[/yellow]")
+        console.print(safe_text(str(exc)))
+
+    store.append(LedgerEventType.vision_created, item)
+    console.print(f"[green]Created slice[/green] {item.id}")
+    console.print(f"Goal: {safe_text(item.goal)}")
+    console.print("[yellow]Experimenteller Hybrid-Pfad: review-pending, nicht fuer produktiven Rollout.[/yellow]")
+
+
+@app.command("hybrid-plan")
+def hybrid_plan(slice_id: str) -> None:
+    """Experimental Phase 4: cloud-only task planning over untrusted repo context.
+
+    Default-off and isolated from `vocr organize`: this never runs unless
+    VOCR_HYBRID_ENABLED is set, and never routes repo context to the local model.
+    Review-pending, not for production rollout.
+    """
+    if not hybrid_enabled():
+        raise typer.BadParameter(
+            f"Hybrid routing is default-off (experimental, review-pending). "
+            f"Set {HYBRID_ENABLE_ENV}=true to opt in."
+        )
+    store = ledger()
+    slice_item = store.get_slice(slice_id)
+    if slice_item is None:
+        raise typer.BadParameter(f"Unknown slice id: {slice_id}")
+
+    tasks = organize_slice(slice_item, vocr_home=str(store.root))
+    context_pack = "\n\n".join(task.context_pack or "" for task in tasks)
+    try:
+        hybrid_result = asyncio.run(hybrid_create_task_plan(slice_item, context_pack))
+        tasks = hybrid_result.output.tasks or tasks
+        console.print(f"[cyan]Hybrid route:[/cyan] {hybrid_result.route}")
+    except Exception as exc:
+        console.print("[yellow]Hybrid Organizer nicht verfuegbar, deterministischer Fallback aktiv.[/yellow]")
+        console.print(safe_text(str(exc)))
+
+    for task in tasks:
+        if not task.context_pack:
+            task.context_query = task.context_query or slice_item.goal
+            task.context_pack = graph_store().context_pack(query=task.context_query, limit=12, token_budget=900)
+    persist_tasks(store, tasks)
+    console.print("[yellow]Experimenteller Hybrid-Pfad: review-pending, nicht fuer produktiven Rollout.[/yellow]")
 
 
 @app.command()

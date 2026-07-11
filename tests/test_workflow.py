@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import subprocess
@@ -12,8 +13,16 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from agents import Model as _AgentModel
 from typer.testing import CliRunner
 
+from vocr.agents.hybrid import (
+    HybridDisabledError,
+    HybridRoutingError,
+    hybrid_create_task_plan,
+    hybrid_create_vision,
+    hybrid_enabled,
+)
 from vocr.agents.runtime import diagnose_live_agent_error
 from vocr.cli.app import (
     app,
@@ -49,6 +58,7 @@ from vocr.models import (
     ReviewComment,
     ReviewResult,
     RunTelemetry,
+    TaskPlan,
     TaskStatus,
     TokenUsage,
     VisionSlice,
@@ -77,6 +87,21 @@ GOOD_REQUEST = (
     "Nicht-Ziele: keine Auth; keine Deployment-Aenderungen. "
     "Ausfuehrung: mit go Worktree vorbereiten; Review vor Promote."
 )
+
+
+class _FakeHybridModel(_AgentModel):
+    """Minimal Model stand-in; Runner.run is always patched in these tests, so the
+    abstract methods below are never actually invoked."""
+
+    def __init__(self, label: str) -> None:
+        self.label = label
+
+    async def get_response(self, *args, **kwargs):
+        raise NotImplementedError
+
+    async def stream_response(self, *args, **kwargs):
+        raise NotImplementedError
+        yield  # pragma: no cover
 
 
 class WorkflowTests(unittest.TestCase):
@@ -652,6 +677,101 @@ class WorkflowTests(unittest.TestCase):
 
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("Slice not found", result.output)
+
+    def test_hybrid_disabled_by_default(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("VOCR_HYBRID_ENABLED", None)
+            self.assertFalse(hybrid_enabled())
+            with self.assertRaises(HybridDisabledError):
+                asyncio.run(hybrid_create_vision(GOOD_REQUEST))
+
+    def test_hybrid_vision_tries_local_once_then_falls_back_to_cloud(self) -> None:
+        local_model = _FakeHybridModel("local")
+        cloud_model = _FakeHybridModel("cloud")
+        calls: list[str] = []
+
+        async def fake_run(agent, prompt, *, max_turns=None, **kwargs):
+            calls.append(agent.model.label)
+            if agent.model is local_model:
+                raise RuntimeError("local endpoint unreachable")
+            return SimpleNamespace(
+                final_output=VisionSlice(request=prompt, goal="Aus der Cloud geplant").model_dump()
+            )
+
+        with patch("vocr.agents.hybrid._local_model", return_value=local_model), patch(
+            "vocr.agents.hybrid._cloud_model", return_value=cloud_model
+        ), patch("vocr.agents.hybrid.Runner.run", side_effect=fake_run), patch.dict(
+            os.environ, {"VOCR_HYBRID_ENABLED": "true"}, clear=False
+        ):
+            result = asyncio.run(hybrid_create_vision(GOOD_REQUEST))
+
+        self.assertEqual(calls, ["local", "cloud"])
+        self.assertEqual(result.route, "cloud")
+        self.assertEqual(result.output.goal, "Aus der Cloud geplant")
+
+    def test_hybrid_task_plan_never_routes_untrusted_context_to_local(self) -> None:
+        local_model = _FakeHybridModel("local")
+        cloud_model = _FakeHybridModel("cloud")
+        calls: list[str] = []
+
+        async def fake_run(agent, prompt, *, max_turns=None, **kwargs):
+            calls.append(agent.model.label)
+            return SimpleNamespace(final_output=TaskPlan(tasks=[]).model_dump())
+
+        slice_item = VisionSlice(
+            request=GOOD_REQUEST,
+            goal="Healthcheck-API bauen",
+            acceptance_criteria=[AcceptanceCriterion(text="GET /health liefert 200")],
+        )
+
+        with patch("vocr.agents.hybrid._local_model", return_value=local_model), patch(
+            "vocr.agents.hybrid._cloud_model", return_value=cloud_model
+        ), patch("vocr.agents.hybrid.Runner.run", side_effect=fake_run), patch.dict(
+            os.environ, {"VOCR_HYBRID_ENABLED": "true"}, clear=False
+        ):
+            result = asyncio.run(hybrid_create_task_plan(slice_item, "<repo context from untrusted files>"))
+
+        self.assertEqual(calls, ["cloud"])
+        self.assertEqual(result.route, "cloud")
+
+    def test_hybrid_task_plan_refuses_without_cloud_key(self) -> None:
+        slice_item = VisionSlice(
+            request=GOOD_REQUEST,
+            goal="Healthcheck-API bauen",
+            acceptance_criteria=[AcceptanceCriterion(text="GET /health liefert 200")],
+        )
+        with patch("vocr.agents.hybrid._cloud_model", return_value=None), patch.dict(
+            os.environ, {"VOCR_HYBRID_ENABLED": "true"}, clear=False
+        ):
+            with self.assertRaises(HybridRoutingError):
+                asyncio.run(hybrid_create_task_plan(slice_item, "<repo context>"))
+
+    def test_hybrid_vision_cli_refuses_without_opt_in_and_touches_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".vocr"
+            with patch(
+                "vocr.cli.app.hybrid_create_vision",
+                side_effect=AssertionError("must not be called while disabled"),
+            ):
+                result = CliRunner().invoke(app, ["hybrid-vision", GOOD_REQUEST], env={"VOCR_HOME": str(home)})
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("default-off", result.output)
+        self.assertFalse(home.exists())
+
+    def test_standard_vision_pipeline_never_calls_hybrid_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch(
+                "vocr.cli.app.hybrid_create_vision",
+                side_effect=AssertionError("standard vision must never call hybrid routing"),
+            ):
+                result = CliRunner().invoke(
+                    app,
+                    ["ask", GOOD_REQUEST, "--plan-only"],
+                    env={"VOCR_HOME": str(Path(tmp) / ".vocr")},
+                )
+
+        self.assertEqual(result.exit_code, 0, result.output)
 
     def test_mcp_server_lists_vocr_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -82,3 +82,28 @@ normal accepted-review gate. Preview remains the safe default.
 Local OpenAI-compatible models through `OPENAI_BASE_URL` reduce cloud dependency,
 but they do not change trust boundaries. Local model output still goes through
 scope, review, and promote gates.
+
+## Phase 4 Hybrid Routing (experimental, review-pending)
+
+`vocr hybrid-vision` and `vocr hybrid-plan` are an isolated, default-off second
+path, gated behind `VOCR_HYBRID_ENABLED=true`. Neither `vocr vision`/`vocr ask`
+nor `vocr organize` call into this path; it wraps the existing deterministic
+pipeline and falls back to it on any hybrid failure instead of forking it.
+
+A locally hosted model (e.g. LM Studio) is known from prior testing to be
+prompt-injection prone and to break on code-in-JSON. Routing reflects that:
+
+- `hybrid-vision` may use a local model, one attempt, then a single cloud
+  fallback attempt, because the prompt is only the user's own request text,
+  never repository content.
+- `hybrid-plan` never routes to the local model, even if one is configured. It
+  needs repo context (untrusted input) for task planning, so it is cloud-only,
+  one attempt, wrapped in the same `<VOCR_UNTRUSTED_CONTEXT>` delimiter used
+  elsewhere.
+- Hybrid model config (`VOCR_HYBRID_LOCAL_MODEL`, `VOCR_HYBRID_LOCAL_BASE_URL`,
+  `VOCR_HYBRID_CLOUD_MODEL`) is separate from the persistent `.env` model
+  config; hybrid calls never write `.env` or mutate process environment.
+- Output from either route is still an ordinary `VisionSlice`/`TaskPlan` that
+  goes through the same readiness, scope, review, and promote gates as any
+  other task. Hybrid changes only where the plan text comes from, never the
+  gates around it.

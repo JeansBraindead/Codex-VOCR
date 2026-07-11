@@ -221,6 +221,8 @@ vocr context "git worktree review" --limit 10
 vocr go global --all --reason "AFK run approved"
 vocr organize <slice-id>
 vocr organize <slice-id> --live-agent
+vocr hybrid-vision "..." # experimental, needs VOCR_HYBRID_ENABLED=true
+vocr hybrid-plan <slice-id> # experimental, needs VOCR_HYBRID_ENABLED=true
 vocr dispatch <task-id>
 vocr dispatch-ready --parallel 4
 vocr work <task-id>
@@ -283,6 +285,9 @@ vocr doctor
 - `vocr context --budget N` begrenzt Context-Packs ueber ein ungefaehres Token-Budget statt nur ueber fixe Node-Zahlen.
 - Der Live-Agent-Pfad nutzt ein Confidence-Gate: bei hohem deterministischen Vertrauen wird auch mit `--live-agent` kein LLM-Overwrite gestartet.
 - Live-Agent-Fan-out ist im MVP kollabiert; Vision/Organizer erzeugen strukturierte Outputs ohne mehrere Specialist-Tool-Calls.
+- `vocr hybrid-vision`/`vocr hybrid-plan` sind ein experimenteller, default-off Phase-4-Pfad (`VOCR_HYBRID_ENABLED=true`), der die bestehende Pipeline umschliesst statt sie zu forken. Ohne das Flag laufen `vocr vision`/`vocr ask`/`vocr organize` unveraendert weiter und die Hybrid-Funktionen werden nie aufgerufen.
+- `vocr hybrid-vision` darf ein lokales Modell (`VOCR_HYBRID_LOCAL_MODEL`/`VOCR_HYBRID_LOCAL_BASE_URL`) fuer genau einen Versuch nutzen, danach genau einen Cloud-Fallback-Versuch, weil der Prompt nur der eigene Nutzertext ist. `vocr hybrid-plan` braucht Repo-Kontext (untrusted) und ist deshalb Cloud-only, nie lokal.
+- Hybrid-Modellconfig ist getrennt von der persistenten `.env`-Modellconfig und schreibt nie `.env` oder Prozess-Umgebungsvariablen.
 - Worker-Retries bekommen nur Delta-Diffs seit dem vorherigen Versuch.
 - `vocr dispatch` erzeugt im isolierten Worktree `.vocr/VOCR_TASK.md` mit Task, Context-Pack und Permission-Modus.
 - `vocr dispatch` erzeugt ausserdem `.vocr/scope.json` als maschinenlesbare Scope-Policy; `.vocr/AGENTS.md` verweist darauf, statt Scope-Daten zu duplizieren.
