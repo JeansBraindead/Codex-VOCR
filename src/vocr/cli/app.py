@@ -46,7 +46,6 @@ from vocr.models import (
     ReviewResult,
     RunTelemetry,
     TaskStatus,
-    TokenUsage,
 )
 from vocr.orchestration.workflow import (
     create_vision,
@@ -57,7 +56,9 @@ from vocr.orchestration.workflow import (
     review_task,
     render_task_template,
 )
+from vocr.orchestration.golden import run_golden_eval
 from vocr.orchestration.readiness import assess_request_readiness
+from vocr.telemetry import estimated_token_usage, extract_token_usage, token_total
 from vocr.ui.normal_mode import NormalModeUiError, launch_console_mode, launch_normal_mode
 
 app = typer.Typer(help="VOCR: Vision / Organize / Code / Review")
@@ -102,13 +103,11 @@ def artifacts_root() -> Path:
     return ledger().root / "artifacts"
 
 
-def estimate_tokens(text: str) -> int:
-    return max(1, len(text) // 4) if text else 0
-
-
 def record_worker_telemetry(store: MemoryLedger, task_id: str, result, prompt_text: str) -> None:
     task = store.get_task(task_id)
     config = live_model_config()
+    output_text = (result.stdout or "") + (result.stderr or "")
+    usage = extract_token_usage(output_text) or estimated_token_usage(prompt_text, output_text)
     telemetry = RunTelemetry(
         provider="codex-cli",
         model=config["model"],
@@ -117,15 +116,8 @@ def record_worker_telemetry(store: MemoryLedger, task_id: str, result, prompt_te
         task_id=task_id,
         agent="codex-worker",
         command=result.command,
-        token_usage=TokenUsage(
-            prompt_tokens_estimate=estimate_tokens(prompt_text),
-            completion_tokens_estimate=estimate_tokens((result.stdout or "") + (result.stderr or "")),
-        ),
+        token_usage=usage,
     )
-    total = (telemetry.token_usage.prompt_tokens_estimate or 0) + (
-        telemetry.token_usage.completion_tokens_estimate or 0
-    )
-    telemetry.token_usage.total_tokens = total
     store.append(LedgerEventType.telemetry_recorded, telemetry)
 
 
@@ -1005,6 +997,20 @@ def run_worker(
 app.command("work")(run_worker)
 
 
+@app.command("eval-golden")
+def eval_golden() -> None:
+    result = run_golden_eval()
+    table = Table(title="VOCR Golden Eval")
+    table.add_column("Step")
+    table.add_column("Result")
+    table.add_column("Detail")
+    for step in result.steps:
+        table.add_row(step.name, "PASS" if step.passed else "FAIL", safe_text(step.detail or "-"))
+    console.print(table)
+    if not result.passed:
+        raise typer.Exit(code=1)
+
+
 @app.command("work-ready")
 def work_ready(
     limit: int = typer.Option(3, "--limit", help="Maximum dispatched tasks to work."),
@@ -1295,15 +1301,14 @@ def show_usage(
     table.add_column("Model")
     table.add_column("Slice")
     table.add_column("Task")
-    table.add_column("Prompt est.")
-    table.add_column("Completion est.")
+    table.add_column("Source")
+    table.add_column("Prompt")
+    table.add_column("Completion")
     table.add_column("Total")
     total = 0
     for item in items:
         usage = item.token_usage
-        row_total = usage.total_tokens or (usage.prompt_tokens_estimate or 0) + (
-            usage.completion_tokens_estimate or 0
-        )
+        row_total = token_total(usage)
         total += row_total
         table.add_row(
             item.agent,
@@ -1311,12 +1316,13 @@ def show_usage(
             item.model or "-",
             item.slice_id or "-",
             item.task_id or "-",
+            usage.source,
             str(usage.prompt_tokens or usage.prompt_tokens_estimate or 0),
             str(usage.completion_tokens or usage.completion_tokens_estimate or 0),
             str(row_total),
         )
     console.print(table)
-    console.print(f"[cyan]Estimated total tokens:[/cyan] {total}")
+    console.print(f"[cyan]Total tokens:[/cyan] {total}")
 
 
 @app.command("learn")

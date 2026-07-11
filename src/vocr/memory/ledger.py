@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
+import os
 import re
 from pathlib import Path
+import threading
 from typing import Iterable
 
 from pydantic import BaseModel
@@ -35,6 +38,13 @@ SAFE_KEYWORDS = {
 SECRET_PATTERNS = [
     re.compile(r"sk-[A-Za-z0-9_-]{12,}"),
 ]
+_THREAD_LOCKS: dict[Path, threading.RLock] = {}
+_THREAD_LOCKS_GUARD = threading.Lock()
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 
 def sanitize_payload(value: object) -> object:
@@ -63,21 +73,27 @@ class MemoryLedger:
     def __init__(self, root: Path | str = ".vocr") -> None:
         self.root = Path(root)
         self.path = self.root / "ledger.jsonl"
+        self.lock_path = self.root / "ledger.lock"
 
     def init(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         self.path.touch(exist_ok=True)
 
     def append(self, event_type: LedgerEventType, payload: BaseModel | dict) -> LedgerEvent:
-        self.init()
         data = payload.model_dump(mode="json") if isinstance(payload, BaseModel) else payload
         data = sanitize_payload(data)
         event = LedgerEvent(type=event_type, payload=data)
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(event.model_dump_json() + "\n")
+        with self._locked():
+            self.path.touch(exist_ok=True)
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(event.model_dump_json() + "\n")
         return event
 
     def events(self) -> Iterable[LedgerEvent]:
+        with self._locked():
+            return self._read_events_unlocked()
+
+    def _read_events_unlocked(self) -> list[LedgerEvent]:
         if not self.path.exists():
             return []
         items: list[LedgerEvent] = []
@@ -186,8 +202,12 @@ class MemoryLedger:
         return json.dumps([event.model_dump(mode="json") for event in self.events()], indent=2)
 
     def compact(self, *, keep_last: int = 200) -> CompactResult:
-        self.init()
-        events = list(self.events())
+        with self._locked():
+            self.path.touch(exist_ok=True)
+            return self._compact_unlocked(keep_last=keep_last)
+
+    def _compact_unlocked(self, *, keep_last: int) -> CompactResult:
+        events = self._read_events_unlocked()
         if len(events) <= keep_last:
             return CompactResult(
                 original_events=len(events),
@@ -212,3 +232,42 @@ class MemoryLedger:
             archived_events=len(archived),
             archive_path=str(archive_path),
         )
+
+    @contextmanager
+    def _locked(self):
+        self.root.mkdir(parents=True, exist_ok=True)
+        lock_path = self.lock_path.resolve()
+        with _thread_lock(lock_path):
+            with lock_path.open("a+b") as handle:
+                if handle.tell() == 0 and lock_path.stat().st_size == 0:
+                    handle.write(b"\0")
+                    handle.flush()
+                handle.seek(0)
+                _lock_file(handle)
+                try:
+                    yield
+                finally:
+                    _unlock_file(handle)
+
+
+@contextmanager
+def _thread_lock(path: Path):
+    with _THREAD_LOCKS_GUARD:
+        lock = _THREAD_LOCKS.setdefault(path, threading.RLock())
+    with lock:
+        yield
+
+
+def _lock_file(handle) -> None:
+    if os.name == "nt":
+        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+    else:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+
+
+def _unlock_file(handle) -> None:
+    if os.name == "nt":
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)

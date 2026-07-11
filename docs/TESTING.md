@@ -422,12 +422,15 @@ Erfolgskriterien:
 ```powershell
 vocr learn
 vocr usage
+vocr eval-golden
 vocr compact --keep-last 200
 ```
 
 Erfolgskriterien:
 
 - `.vocr/learning.json` existiert
+- `vocr usage` zeigt eine `Source`-Spalte fuer `actual` oder `estimated`
+- `vocr eval-golden` meldet PASS fuer Stub-Worker, Token-Metering und Promote-Gates
 - alte Ledger-Events werden bei Bedarf nach `.vocr/archive/` geschrieben
 - `.vocr/ledger.jsonl` bleibt kleiner
 
@@ -472,6 +475,7 @@ vocr doctor
 vocr worker doctor
 vocr graphify
 vocr learn
+vocr eval-golden
 vocr context "scope review" --learning --limit 10
 vocr secrets scan
 ```
@@ -484,3 +488,4 @@ Und diese Regeln gelten:
 - Scope-Verletzungen blockieren Commits.
 - Secret-Funde blockieren Commits.
 - Learning speichert verdichtete Signale, keine Rohprompts oder grossen Diffs.
+- Golden-Eval prueft den LLM-freien Stub-Worker und blockierten Promote vor accepted Review.

@@ -228,6 +228,7 @@ class TokenUsage(BaseModel):
     total_tokens: int | None = None
     prompt_tokens_estimate: int | None = None
     completion_tokens_estimate: int | None = None
+    source: str = "estimated"
 
 
 class RunTelemetry(BaseModel):
@@ -273,6 +274,17 @@ class CompactResult(BaseModel):
     archived_events: int
     archive_path: str | None = None
     learning_path: str | None = None
+
+
+class GoldenEvalStep(BaseModel):
+    name: str
+    passed: bool
+    detail: str = ""
+
+
+class GoldenEvalResult(BaseModel):
+    passed: bool
+    steps: list[GoldenEvalStep] = Field(default_factory=list)
 
 
 class LedgerEvent(BaseModel):

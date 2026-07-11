@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import tempfile
 import time
@@ -23,6 +24,7 @@ from vocr.cli.app import (
     clean_artifacts,
     _local_api_key,
     latest_open_clarification,
+    record_worker_telemetry,
     write_review_artifact,
 )
 from vocr.graph.graphify import GraphStore, RepoGraphBuilder
@@ -35,6 +37,7 @@ from vocr.memory.learning import LearningStore
 from vocr.mcp.server import VocrMcpServer
 from vocr.models import (
     AcceptanceCriterion,
+    CodexRunResult,
     LedgerEventType,
     LearningEntry,
     LearningSnapshot,
@@ -46,6 +49,7 @@ from vocr.models import (
     TokenUsage,
     VocrTask,
 )
+from vocr.orchestration.golden import run_golden_eval
 from vocr.orchestration.workflow import create_vision, organize_slice
 
 GOOD_REQUEST = (
@@ -121,6 +125,22 @@ class WorkflowTests(unittest.TestCase):
             sanitize_payload(payload),
             {"message": "key [redacted]", "api_key": "[redacted]"},
         )
+
+    def test_ledger_append_is_parallel_safe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = MemoryLedger(Path(tmp) / ".vocr")
+
+            def append(index: int) -> str:
+                return ledger.append(LedgerEventType.message, {"index": index}).id
+
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                ids = list(pool.map(append, range(80)))
+
+            events = list(ledger.events())
+
+        self.assertEqual(len(events), 80)
+        self.assertEqual(len(set(ids)), 80)
+        self.assertEqual(sorted(event.payload["index"] for event in events), list(range(80)))
 
     def test_scope_guard_blocks_files_outside_declared_scope(self) -> None:
         task = VocrTask(
@@ -270,6 +290,21 @@ class WorkflowTests(unittest.TestCase):
         promote.assert_called_once()
         self.assertIn("Task promoted", promoted["result"]["content"][0]["text"])
 
+    def test_golden_eval_checks_stub_worker_and_promote_gate(self) -> None:
+        result = run_golden_eval()
+
+        self.assertTrue(result.passed)
+        self.assertEqual(
+            [step.name for step in result.steps],
+            [
+                "dispatch",
+                "actual-token-metering",
+                "promote-before-review-blocked",
+                "accepted-review",
+                "promote-after-review-allowed",
+            ],
+        )
+
     def test_env_file_helpers_configure_local_model_without_printing_secret(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env"
@@ -308,6 +343,58 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("openai", result.output)
         self.assertIn("[set]", result.output)
         self.assertNotIn("process-token", result.output)
+
+    def test_worker_telemetry_uses_actual_usage_when_worker_reports_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / ".vocr"
+            ledger = MemoryLedger(root)
+            task = VocrTask(
+                id="task-usage",
+                slice_id="slice-usage",
+                title="Usage",
+                summary="Usage",
+                scope=["docs"],
+                acceptance_criteria=[AcceptanceCriterion(text="Usage recorded")],
+                tests=[],
+            )
+            ledger.append(LedgerEventType.task_created, task)
+            result = CodexRunResult(
+                task_id=task.id,
+                command=["stub"],
+                exit_code=0,
+                stdout='{"usage":{"prompt_tokens":11,"completion_tokens":3,"total_tokens":14}}',
+            )
+
+            record_worker_telemetry(ledger, task.id, result, "prompt text")
+            telemetry = ledger.telemetry()[0]
+
+        self.assertEqual(telemetry.token_usage.source, "actual")
+        self.assertEqual(telemetry.token_usage.prompt_tokens, 11)
+        self.assertEqual(telemetry.token_usage.completion_tokens, 3)
+        self.assertEqual(telemetry.token_usage.total_tokens, 14)
+
+    def test_usage_command_shows_actual_token_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / ".vocr"
+            ledger = MemoryLedger(root)
+            ledger.append(
+                LedgerEventType.telemetry_recorded,
+                RunTelemetry(
+                    provider="stub-worker",
+                    model="none",
+                    slice_id="slice-usage",
+                    task_id="task-usage",
+                    agent="stub-worker",
+                    token_usage=TokenUsage(prompt_tokens=5, completion_tokens=2, total_tokens=7, source="actual"),
+                ),
+            )
+
+            result = CliRunner().invoke(app, ["usage"], env={"VOCR_HOME": str(root)})
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("actual", result.output)
+        self.assertIn("Total tokens", result.output)
+        self.assertIn("7", result.output)
 
     def test_model_check_accepts_one_shot_api_key_without_printing_it(self) -> None:
         with patch(

@@ -233,6 +233,7 @@ vocr log --limit 30
 vocr diff <task-id>
 vocr diff <task-id> --full
 vocr usage
+vocr eval-golden
 vocr learn
 vocr context "scope review" --learning --limit 10
 vocr compact --keep-last 200
@@ -296,7 +297,9 @@ vocr doctor
 - `vocr promote` fuehrt vor dem Merge einen Preflight aus und blockiert ohne akzeptiertes Review.
 - `vocr log`, `vocr diff`, `vocr clean` und `vocr abort` sind Housekeeping-Kommandos fuer Timeline, Task-Diff, verwaiste Worktrees und kontrollierten Abbruch.
 - `vocr clean --archives` loescht alte `.vocr/archive`-Segmente dauerhaft per Dateisystem-Unlink; vorher sichern, wenn die Historie erhalten bleiben soll.
-- `vocr usage` zeigt geschaetzte Token-/Provider-Telemetrie pro Task/Slice.
+- `.vocr/ledger.jsonl` wird append-only mit plattformsicherem Lock geschrieben, damit parallele VOCR-Prozesse keine Ledger-Zeilen zerreissen.
+- `vocr usage` zeigt Token-/Provider-Telemetrie pro Task/Slice. Wenn der Worker echte Usage-Daten meldet, werden diese als `actual` angezeigt; sonst nutzt VOCR einen Estimate-Fallback.
+- `vocr eval-golden` fuehrt einen LLM-freien Stub-Worker-Gate-Test aus: Dispatch, echtes Usage-Parsing, Promote-vor-Review-Block und Promote-nach-accepted-Review.
 - `vocr learn` verdichtet lokale Ledger-, Review- und Telemetrie-Signale in `.vocr/learning.json`.
 - `vocr compact` aktualisiert Learning und archiviert alte Ledger-Events unter `.vocr/archive/`, damit `.vocr/ledger.jsonl` klein bleibt.
 - `vocr test` fuehrt Syntax- und Unit-Test-Smoke lokal aus.
@@ -316,7 +319,7 @@ $env:PYTHONPATH="src"; python -m unittest discover -s tests
 - `.vocr/graph.json` speichert den kompakten Graphify-Index fuer tokenarme Agent-Kontexte.
 - `.vocr/learning.json` speichert verdichtete lokale Signale statt Rohprompts oder grosser Diffs.
 - `.vocr/archive/` enthaelt kompaktierte alte Ledger-Segmente.
-- Telemetrie-Events protokollieren Provider, Modell, Slice/Task und geschaetzte Token pro Worker-Lauf.
+- Telemetrie-Events protokollieren Provider, Modell, Slice/Task und echte oder geschaetzte Token pro Worker-Lauf.
 - `docs/THREAT_MODEL.md` beschreibt Prompt-Injection-Grenzen, Scope Guard und Secret-Scanning.
 
 ## Token-effizientes Arbeiten
@@ -345,5 +348,5 @@ Das Ziel ist: neue Agents bekommen eine Repo-Karte und nur die naechsten relevan
 ## Naechste Schritte
 
 1. PR-Review-Posting gegen einen echten GitHub-Test-PR live validieren.
-2. Echte Token-Usage aus Agents SDK/Codex auslesen, sobald stabil verfuegbar.
+2. Codex-/Agents-SDK-spezifische Usage-Formate erweitern, sobald neue stabile Felder verfuegbar sind.
 3. Reviewer-/Learning-Signale nach echten Beta-Laeufen kalibrieren.
