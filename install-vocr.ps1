@@ -1,6 +1,7 @@
 param(
     [switch]$Tests,
     [switch]$NoStart,
+    [switch]$AutoYes,
     [string]$InstallDir = "Codex-VOCR",
     [string]$RepoUrl = "https://github.com/JeansBraindead/Codex-VOCR.git"
 )
@@ -16,7 +17,45 @@ function Invoke-Checked($Exe, $Arguments, $FailureMessage) {
     if ($LASTEXITCODE -ne 0) { throw $FailureMessage }
 }
 
-function Resolve-Python {
+function Ensure-Dependency {
+    param(
+        [string]$Name,
+        [scriptblock]$Check,
+        [string]$WingetId,
+        [string]$FallbackUrl
+    )
+
+    if (& $Check) { return }
+
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+        throw "$Name wurde nicht gefunden und winget ist nicht verfuegbar. Installiere manuell von $FallbackUrl und starte den Installer erneut."
+    }
+
+    $install = $false
+    if ($AutoYes) {
+        $install = $true
+    } else {
+        $answer = Read-Host "$Name fehlt. Jetzt per winget installieren? [j/N]"
+        $install = $answer -match '^(?i:j|ja)$'
+    }
+
+    if (-not $install) {
+        throw "$Name wurde nicht installiert. Installiere manuell von $FallbackUrl und starte den Installer erneut."
+    }
+
+    Write-Step "Installiere $Name via winget"
+    & winget install --id $WingetId --exact --accept-source-agreements --accept-package-agreements
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Name konnte via winget nicht installiert werden. Installiere manuell von $FallbackUrl und starte den Installer erneut."
+    }
+
+    Write-Step "$Name wurde installiert. Ein neues PowerShell-Fenster kann fuer aktualisierte PATH-Eintraege noetig sein."
+    if (-not (& $Check)) {
+        throw "$Name wurde installiert, ist in dieser PowerShell aber noch nicht auffindbar. Bitte PowerShell neu oeffnen und den Installer erneut starten."
+    }
+}
+
+function Find-Python {
     $py = Get-Command py -ErrorAction SilentlyContinue
     if ($py) {
         try {
@@ -29,6 +68,21 @@ function Resolve-Python {
         & python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" *> $null
         if ($LASTEXITCODE -eq 0) { return @{ Exe = "python"; Args = @() } }
     }
+    return $null
+}
+
+function Resolve-Python {
+    $python = Find-Python
+    if ($python) { return $python }
+
+    Ensure-Dependency `
+        -Name "Python 3.11+" `
+        -Check { $null -ne (Find-Python) } `
+        -WingetId "Python.Python.3.11" `
+        -FallbackUrl "https://www.python.org/downloads/"
+
+    $python = Find-Python
+    if ($python) { return $python }
     throw "Python 3.11+ wurde nicht gefunden. Installiere Python 3.11 oder neuer und starte den Installer erneut."
 }
 
@@ -37,9 +91,11 @@ try {
     Set-Location -LiteralPath $repoRoot
 
     if (-not (Test-Path "pyproject.toml")) {
-        if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-            throw "Hier liegt kein VOCR-Repo und Git wurde nicht gefunden. Installiere Git fuer Windows: https://git-scm.com/download/win"
-        }
+        Ensure-Dependency `
+            -Name "Git fuer Windows" `
+            -Check { $null -ne (Get-Command git -ErrorAction SilentlyContinue) } `
+            -WingetId "Git.Git" `
+            -FallbackUrl "https://git-scm.com/download/win"
         $target = Join-Path $repoRoot $InstallDir
         if (Test-Path (Join-Path $target "pyproject.toml")) {
             Write-Step "Nutze vorhandenes Repo: $target"
@@ -53,9 +109,11 @@ try {
         $repoRoot = $target
     }
 
-    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-        throw "Git wurde nicht gefunden. Installiere Git fuer Windows: https://git-scm.com/download/win"
-    }
+    Ensure-Dependency `
+        -Name "Git fuer Windows" `
+        -Check { $null -ne (Get-Command git -ErrorAction SilentlyContinue) } `
+        -WingetId "Git.Git" `
+        -FallbackUrl "https://git-scm.com/download/win"
 
     $pythonCmd = Resolve-Python
     Write-Step "Repo: $repoRoot"
