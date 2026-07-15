@@ -8,7 +8,7 @@ from enum import Enum
 from pathlib import Path
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 TASK_CONTRACT_SCHEMA_VERSION = 1
@@ -43,6 +43,14 @@ class ReviewSeverity(str, Enum):
     low = "low"
     medium = "medium"
     high = "high"
+
+
+class MemoryNoteKind(str, Enum):
+    decision = "decision"
+    convention = "convention"
+    term = "term"
+    check = "check"
+    rejected_path = "rejected_path"
 
 
 class PermissionMode(str, Enum):
@@ -212,11 +220,28 @@ class CodexReviewFinding(BaseModel):
     body: str
 
 
+class MemoryNote(BaseModel):
+    kind: MemoryNoteKind
+    text: str
+    refs: list[str] = Field(default_factory=list)
+
+    @field_validator("text")
+    @classmethod
+    def text_must_be_compact(cls, value: str) -> str:
+        text = value.strip()
+        if len(text) > 300:
+            raise ValueError("Memory note text must be 300 characters or fewer.")
+        if not text:
+            raise ValueError("Memory note text must not be empty.")
+        return text
+
+
 class CodexReviewReport(BaseModel):
     schema_version: int = 1
     decision: ReviewDecision
     summary: str
     findings: list[CodexReviewFinding] = Field(default_factory=list)
+    memory_notes: list[MemoryNote] = Field(default_factory=list)
 
 
 class SecretFinding(BaseModel):
@@ -249,6 +274,7 @@ class ReviewResult(BaseModel):
     diff_summary: str | None = None
     diff_files: list[str] = Field(default_factory=list)
     reviewed_ref: str | None = None
+    memory_notes: list[MemoryNote] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
 
 

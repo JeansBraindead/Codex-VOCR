@@ -37,10 +37,13 @@ from vocr.guardrails.secrets import scan_diff_for_secrets
 from vocr.install.bootstrap import BootstrapError, BootstrapResult, Bootstrapper
 from vocr.memory.ledger import MemoryLedger, sanitize_payload
 from vocr.memory.learning import LearningStore
+from vocr.memory.project_memory import ProjectMemoryStore
 from vocr.mcp.server import serve_stdio
 from vocr.models import (
     ClarificationSession,
     LedgerEventType,
+    MemoryNote,
+    MemoryNoteKind,
     PermissionGrant,
     PermissionMode,
     ReviewDecision,
@@ -68,10 +71,12 @@ model_app = typer.Typer(help="Configure local or cloud LLMs without editing file
 secrets_app = typer.Typer(help="Scan diffs for secrets without printing secret values.")
 worker_app = typer.Typer(help="Configure and diagnose Codex worker execution.")
 claims_app = typer.Typer(help="Inspect and release VOCR scope claims.")
+memory_app = typer.Typer(help="Inspect and prune accepted-review project memory.")
 app.add_typer(model_app, name="model")
 app.add_typer(secrets_app, name="secrets")
 app.add_typer(worker_app, name="worker")
 app.add_typer(claims_app, name="claims")
+app.add_typer(memory_app, name="memory")
 console = Console()
 WARMUP_STAGGER_SECONDS = 20.0
 
@@ -102,6 +107,16 @@ def parallel_worker_count() -> int:
     except ValueError:
         return 1
     return max(1, count)
+
+
+def parse_memory_note(raw: str) -> MemoryNote:
+    if ":" not in raw:
+        raise typer.BadParameter("Memory note must use kind:text.")
+    kind, text = raw.split(":", 1)
+    try:
+        return MemoryNote(kind=MemoryNoteKind(kind.strip()), text=text.strip())
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
 
 def refresh_graph() -> None:
@@ -1054,6 +1069,7 @@ def review(
     summary: str | None = typer.Option(None, "--summary", "-s", help="Short review summary."),
     codex_review: bool = typer.Option(False, "--codex-review", help="Run codex exec review when available."),
     base_ref: str | None = typer.Option(None, "--base", help="Base branch/ref for Codex review."),
+    note: list[str] = typer.Option([], "--note", help="Accepted-review project memory note as kind:text."),
     export_comments: Path | None = typer.Option(None, "--export-comments", help="Write review comments as Markdown."),
     save_artifact: bool = typer.Option(True, "--artifact/--no-artifact", help="Save review markdown under .vocr/artifacts."),
     post_pr_comments: bool = typer.Option(False, "--post-pr-comments", help="Post one PR comment with review markdown via gh."),
@@ -1065,6 +1081,7 @@ def review(
         summary=summary,
         codex_review=codex_review,
         base_ref=base_ref,
+        memory_notes=[parse_memory_note(item) for item in note],
     )
     color = "green" if result.decision == ReviewDecision.accepted else "yellow"
     console.print(f"[{color}]Review: {result.decision.value}[/{color}]")
@@ -1379,6 +1396,25 @@ def claims_list() -> None:
 def claims_release(task_id: str) -> None:
     ledger().release_claim(task_id)
     console.print(f"[green]Released claim[/green] {task_id}")
+
+
+@memory_app.command("list")
+def memory_list() -> None:
+    table = Table(title="VOCR Project Memory")
+    table.add_column("ID")
+    table.add_column("Kind")
+    table.add_column("Task")
+    table.add_column("Text")
+    for entry in ProjectMemoryStore(ledger().root).entries():
+        table.add_row(entry.id, entry.note.kind.value, entry.task_id, safe_text(entry.note.text))
+    console.print(table)
+
+
+@memory_app.command("prune")
+def memory_prune(entry_id: str) -> None:
+    if not ProjectMemoryStore(ledger().root).prune(entry_id):
+        raise typer.BadParameter(f"Unknown memory entry id: {entry_id}")
+    console.print(f"[green]Pruned memory entry[/green] {entry_id}")
 
 
 @app.command()

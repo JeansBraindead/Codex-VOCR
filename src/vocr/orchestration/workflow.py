@@ -14,9 +14,11 @@ from vocr.git.worktrees import GitWorktreeError, GitWorktreeManager
 from vocr.graph.graphify import GraphStore, RepoGraphBuilder
 from vocr.memory.ledger import MemoryLedger
 from vocr.memory.learning import LearningStore
+from vocr.memory.project_memory import ProjectMemoryStore, project_memory_enabled
 from vocr.models import (
     AcceptanceCriterion,
     LedgerEventType,
+    MemoryNote,
     ReviewDecision,
     ReviewComment,
     ReviewResult,
@@ -25,7 +27,7 @@ from vocr.models import (
     VisionSlice,
     VocrTask,
 )
-from vocr.orchestration.codex_review import run_codex_review
+from vocr.orchestration.codex_review import run_codex_review_with_notes
 from vocr.orchestration.readiness import parse_request_sections
 
 
@@ -186,6 +188,10 @@ def build_context_pack(query: str, *, limit: int = 12, vocr_home: str = ".vocr")
     if not store.exists():
         store.save(RepoGraphBuilder(".").build())
     parts = [store.context_pack(query=query, limit=limit)]
+    if project_memory_enabled():
+        memory_brief = ProjectMemoryStore(vocr_home).brief(query=query, limit=3, token_budget=900)
+        if memory_brief:
+            parts.append(memory_brief)
     learning = LearningStore(vocr_home)
     if learning.exists():
         parts.append(learning.brief(query=query, limit=6))
@@ -365,6 +371,7 @@ def review_task(
     summary: str | None = None,
     codex_review: bool = False,
     base_ref: str | None = None,
+    memory_notes: list[MemoryNote] | None = None,
 ) -> ReviewResult:
     task = ledger.get_task(task_id)
     if task is None:
@@ -429,10 +436,13 @@ def review_task(
         decision = ReviewDecision.needs_changes
 
     comments = []
+    pending_memory_notes = list(memory_notes or [])
     if task.worktree_path:
         comments.extend(_diff_review_comments(changed_files, issues, full_diff))
     if codex_review:
-        comments.extend(run_codex_review(task, base_ref=codex_base_ref))
+        codex_comments, codex_memory_notes = run_codex_review_with_notes(task, base_ref=codex_base_ref)
+        comments.extend(codex_comments)
+        pending_memory_notes.extend(codex_memory_notes)
 
     review_summary = summary or (
         "Manual review accepted the task."
@@ -452,8 +462,15 @@ def review_task(
         diff_summary=diff_summary,
         diff_files=changed_files if task.worktree_path else [],
         reviewed_ref=reviewed_ref,
+        memory_notes=pending_memory_notes,
     )
     ledger.append(LedgerEventType.review_recorded, review)
+    if project_memory_enabled() and review.decision == ReviewDecision.accepted and pending_memory_notes:
+        ProjectMemoryStore(ledger.root).append_notes(
+            task_id=task.id,
+            slice_id=task.slice_id,
+            notes=pending_memory_notes,
+        )
     return review
 
 
@@ -461,12 +478,23 @@ def render_review_markdown(review: ReviewResult) -> str:
     lines = [
         f"# VOCR Review {review.task_id}",
         "",
-        f"Decision: `{review.decision.value}`",
-        "",
-        review.summary,
-        "",
-        "## Required Changes",
+        "## Project Memory",
     ]
+    if review.memory_notes:
+        lines.append("Wird bei Accept ins Projektgedaechtnis uebernommen:")
+        lines.extend(f"- `{note.kind.value}`: {note.text}" for note in review.memory_notes)
+    else:
+        lines.append("- none")
+    lines.extend(
+        [
+            "",
+            f"Decision: `{review.decision.value}`",
+            "",
+            review.summary,
+            "",
+            "## Required Changes",
+        ]
+    )
     if review.required_changes:
         lines.extend(f"- {item}" for item in review.required_changes)
     else:

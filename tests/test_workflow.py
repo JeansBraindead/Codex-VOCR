@@ -870,14 +870,14 @@ class WorkflowTests(unittest.TestCase):
             )
             captured: dict[str, str | None] = {}
 
-            def fake_codex_review(_: VocrTask, base_ref: str | None = None) -> list:
+            def fake_codex_review(_: VocrTask, base_ref: str | None = None) -> tuple[list, list]:
                 captured["base_ref"] = base_ref
-                return []
+                return [], []
 
             with patch.dict(os.environ, {"VOCR_INCREMENTAL_REVIEW": "true"}), patch(
                 "vocr.orchestration.workflow.GitWorktreeManager",
                 FakeGit,
-            ), patch("vocr.orchestration.workflow.run_codex_review", side_effect=fake_codex_review):
+            ), patch("vocr.orchestration.workflow.run_codex_review_with_notes", side_effect=fake_codex_review):
                 review = review_task(ledger, task.id, codex_review=True)
 
         self.assertEqual(captured["base_ref"], "previous-review-sha")
@@ -936,14 +936,14 @@ class WorkflowTests(unittest.TestCase):
             )
             captured: dict[str, str | None] = {}
 
-            def fake_codex_review(_: VocrTask, base_ref: str | None = None) -> list:
+            def fake_codex_review(_: VocrTask, base_ref: str | None = None) -> tuple[list, list]:
                 captured["base_ref"] = base_ref
-                return []
+                return [], []
 
             with patch.dict(os.environ, {"VOCR_INCREMENTAL_REVIEW": ""}), patch(
                 "vocr.orchestration.workflow.GitWorktreeManager",
                 FakeGit,
-            ), patch("vocr.orchestration.workflow.run_codex_review", side_effect=fake_codex_review):
+            ), patch("vocr.orchestration.workflow.run_codex_review_with_notes", side_effect=fake_codex_review):
                 review = review_task(ledger, task.id, codex_review=True)
 
         self.assertIsNone(captured["base_ref"])

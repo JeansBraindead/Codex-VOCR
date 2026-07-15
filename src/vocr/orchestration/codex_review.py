@@ -7,7 +7,7 @@ from shutil import which
 
 from pydantic import ValidationError
 
-from vocr.models import CodexReviewReport, ReviewComment, TaskContract, VocrTask
+from vocr.models import CodexReviewReport, MemoryNote, ReviewComment, TaskContract, VocrTask
 
 
 def run_codex_review(
@@ -15,14 +15,23 @@ def run_codex_review(
     base_ref: str | None = None,
     timeout_seconds: int = 900,
 ) -> list[ReviewComment]:
+    comments, _ = run_codex_review_with_notes(task, base_ref=base_ref, timeout_seconds=timeout_seconds)
+    return comments
+
+
+def run_codex_review_with_notes(
+    task: VocrTask,
+    base_ref: str | None = None,
+    timeout_seconds: int = 900,
+) -> tuple[list[ReviewComment], list[MemoryNote]]:
     if task.worktree_path is None or which("codex") is None:
-        return []
+        return [], []
 
     command = _review_command(base_ref)
     prompt = _review_prompt(task)
     first_body = _run_review_command(command, task.worktree_path, prompt, timeout_seconds)
     if not first_body:
-        return []
+        return [], []
 
     report, error = _parse_review_report(first_body)
     if report is None:
@@ -31,11 +40,11 @@ def run_codex_review(
         if retry_body:
             report, _ = _parse_review_report(retry_body)
             if report is not None:
-                return _report_to_comments(report)
-            return [ReviewComment(source="codex-review-unstructured", body=retry_body[-4000:])]
-        return [ReviewComment(source="codex-review-unstructured", body=first_body[-4000:])]
+                return _report_to_comments(report), report.memory_notes
+            return [ReviewComment(source="codex-review-unstructured", body=retry_body[-4000:])], []
+        return [ReviewComment(source="codex-review-unstructured", body=first_body[-4000:])], []
 
-    return _report_to_comments(report)
+    return _report_to_comments(report), report.memory_notes
 
 
 def _review_command(base_ref: str | None) -> list[str]:
@@ -60,6 +69,13 @@ def _review_prompt(task: VocrTask) -> str:
                 "path": "repo-relative path or null",
                 "line": "line number or null",
                 "body": "specific finding",
+            }
+        ],
+        "memory_notes": [
+            {
+                "kind": "decision | convention | term | check | rejected_path",
+                "text": "optional compact project memory note, max 300 chars",
+                "refs": ["optional repo-relative files or task ids"],
             }
         ],
     }

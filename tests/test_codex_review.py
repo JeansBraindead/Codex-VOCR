@@ -98,7 +98,7 @@ class CodexReviewTests(unittest.TestCase):
                 )
             ]
 
-            with patch("vocr.orchestration.workflow.run_codex_review", return_value=advisor_comments):
+            with patch("vocr.orchestration.workflow.run_codex_review_with_notes", return_value=(advisor_comments, [])):
                 review = workflow.review_task(ledger, task.id, codex_review=True)
 
         self.assertEqual(review.decision, ReviewDecision.needs_changes)
