@@ -589,10 +589,14 @@ def context(
     ),
     limit: int = typer.Option(20, "--limit", "-n", help="Maximum files in the brief."),
     learning: bool = typer.Option(False, "--learning", help="Include compact local learning signals."),
+    symbol: str | None = typer.Option(None, "--symbol", help="Print exact lines for PFAD:NAME from the graph."),
 ) -> None:
     store = graph_store()
     if not store.exists():
         raise typer.BadParameter("No graph found. Run 'vocr graphify' first.")
+    if symbol:
+        console.print(_symbol_source(store, symbol), markup=False)
+        return
     console.print(store.context_pack(query=query, limit=limit))
     if learning:
         boosts = learning_store().file_boosts(query=query) if learning_store().exists() else {}
@@ -604,6 +608,25 @@ def context(
                 console.print(f"- {safe_text(path)} +{score:.2f}")
         console.print("")
         console.print(learning_store().brief(query=query, limit=limit))
+
+
+def _symbol_source(store: GraphStore, spec: str) -> str:
+    if ":" not in spec:
+        raise typer.BadParameter("--symbol must use PFAD:NAME.")
+    path_text, name = spec.rsplit(":", 1)
+    path_text = path_text.replace("\\", "/").strip()
+    name = name.strip()
+    graph = store.load()
+    node = next((item for item in graph.nodes if item.path == path_text), None)
+    if node is None:
+        raise typer.BadParameter(f"Unknown graph path: {path_text}")
+    span = next((item for item in node.symbol_spans if item.name == name or item.name.split(" ", 1)[-1] == name), None)
+    if span is None:
+        raise typer.BadParameter(f"Unknown symbol for {path_text}: {name}")
+    root = Path(graph.root)
+    source_path = root / node.path
+    lines = source_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    return "\n".join(lines[span.start - 1 : span.end])
 
 
 @app.command()

@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 from vocr.memory.learning import LearningStore
-from vocr.models import GraphEdge, GraphNode, RepoGraph
+from vocr.models import GraphEdge, GraphNode, RepoGraph, SymbolSpan
 
 
 DEFAULT_EXCLUDES = {
@@ -86,6 +86,8 @@ class RepoGraphBuilder:
                 text = path.read_text(encoding="utf-8", errors="ignore")
                 content_hash = hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
                 if previous.content_hash == content_hash:
+                    if path.suffix == ".py" and previous.symbols and not previous.symbol_spans:
+                        return self._build_node_from_text(path, rel, text, stat.st_size)
                     return previous
                 return self._build_node_from_text(path, rel, text, stat.st_size)
         return self._build_node(path, rel)
@@ -113,9 +115,10 @@ class RepoGraphBuilder:
         lines = text.splitlines()
         imports: list[str] = []
         symbols: list[str] = []
+        symbol_spans: list[SymbolSpan] = []
 
         if path.suffix == ".py":
-            imports, symbols = self._parse_python(text)
+            imports, symbols, symbol_spans = self._parse_python(text)
 
         return GraphNode(
             path=rel,
@@ -126,27 +129,34 @@ class RepoGraphBuilder:
             summary=self._summarize(path, lines, symbols),
             imports=imports,
             symbols=symbols,
+            symbol_spans=symbol_spans,
         )
 
-    def _parse_python(self, text: str) -> tuple[list[str], list[str]]:
+    def _parse_python(self, text: str) -> tuple[list[str], list[str], list[SymbolSpan]]:
         try:
             tree = ast.parse(text)
         except SyntaxError:
-            return [], []
+            return [], [], []
 
         imports: list[str] = []
         symbols: list[str] = []
+        symbol_spans: list[SymbolSpan] = []
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 imports.extend(alias.name for alias in node.names)
             elif isinstance(node, ast.ImportFrom):
                 if node.module:
                     imports.append(node.module)
-            elif isinstance(node, ast.ClassDef):
-                symbols.append(f"class {node.name}")
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef):
+                name = f"class {node.name}"
+                symbols.append(name)
+                symbol_spans.append(SymbolSpan(name=name, start=node.lineno, end=node.end_lineno or node.lineno))
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                symbols.append(f"def {node.name}")
-        return sorted(set(imports)), symbols
+                name = f"def {node.name}"
+                symbols.append(name)
+                symbol_spans.append(SymbolSpan(name=name, start=node.lineno, end=node.end_lineno or node.lineno))
+        return sorted(set(imports)), symbols, symbol_spans
 
     def _summarize(self, path: Path, lines: list[str], symbols: list[str]) -> str:
         if path.suffix == ".py":

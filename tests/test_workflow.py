@@ -147,6 +147,93 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("src/sample/api.py (seed)", brief)
         self.assertIn("src/sample/service.py", brief)
 
+    def test_graph_builder_records_top_level_symbol_spans_and_brief_markers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            module = root / "sample.py"
+            module.write_text(
+                "\n".join(
+                    [
+                        "import os",
+                        "",
+                        "def alpha():",
+                        "    return os.name",
+                        "",
+                        "class Beta:",
+                        "    def method(self):",
+                        "        return True",
+                        "",
+                        "async def gamma():",
+                        "    return 1",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            graph = RepoGraphBuilder(root).build()
+            node = graph.nodes[0]
+            brief = graph.context_brief(query="alpha beta gamma", limit=1)
+
+        self.assertEqual([span.name for span in node.symbol_spans], ["def alpha", "class Beta", "def gamma"])
+        self.assertEqual((node.symbol_spans[0].start, node.symbol_spans[0].end), (3, 4))
+        self.assertEqual((node.symbol_spans[1].start, node.symbol_spans[1].end), (6, 8))
+        self.assertIn("def alpha@L3-4", brief)
+        self.assertIn("class Beta@L6-8", brief)
+
+    def test_old_graph_json_without_symbol_spans_still_loads(self) -> None:
+        graph = RepoGraph.model_validate(
+            {
+                "root": "C:/tmp/repo",
+                "nodes": [
+                    {
+                        "path": "sample.py",
+                        "kind": "py",
+                        "size_bytes": 10,
+                        "line_count": 1,
+                        "content_hash": "hash",
+                        "summary": "Python module: def alpha",
+                        "imports": [],
+                        "symbols": ["def alpha"],
+                    }
+                ],
+                "edges": [],
+            }
+        )
+
+        self.assertEqual(graph.nodes[0].symbol_spans, [])
+        self.assertIn("def alpha", graph.context_brief())
+
+    def test_context_symbol_prints_exact_span_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            vocr_home = root / ".vocr"
+            module = root / "sample.py"
+            module.write_text(
+                "\n".join(
+                    [
+                        "def alpha():",
+                        "    return 1",
+                        "",
+                        "def beta():",
+                        "    value = 2",
+                        "    return value",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            GraphStore(vocr_home).save(RepoGraphBuilder(root).build())
+
+            result = CliRunner().invoke(
+                app,
+                ["context", "--symbol", "sample.py:beta"],
+                env={"VOCR_HOME": str(vocr_home)},
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(result.output.strip(), "def beta():\n    value = 2\n    return value")
+
     def test_secret_scanner_blocks_added_secret_values(self) -> None:
         diff = "\n".join(
             [

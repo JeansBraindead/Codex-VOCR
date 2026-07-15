@@ -341,6 +341,12 @@ class BusMessage(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class SymbolSpan(BaseModel):
+    name: str
+    start: int
+    end: int
+
+
 class GraphNode(BaseModel):
     path: str
     kind: str
@@ -350,6 +356,7 @@ class GraphNode(BaseModel):
     summary: str
     imports: list[str] = Field(default_factory=list)
     symbols: list[str] = Field(default_factory=list)
+    symbol_spans: list[SymbolSpan] = Field(default_factory=list)
 
 
 class GraphEdge(BaseModel):
@@ -381,7 +388,7 @@ class RepoGraph(BaseModel):
         if query:
             lines.append(f"Query: {query}")
         for node in nodes[:limit]:
-            symbol_text = ", ".join(node.symbols[:6]) or "no symbols"
+            symbol_text = _symbol_text(node)
             marker = ""
             if query:
                 marker = " (seed)" if node.path in ranked_paths[:limit] else " (1-hop)"
@@ -448,3 +455,9 @@ def _tokenize(text: str) -> list[str]:
 
 def _node_search_text(node: GraphNode) -> str:
     return " ".join([node.path, node.summary, " ".join(node.imports), " ".join(node.symbols)])
+
+
+def _symbol_text(node: GraphNode) -> str:
+    if node.symbol_spans:
+        return ", ".join(f"{span.name}@L{span.start}-{span.end}" for span in node.symbol_spans[:6])
+    return ", ".join(node.symbols[:6]) or "no symbols"
