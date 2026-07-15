@@ -881,14 +881,7 @@ class NormalModeController:
 
 
 def launch_console_mode(repo_root: str | Path = ".", session_permission: PermissionGrant | None = None) -> None:
-    controller_activity: dict[str, Callable[[str], None] | None] = {"handler": None}
-
-    def controller_activity_sink(message: str) -> None:
-        handler = controller_activity["handler"]
-        if handler:
-            handler(message)
-
-    controller = NormalModeController(repo_root, session_permission=session_permission, on_activity=controller_activity_sink)
+    controller = NormalModeController(repo_root, session_permission=session_permission)
     opening = controller.opening_message()
     print(f"\nVisionaer: {opening.message}\n")
     while True:
@@ -938,7 +931,14 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     except Exception as exc:  # pragma: no cover - depends on local Python build
         raise NormalModeUiError(str(exc)) from exc
 
-    controller = NormalModeController(repo_root, session_permission=session_permission)
+    controller_activity: dict[str, Callable[[str], None] | None] = {"handler": None}
+
+    def controller_activity_sink(message: str) -> None:
+        handler = controller_activity["handler"]
+        if handler:
+            handler(message)
+
+    controller = NormalModeController(repo_root, session_permission=session_permission, on_activity=controller_activity_sink)
     root = tk.Tk()
     root.title("VOCR Visionaer")
     root.geometry("980x660")

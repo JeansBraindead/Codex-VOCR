@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import inspect
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -12,7 +13,14 @@ from vocr.cli.app import app
 from vocr.memory.ledger import MemoryLedger
 from vocr.models import AcceptanceCriterion, LedgerEventType, NormalModePhase, PermissionGrant, PermissionMode, VocrTask
 from vocr.orchestration.worker_advisor import WorkerParallelismAdvisor
-from vocr.ui.normal_mode import NormalModeController, normal_mode_surface_decision, open_codex_login_shell, open_expert_shell
+from vocr.ui.normal_mode import (
+    NormalModeController,
+    launch_console_mode,
+    launch_normal_mode,
+    normal_mode_surface_decision,
+    open_codex_login_shell,
+    open_expert_shell,
+)
 
 
 def assert_no_normal_mode_debug_ids(testcase: unittest.TestCase, message: str) -> None:
@@ -160,6 +168,14 @@ class NormalModeTests(unittest.TestCase):
             self.assertIn("powershell", args[0][0])
             self.assertIn("-NoExit", args[0])
             self.assertIn("codex login", args[0][-1])
+
+    def test_gui_activity_bridge_lives_in_gui_launcher(self) -> None:
+        gui_source = inspect.getsource(launch_normal_mode)
+        console_source = inspect.getsource(launch_console_mode)
+
+        self.assertIn("controller_activity: dict", gui_source)
+        self.assertIn("controller_activity[\"handler\"] = controller_activity_handler", gui_source)
+        self.assertNotIn("controller_activity: dict", console_source)
 
     def test_normal_mode_surface_decision_uses_local_gui_without_buildchain(self) -> None:
         decision = normal_mode_surface_decision()
