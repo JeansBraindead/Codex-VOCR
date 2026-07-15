@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 import re
 import subprocess
 import threading
@@ -139,8 +141,6 @@ class NormalModeController:
         return NormalModeResponse(
             message=self._normal_mode_text(
                 "Ich bin der Visionaer. Sag mir frei, was du bauen oder aendern willst. "
-                "Vor echter Benutzung melde dich bitte einmal mit `codex login` an; "
-                "ein API-Key ist nur optional fuer Expert-Setups. "
                 "Ich frage gezielt nach, bis Ziel, Grenzen und Pruefung belastbar sind."
                 + permission_note
             ),
@@ -924,6 +924,73 @@ def open_codex_login_shell(repo_root: str | Path = ".") -> None:
     subprocess.Popen(["powershell", "-NoExit", "-Command", command], cwd=str(root))
 
 
+def codex_login_status(auth_path: Path | None = None) -> str:
+    try:
+        completed = subprocess.run(
+            ["codex", "login", "status"],
+            text=True,
+            capture_output=True,
+            timeout=8,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "ChatGPT/Codex: nicht verfuegbar"
+
+    output = " ".join(part.strip() for part in [completed.stdout, completed.stderr] if part.strip())
+    if completed.returncode != 0 or "logged in" not in output.lower():
+        return "ChatGPT/Codex: nicht eingeloggt"
+
+    identity = _codex_auth_identity(auth_path or (Path.home() / ".codex" / "auth.json"))
+    if identity:
+        return f"ChatGPT/Codex: eingeloggt via ChatGPT ({identity})"
+    return "ChatGPT/Codex: eingeloggt via ChatGPT"
+
+
+def _codex_auth_identity(auth_path: Path) -> str | None:
+    try:
+        data = json.loads(auth_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    tokens = data.get("tokens")
+    if not isinstance(tokens, dict):
+        return None
+    for key in ("id_token", "access_token"):
+        token = tokens.get(key)
+        if not isinstance(token, str):
+            continue
+        payload = _decode_jwt_payload(token)
+        profile = payload.get("https://api.openai.com/profile")
+        if isinstance(profile, dict):
+            identity = _format_identity(profile.get("name"), profile.get("email"))
+            if identity:
+                return identity
+        identity = _format_identity(payload.get("name"), payload.get("email"))
+        if identity:
+            return identity
+    return None
+
+
+def _decode_jwt_payload(token: str) -> dict[str, object]:
+    parts = token.split(".")
+    if len(parts) < 2:
+        return {}
+    payload = parts[1] + "=" * (-len(parts[1]) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(payload.encode("ascii"))
+        data = json.loads(decoded.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _format_identity(name: object, email: object) -> str | None:
+    clean_name = str(name).strip() if isinstance(name, str) and name.strip() else ""
+    clean_email = str(email).strip() if isinstance(email, str) and email.strip() else ""
+    if clean_name and clean_email:
+        return f"{clean_name} / {clean_email}"
+    return clean_name or clean_email or None
+
+
 def launch_normal_mode(repo_root: str | Path = ".", session_permission: PermissionGrant | None = None) -> None:
     try:
         import tkinter as tk
@@ -978,16 +1045,18 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     status_frame.columnconfigure(0, weight=1)
     ttk.Label(status_frame, text="Projektstatus", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, sticky="w")
     activity_text = tk.StringVar(value="Bereit")
-    ttk.Label(status_frame, textvariable=activity_text, wraplength=260).grid(row=1, column=0, sticky="ew", pady=(8, 0))
+    auth_status_text = tk.StringVar(value="ChatGPT/Codex: nicht geprueft")
+    ttk.Label(status_frame, textvariable=auth_status_text, wraplength=260).grid(row=1, column=0, sticky="ew", pady=(8, 0))
+    ttk.Label(status_frame, textvariable=activity_text, wraplength=260).grid(row=2, column=0, sticky="ew", pady=(6, 0))
     activity_progress = ttk.Progressbar(status_frame, mode="indeterminate")
-    activity_progress.grid(row=2, column=0, sticky="ew", pady=(6, 8))
+    activity_progress.grid(row=3, column=0, sticky="ew", pady=(6, 8))
     status_text = scrolledtext.ScrolledText(status_frame, wrap=tk.WORD, width=34, height=13, padx=8, pady=8, state=tk.DISABLED)
-    status_text.grid(row=3, column=0, sticky="nsew", pady=(0, 8))
-    ttk.Label(status_frame, text="Aktivitaet", font=("Segoe UI", 10, "bold")).grid(row=4, column=0, sticky="w")
+    status_text.grid(row=4, column=0, sticky="nsew", pady=(0, 8))
+    ttk.Label(status_frame, text="Aktivitaet", font=("Segoe UI", 10, "bold")).grid(row=5, column=0, sticky="w")
     activity_log = scrolledtext.ScrolledText(status_frame, wrap=tk.WORD, width=34, height=7, padx=8, pady=8, state=tk.DISABLED)
-    activity_log.grid(row=5, column=0, sticky="nsew", pady=(6, 0))
-    status_frame.rowconfigure(3, weight=2)
-    status_frame.rowconfigure(5, weight=1)
+    activity_log.grid(row=6, column=0, sticky="nsew", pady=(6, 0))
+    status_frame.rowconfigure(4, weight=2)
+    status_frame.rowconfigure(6, weight=1)
 
     input_frame = ttk.Frame(root, padding=(14, 8, 14, 14))
     input_frame.grid(row=1, column=0, columnspan=2, sticky="ew")
@@ -1081,6 +1150,33 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
             activity_progress.start(12)
         else:
             activity_progress.stop()
+
+    def refresh_codex_status() -> None:
+        auth_status_text.set("ChatGPT/Codex: pruefe Status...")
+
+        def worker() -> None:
+            status = codex_login_status()
+            root.after(0, lambda: auth_status_text.set(status))
+            root.after(0, lambda: log_activity(status))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def start_codex_login() -> None:
+        auth_status_text.set("ChatGPT/Codex: Login laeuft...")
+        log_activity("ChatGPT/Codex Login wurde manuell aus Optionen gestartet.")
+        open_codex_login_shell(controller.repo_root)
+
+        def poll() -> None:
+            for _ in range(40):
+                status = codex_login_status()
+                root.after(0, lambda status=status: auth_status_text.set(status))
+                if status.startswith("ChatGPT/Codex: eingeloggt"):
+                    root.after(0, lambda status=status: log_activity(status))
+                    return
+                threading.Event().wait(3)
+            root.after(0, lambda: log_activity("ChatGPT/Codex Login-Status wurde nicht automatisch bestaetigt."))
+
+        threading.Thread(target=poll, daemon=True).start()
 
     def controller_activity_handler(message: str) -> None:
         set_activity(message, busy=True)
@@ -1251,8 +1347,9 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
 
     menu = tk.Menu(root)
     options_menu = tk.Menu(menu, tearoff=0)
-    options_menu.add_command(label="Codex Login oeffnen", command=lambda: open_codex_login_shell(controller.repo_root))
-    options_menu.add_command(label="Codex API-Key setzen", command=save_codex_api_key)
+    options_menu.add_command(label="ChatGPT/Codex Login oeffnen", command=start_codex_login)
+    options_menu.add_command(label="ChatGPT/Codex Login-Status aktualisieren", command=refresh_codex_status)
+    options_menu.add_command(label="Codex/OpenAI API-Key setzen", command=save_codex_api_key)
     options_menu.add_command(label="LM Studio API-Key setzen", command=save_lmstudio_api_key)
     menu.add_cascade(label="Optionen", menu=options_menu)
     expert_menu = tk.Menu(menu, tearoff=0)
@@ -1316,7 +1413,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     opening = controller.opening_message()
     append("Visionaer", opening.message)
     render_status(opening.status)
-    set_activity("Bereit: Codex Login pruefen, dann Ziel beschreiben", busy=False)
+    set_activity("Bereit: Ziel beschreiben oder Optionen oeffnen", busy=False)
     log_activity("Normalmode gestartet.")
     beta_append(
         "Bereit fuer einen Beta-Test.\n"
@@ -1326,18 +1423,6 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
         replace=True,
     )
     user_input.focus_set()
-    root.after(
-        350,
-        lambda: (
-            open_codex_login_shell(controller.repo_root)
-            if messagebox.askyesno(
-                "VOCR Codex Login",
-                "Vor echter VOCR-Benutzung bitte einmal mit codex login anmelden. Soll ich dafuer jetzt eine Login-Shell oeffnen?",
-                parent=root,
-            )
-            else log_activity("Codex-Login-Hinweis uebersprungen.")
-        ),
-    )
 
     try:
         root.mainloop()

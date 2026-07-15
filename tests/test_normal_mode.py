@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 import tempfile
 import unittest
 import inspect
@@ -15,6 +17,7 @@ from vocr.models import AcceptanceCriterion, LedgerEventType, NormalModePhase, P
 from vocr.orchestration.worker_advisor import WorkerParallelismAdvisor
 from vocr.ui.normal_mode import (
     NormalModeController,
+    codex_login_status,
     launch_console_mode,
     launch_normal_mode,
     normal_mode_surface_decision,
@@ -126,7 +129,7 @@ class NormalModeTests(unittest.TestCase):
 
             opening = controller.opening_message()
 
-            self.assertIn("codex login", opening.message)
+            self.assertNotIn("codex login", opening.message)
             self.assertIn("dangerously-skip-permissions", opening.message)
             self.assertIn("riskanter", opening.message)
 
@@ -168,6 +171,33 @@ class NormalModeTests(unittest.TestCase):
             self.assertIn("powershell", args[0][0])
             self.assertIn("-NoExit", args[0])
             self.assertIn("codex login", args[0][-1])
+
+    def test_codex_login_status_reports_chatgpt_identity_without_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            auth_path = Path(tmp) / "auth.json"
+            payload = {"name": "Ada User", "email": "ada@example.test"}
+            encoded_payload = base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).decode("ascii").rstrip("=")
+            auth_path.write_text(
+                json.dumps({"tokens": {"id_token": f"header.{encoded_payload}.signature"}}),
+                encoding="utf-8",
+            )
+            completed = SimpleNamespace(returncode=0, stdout="Logged in using ChatGPT\n", stderr="")
+
+            with patch("vocr.ui.normal_mode.subprocess.run", return_value=completed):
+                status = codex_login_status(auth_path)
+
+        self.assertIn("eingeloggt via ChatGPT", status)
+        self.assertIn("Ada User", status)
+        self.assertIn("ada@example.test", status)
+        self.assertNotIn("signature", status)
+
+    def test_codex_login_status_reports_logged_out(self) -> None:
+        completed = SimpleNamespace(returncode=1, stdout="", stderr="Not logged in")
+
+        with patch("vocr.ui.normal_mode.subprocess.run", return_value=completed):
+            status = codex_login_status(Path("missing-auth.json"))
+
+        self.assertEqual(status, "ChatGPT/Codex: nicht eingeloggt")
 
     def test_gui_activity_bridge_lives_in_gui_launcher(self) -> None:
         gui_source = inspect.getsource(launch_normal_mode)
