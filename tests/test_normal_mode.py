@@ -10,7 +10,7 @@ from typer.testing import CliRunner
 
 from vocr.cli.app import app
 from vocr.memory.ledger import MemoryLedger
-from vocr.models import LedgerEventType, NormalModePhase, PermissionGrant, PermissionMode
+from vocr.models import AcceptanceCriterion, LedgerEventType, NormalModePhase, PermissionGrant, PermissionMode, VocrTask
 from vocr.ui.normal_mode import NormalModeController, normal_mode_surface_decision, open_codex_login_shell, open_expert_shell
 
 
@@ -22,6 +22,18 @@ def assert_no_normal_mode_debug_ids(testcase: unittest.TestCase, message: str) -
 
 
 class NormalModeTests(unittest.TestCase):
+    def _task(self, task_id: str, scope: list[str], dependencies: list[str] | None = None) -> VocrTask:
+        return VocrTask(
+            id=task_id,
+            slice_id="slice-normal-test",
+            title=f"Task {task_id}",
+            summary="Test task",
+            scope=scope,
+            acceptance_criteria=[AcceptanceCriterion(text="done")],
+            tests=["unit"],
+            dependencies=dependencies or [],
+        )
+
     def test_normal_mode_collects_intake_without_exposing_internal_ids(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             controller = NormalModeController(Path(tmp))
@@ -292,6 +304,41 @@ class NormalModeTests(unittest.TestCase):
             self.assertTrue(any("Repository-Graph" in event for event in events))
             self.assertTrue(any("VisionSlice" in event for event in events))
             self.assertTrue(any("Task" in event for event in events))
+
+    def test_visionary_worker_plan_recommends_balanced_parallelism(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = NormalModeController(Path(tmp))
+            tasks = [
+                self._task("ta1", ["docs/**"]),
+                self._task("ta2", ["src/api/**"]),
+                self._task("ta3", ["src/cli/**"]),
+                self._task("ta4", ["tests/**"]),
+                self._task("ta5", ["README.md"]),
+            ]
+
+            options = controller.worker_plan_options(tasks)
+            message = controller._worker_plan_message(tasks)
+
+            self.assertEqual([option.workers for option in options], [1, 2, 3, 4, 5])
+            self.assertEqual([option.workers for option in options if option.recommended], [3])
+            self.assertIn("Empfohlen: 3 Worker", message)
+            self.assertIn("+24% Token-/Kontext-Overhead", message)
+            self.assertIn("5 Worker", message)
+
+    def test_visionary_worker_plan_respects_scope_conflicts_and_dependencies(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = NormalModeController(Path(tmp))
+            tasks = [
+                self._task("ta1", ["docs/**"]),
+                self._task("ta2", ["docs/readme.md"]),
+                self._task("ta3", ["src/api/**"], dependencies=["ta1"]),
+            ]
+
+            options = controller.worker_plan_options(tasks)
+
+            self.assertEqual([option.workers for option in options], [1])
+            self.assertEqual(options[0].runnable_tasks, 1)
+            self.assertTrue(options[0].recommended)
 
     def test_new_goal_resets_active_intake(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

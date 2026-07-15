@@ -12,6 +12,7 @@ from vocr.codex.mcp_client import CodexMcpClient
 from vocr.config.env_file import update_env_file
 from vocr.git.worktrees import GitWorktreeError, GitWorktreeManager
 from vocr.graph.graphify import GraphStore
+from vocr.guardrails.claims import build_scope_claim, claims_conflict
 from vocr.guardrails.scope_guard import ScopeGuard
 from vocr.memory.ledger import MemoryLedger
 from vocr.models import (
@@ -87,6 +88,16 @@ class NormalModeResponse:
 class IntakeProposal:
     understood_goal: str
     intake: ProjectIntake
+
+
+@dataclass(frozen=True)
+class WorkerPlanOption:
+    workers: int
+    runnable_tasks: int
+    speedup_pct: int
+    token_overhead_pct: int
+    conflict_risk: str
+    recommended: bool = False
 
 
 class NormalModeUiError(RuntimeError):
@@ -329,6 +340,7 @@ class NormalModeController:
         for task in tasks:
             self._activity(f"Task {task.id} wird gespeichert: {task.title}")
             self.ledger.append(LedgerEventType.task_created, task)
+        worker_plan = self._worker_plan_message(tasks)
 
         prepare_worktree_requested = self._should_prepare_worktrees()
         prepared_worktrees = 0
@@ -349,19 +361,81 @@ class NormalModeController:
             message = (
                 "Bestaetigt. Ich habe die Arbeit in kleine, pruefbare Schritte zerlegt und die ersten "
                 "getrennten Arbeitsbereiche vorbereitet. Es wurde nichts veroeffentlicht; die Pruefung bleibt der naechste Halt."
+                f"\n\n{worker_plan}"
             )
         elif prepare_worktree_requested:
             message = (
                 "Bestaetigt. Ich habe die Arbeit in kleine, pruefbare Schritte zerlegt. "
                 "Ein getrennter Arbeitsbereich war gewuenscht, konnte hier aber nicht vorbereitet werden. "
                 "Es wurde nichts veroeffentlicht; Review und Promote bleiben gesperrt."
+                f"\n\n{worker_plan}"
             )
         else:
             message = (
                 "Bestaetigt. Ich habe die Arbeit in kleine, pruefbare Schritte zerlegt. "
                 "Es wurde noch kein Arbeitsbereich erzeugt, weil du nur Planung freigegeben hast."
+                f"\n\n{worker_plan}"
             )
         return self._response(message, prepared_tasks=len(tasks), prepared_worktrees=prepared_worktrees)
+
+    def worker_plan_options(self, tasks: list[VocrTask]) -> list[WorkerPlanOption]:
+        candidates = [task for task in tasks if not task.dependencies]
+        if not candidates:
+            return [WorkerPlanOption(workers=1, runnable_tasks=0, speedup_pct=0, token_overhead_pct=0, conflict_risk="keine freie Task")]
+        compatible = self._max_claim_compatible_tasks(candidates)
+        max_workers = max(1, min(len(compatible), 5))
+        recommended_workers = self._recommended_worker_count(max_workers)
+        options: list[WorkerPlanOption] = []
+        for workers in range(1, max_workers + 1):
+            speedup_pct = int(round((1 - (1 / workers)) * 100)) if workers > 1 else 0
+            token_overhead_pct = max(0, (workers - 1) * 12)
+            risk = "niedrig" if workers <= len(compatible) else "hoch"
+            if workers >= 4:
+                risk = "mittel"
+            options.append(
+                WorkerPlanOption(
+                    workers=workers,
+                    runnable_tasks=min(workers, len(compatible)),
+                    speedup_pct=speedup_pct,
+                    token_overhead_pct=token_overhead_pct,
+                    conflict_risk=risk,
+                    recommended=workers == recommended_workers,
+                )
+            )
+        return options
+
+    def _worker_plan_message(self, tasks: list[VocrTask]) -> str:
+        options = self.worker_plan_options(tasks)
+        lines = [
+            "Worker-Vorschlag des Visionaers:",
+            "Ich waehle nicht blind maximal viele Worker, sondern balanciere Geschwindigkeit, Token-Overhead, Reviewlast und Scope-Konflikte.",
+        ]
+        for option in options:
+            marker = "Empfohlen: " if option.recommended else "Option: "
+            lines.append(
+                f"- {marker}{option.workers} Worker, {option.runnable_tasks} Tasks parallel, "
+                f"ca. {option.speedup_pct}% schneller, ca. +{option.token_overhead_pct}% Token-/Kontext-Overhead, "
+                f"Konfliktrisiko {option.conflict_risk}."
+            )
+        return "\n".join(lines)
+
+    def _recommended_worker_count(self, max_workers: int) -> int:
+        if max_workers <= 1:
+            return 1
+        if max_workers <= 3:
+            return max_workers
+        return 3
+
+    def _max_claim_compatible_tasks(self, tasks: list[VocrTask]) -> list[VocrTask]:
+        selected: list[VocrTask] = []
+        selected_claims = []
+        for task in tasks:
+            claim = build_scope_claim(task, self.repo_root)
+            if any(claims_conflict(claim, existing) for existing in selected_claims):
+                continue
+            selected.append(task)
+            selected_claims.append(claim)
+        return selected
 
     def _prepare_ready_worktrees(self, tasks: list[VocrTask]) -> int:
         prepared = 0

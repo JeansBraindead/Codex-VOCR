@@ -35,6 +35,7 @@ from vocr.orchestration.workflow import (
     render_task_template,
     review_task,
 )
+from vocr.ui.normal_mode import NormalModeController
 
 
 def _task(task_id: str, *, scope: list[str] | None = None, tests: list[str] | None = None) -> VocrTask:
@@ -409,6 +410,29 @@ def _s19(scenario: Scenario, ctx: BetaContext):
     return _scenario_result(scenario, [step("persisted", bool(written)), step("brief capped", "PROJECT MEMORY" in brief), step("pruned", pruned)])
 
 
+def _s20(scenario: Scenario, ctx: BetaContext):
+    controller = NormalModeController(ctx.temp_root / "s20-repo", vocr_home=ctx.temp_root / "s20-vocr")
+    tasks = [
+        _task("task-s20-docs", scope=["docs/**"]),
+        _task("task-s20-api", scope=["src/api/**"]),
+        _task("task-s20-cli", scope=["src/cli/**"]),
+        _task("task-s20-tests", scope=["tests/**"]),
+        _task("task-s20-conflict", scope=["src/api/new.py"]),
+        _task("task-s20-blocked", scope=["src/blocked/**"]),
+    ]
+    tasks[-1].dependencies = ["task-s20-api"]
+    options = controller.worker_plan_options(tasks)
+    message = controller._worker_plan_message(tasks)
+    recommended = [option for option in options if option.recommended]
+    steps = [
+        step("offers worker options", [option.workers for option in options] == [1, 2, 3, 4]),
+        step("recommends balanced count", len(recommended) == 1 and recommended[0].workers == 3),
+        step("explains token overhead", "+24% Token-/Kontext-Overhead" in message),
+        step("excludes conflicts and dependencies from wave", options[-1].runnable_tasks == 4),
+    ]
+    return _scenario_result(scenario, steps)
+
+
 class _cwd:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -449,5 +473,6 @@ SCENARIOS: dict[str, Scenario] = {
         _wrap("S17", "e2e-codex-cloud", "cloud", False, _s17),
         _wrap("S18", "parallel-claims", "core", True, _s18),
         _wrap("S19", "project-memory", "core", True, _s19),
+        _wrap("S20", "visionary-worker-plan", "core", True, _s20),
     ]
 }
