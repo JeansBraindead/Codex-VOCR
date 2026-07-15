@@ -73,6 +73,8 @@ class LedgerEventType(str, Enum):
     permission_granted = "permission_granted"
     tweak_recorded = "tweak_recorded"
     message = "message"
+    claim_acquired = "claim_acquired"
+    claim_released = "claim_released"
 
 
 class AcceptanceCriterion(BaseModel):
@@ -265,6 +267,20 @@ class ScopePolicy(BaseModel):
     allowed_globs: list[str] = Field(default_factory=list)
     denied_roots: list[str] = Field(default_factory=lambda: [".git", ".venv", ".vocr/ledger.jsonl"])
     notes: list[str] = Field(default_factory=list)
+
+
+class ScopeClaim(BaseModel):
+    task_id: str
+    globs: list[str]
+    roots: list[str]
+    expanded_paths: list[str]
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class ClaimConflict(BaseModel):
+    task_id: str
+    conflicting_task_id: str
+    reason: str
 
 
 class TaskPlan(BaseModel):

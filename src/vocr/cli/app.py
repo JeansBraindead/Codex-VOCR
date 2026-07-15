@@ -65,9 +65,11 @@ app = typer.Typer(help="VOCR: Vision / Organize / Code / Review")
 model_app = typer.Typer(help="Configure local or cloud LLMs without editing files.")
 secrets_app = typer.Typer(help="Scan diffs for secrets without printing secret values.")
 worker_app = typer.Typer(help="Configure and diagnose Codex worker execution.")
+claims_app = typer.Typer(help="Inspect and release VOCR scope claims.")
 app.add_typer(model_app, name="model")
 app.add_typer(secrets_app, name="secrets")
 app.add_typer(worker_app, name="worker")
+app.add_typer(claims_app, name="claims")
 console = Console()
 
 
@@ -1267,7 +1269,29 @@ def abort_task(
         LedgerEventType.task_aborted,
         {"task_id": task_id, "reason": reason, "worktree_removed": bool(remove_worktree and task.worktree_path)},
     )
+    store.release_claim(task_id)
     console.print(f"[yellow]Aborted[/yellow] {task_id}")
+
+
+@claims_app.command("list")
+def claims_list() -> None:
+    store = ledger()
+    released = store.reconcile_stale_claims()
+    table = Table(title="Active VOCR Claims")
+    table.add_column("Task")
+    table.add_column("Roots")
+    table.add_column("Paths")
+    for claim in store.active_claims():
+        table.add_row(claim.task_id, ", ".join(claim.roots) or "-", ", ".join(claim.expanded_paths[:5]) or "-")
+    console.print(table)
+    if released:
+        console.print(f"[yellow]Released stale claims:[/yellow] {', '.join(released)}")
+
+
+@claims_app.command("release")
+def claims_release(task_id: str) -> None:
+    ledger().release_claim(task_id)
+    console.print(f"[green]Released claim[/green] {task_id}")
 
 
 @app.command()

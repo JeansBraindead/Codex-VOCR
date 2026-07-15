@@ -573,6 +573,7 @@ def promote_task(ledger: MemoryLedger, manager: GitWorktreeManager, task_id: str
         raise ValueError("Promote preflight failed: " + "; ".join(preflight_issues))
     manager.merge_task_branch(task.branch_name)
     ledger.append(LedgerEventType.task_promoted, {"task_id": task.id, "branch_name": task.branch_name})
+    ledger.release_claim(task.id)
 
 
 def run_task_checks(task: VocrTask) -> list[TestRunResult]:

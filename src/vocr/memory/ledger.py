@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable
 
@@ -14,12 +17,15 @@ from vocr.models import (
     LedgerEventType,
     PermissionGrant,
     PermissionMode,
+    ClaimConflict,
     ReviewResult,
     RunTelemetry,
+    ScopeClaim,
     TaskStatus,
     VisionSlice,
     VocrTask,
 )
+from vocr.guardrails.claims import build_scope_claim, claim_conflicts
 
 
 SECRET_KEYWORDS = {"api_key", "apikey", "secret", "token", "password", "credential"}
@@ -63,6 +69,7 @@ class MemoryLedger:
     def __init__(self, root: Path | str = ".vocr") -> None:
         self.root = Path(root)
         self.path = self.root / "ledger.jsonl"
+        self.lock_path = self.root / "ledger.jsonl.lock"
 
     def init(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -180,11 +187,78 @@ class MemoryLedger:
         ]
         return candidates[-1] if candidates else None
 
+    def active_claims(self) -> list[ScopeClaim]:
+        claims: dict[str, ScopeClaim] = {}
+        released: set[str] = set()
+        for event in self.events():
+            if event.type == LedgerEventType.claim_acquired:
+                claim = ScopeClaim.model_validate(event.payload)
+                claims[claim.task_id] = claim
+                released.discard(claim.task_id)
+            elif event.type == LedgerEventType.claim_released:
+                task_id = str(event.payload.get("task_id", ""))
+                released.add(task_id)
+        return [claim for task_id, claim in claims.items() if task_id not in released]
+
+    def acquire_claims(self, tasks: list[VocrTask], repo_root: Path | str = ".") -> list[ClaimConflict]:
+        conflicts: list[ClaimConflict] = []
+        with self._ledger_lock():
+            active = self.active_claims()
+            for task in tasks:
+                claim = build_scope_claim(task, repo_root)
+                task_conflicts = claim_conflicts(claim, active)
+                if task_conflicts:
+                    conflicts.extend(task_conflicts)
+                    continue
+                self.append(LedgerEventType.claim_acquired, claim)
+                active.append(claim)
+        return conflicts
+
+    def release_claim(self, task_id: str) -> None:
+        self.append(LedgerEventType.claim_released, {"task_id": task_id})
+
+    def reconcile_stale_claims(self) -> list[str]:
+        terminal = {
+            TaskStatus.accepted,
+            TaskStatus.blocked,
+            TaskStatus.aborted,
+            TaskStatus.promoted,
+        }
+        tasks = {task.id: task for task in self.tasks()}
+        released: list[str] = []
+        for claim in self.active_claims():
+            task = tasks.get(claim.task_id)
+            if task is not None and task.status in terminal:
+                self.release_claim(claim.task_id)
+                released.append(claim.task_id)
+        return released
+
     def get_slice(self, slice_id: str) -> VisionSlice | None:
         return next((item for item in self.slices() if item.id == slice_id), None)
 
     def get_task(self, task_id: str) -> VocrTask | None:
         return next((item for item in self.tasks() if item.id == task_id), None)
+
+    @contextmanager
+    def _ledger_lock(self, timeout_seconds: float = 5.0):
+        self.root.mkdir(parents=True, exist_ok=True)
+        deadline = time.monotonic() + timeout_seconds
+        fd: int | None = None
+        while fd is None:
+            try:
+                fd = os.open(str(self.lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"Timed out waiting for ledger lock: {self.lock_path}")
+                time.sleep(0.02)
+        try:
+            yield
+        finally:
+            os.close(fd)
+            try:
+                self.lock_path.unlink()
+            except FileNotFoundError:
+                pass
 
     def dump_json(self) -> str:
         return json.dumps([event.model_dump(mode="json") for event in self.events()], indent=2)
