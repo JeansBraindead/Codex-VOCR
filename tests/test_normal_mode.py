@@ -20,6 +20,7 @@ from vocr.ui.normal_mode import (
     codex_login_status,
     launch_console_mode,
     launch_normal_mode,
+    model_auth_status,
     normal_mode_surface_decision,
     open_codex_login_shell,
     open_expert_shell,
@@ -198,6 +199,34 @@ class NormalModeTests(unittest.TestCase):
             status = codex_login_status(Path("missing-auth.json"))
 
         self.assertEqual(status, "ChatGPT/Codex: nicht eingeloggt")
+
+    def test_model_auth_status_confirms_lmstudio_without_showing_secret(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".env").write_text(
+                "\n".join(
+                    [
+                        "LMSTUDIO_API_KEY=super-secret-local-key",
+                        "OPENAI_BASE_URL=http://localhost:1234/v1",
+                        "OPENAI_MODEL=local-test-model",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            status = model_auth_status(root)
+
+        self.assertIn("LM Studio: Key gesetzt", status)
+        self.assertIn("http://localhost:1234/v1", status)
+        self.assertIn("local-test-model", status)
+        self.assertNotIn("super-secret-local-key", status)
+
+    def test_model_auth_status_reports_missing_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            status = model_auth_status(Path(tmp))
+
+        self.assertEqual(status, "API-Key: nicht gesetzt")
 
     def test_gui_activity_bridge_lives_in_gui_launcher(self) -> None:
         gui_source = inspect.getsource(launch_normal_mode)

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Callable
 
 from vocr.codex.mcp_client import CodexMcpClient
-from vocr.config.env_file import update_env_file
+from vocr.config.env_file import read_env_file, update_env_file
 from vocr.git.worktrees import GitWorktreeError, GitWorktreeManager
 from vocr.graph.graphify import GraphStore
 from vocr.guardrails.scope_guard import ScopeGuard
@@ -991,6 +991,23 @@ def _format_identity(name: object, email: object) -> str | None:
     return clean_name or clean_email or None
 
 
+def model_auth_status(repo_root: str | Path = ".") -> str:
+    values = read_env_file(Path(repo_root) / ".env")
+    parts: list[str] = []
+    if values.get("LMSTUDIO_API_KEY"):
+        label = "LM Studio: Key gesetzt"
+        if values.get("OPENAI_BASE_URL"):
+            label += f", {values['OPENAI_BASE_URL']}"
+        if values.get("OPENAI_MODEL"):
+            label += f", Modell {values['OPENAI_MODEL']}"
+        parts.append(label)
+    elif values.get("OPENAI_API_KEY"):
+        parts.append("Codex/OpenAI API-Key: gesetzt")
+    else:
+        parts.append("API-Key: nicht gesetzt")
+    return " | ".join(parts)
+
+
 def launch_normal_mode(repo_root: str | Path = ".", session_permission: PermissionGrant | None = None) -> None:
     try:
         import tkinter as tk
@@ -1047,16 +1064,18 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     activity_text = tk.StringVar(value="Bereit")
     auth_status_text = tk.StringVar(value="ChatGPT/Codex: nicht geprueft")
     ttk.Label(status_frame, textvariable=auth_status_text, wraplength=260).grid(row=1, column=0, sticky="ew", pady=(8, 0))
-    ttk.Label(status_frame, textvariable=activity_text, wraplength=260).grid(row=2, column=0, sticky="ew", pady=(6, 0))
+    model_status_text = tk.StringVar(value=model_auth_status(controller.repo_root))
+    ttk.Label(status_frame, textvariable=model_status_text, wraplength=260).grid(row=2, column=0, sticky="ew", pady=(4, 0))
+    ttk.Label(status_frame, textvariable=activity_text, wraplength=260).grid(row=3, column=0, sticky="ew", pady=(6, 0))
     activity_progress = ttk.Progressbar(status_frame, mode="indeterminate")
-    activity_progress.grid(row=3, column=0, sticky="ew", pady=(6, 8))
+    activity_progress.grid(row=4, column=0, sticky="ew", pady=(6, 8))
     status_text = scrolledtext.ScrolledText(status_frame, wrap=tk.WORD, width=34, height=13, padx=8, pady=8, state=tk.DISABLED)
-    status_text.grid(row=4, column=0, sticky="nsew", pady=(0, 8))
-    ttk.Label(status_frame, text="Aktivitaet", font=("Segoe UI", 10, "bold")).grid(row=5, column=0, sticky="w")
+    status_text.grid(row=5, column=0, sticky="nsew", pady=(0, 8))
+    ttk.Label(status_frame, text="Aktivitaet", font=("Segoe UI", 10, "bold")).grid(row=6, column=0, sticky="w")
     activity_log = scrolledtext.ScrolledText(status_frame, wrap=tk.WORD, width=34, height=7, padx=8, pady=8, state=tk.DISABLED)
-    activity_log.grid(row=6, column=0, sticky="nsew", pady=(6, 0))
-    status_frame.rowconfigure(4, weight=2)
-    status_frame.rowconfigure(6, weight=1)
+    activity_log.grid(row=7, column=0, sticky="nsew", pady=(6, 0))
+    status_frame.rowconfigure(5, weight=2)
+    status_frame.rowconfigure(7, weight=1)
 
     input_frame = ttk.Frame(root, padding=(14, 8, 14, 14))
     input_frame.grid(row=1, column=0, columnspan=2, sticky="ew")
@@ -1150,6 +1169,11 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
             activity_progress.start(12)
         else:
             activity_progress.stop()
+
+    def refresh_model_status() -> None:
+        status = model_auth_status(controller.repo_root)
+        model_status_text.set(status)
+        log_activity(status)
 
     def refresh_codex_status() -> None:
         auth_status_text.set("ChatGPT/Codex: pruefe Status...")
@@ -1318,7 +1342,9 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
         if not api_key:
             return
         update_env_file({"OPENAI_API_KEY": api_key.strip()}, controller.repo_root / ".env")
+        refresh_model_status()
         append("System", "Codex/OpenAI API-Key gespeichert. Standard bleibt codex login; der Key ist optional fuer Expert-Setups.")
+        log_activity("Codex/OpenAI API-Key gespeichert.")
         messagebox.showinfo("VOCR Optionen", "Codex/OpenAI API-Key gespeichert.")
 
     def save_lmstudio_api_key() -> None:
@@ -1342,13 +1368,17 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
         if model and model.strip():
             updates["OPENAI_MODEL"] = model.strip()
         update_env_file(updates, controller.repo_root / ".env")
+        refresh_model_status()
+        summary = model_auth_status(controller.repo_root)
         append("System", "LM-Studio-Key gespeichert. Lokale Modellfunktionen nutzen jetzt die konfigurierte Base URL.")
-        messagebox.showinfo("VOCR Optionen", "LM-Studio-Key gespeichert.")
+        log_activity(summary)
+        messagebox.showinfo("VOCR Optionen", f"LM-Studio-Key gespeichert.\n\n{summary}")
 
     menu = tk.Menu(root)
     options_menu = tk.Menu(menu, tearoff=0)
     options_menu.add_command(label="ChatGPT/Codex Login oeffnen", command=start_codex_login)
     options_menu.add_command(label="ChatGPT/Codex Login-Status aktualisieren", command=refresh_codex_status)
+    options_menu.add_command(label="API-/Modellstatus aktualisieren", command=refresh_model_status)
     options_menu.add_command(label="Codex/OpenAI API-Key setzen", command=save_codex_api_key)
     options_menu.add_command(label="LM Studio API-Key setzen", command=save_lmstudio_api_key)
     menu.add_cascade(label="Optionen", menu=options_menu)
