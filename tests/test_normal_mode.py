@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 from vocr.cli.app import app
 from vocr.memory.ledger import MemoryLedger
 from vocr.models import AcceptanceCriterion, LedgerEventType, NormalModePhase, PermissionGrant, PermissionMode, VocrTask
+from vocr.orchestration.worker_advisor import WorkerParallelismAdvisor
 from vocr.ui.normal_mode import NormalModeController, normal_mode_surface_decision, open_codex_login_shell, open_expert_shell
 
 
@@ -307,7 +308,7 @@ class NormalModeTests(unittest.TestCase):
 
     def test_visionary_worker_plan_recommends_balanced_parallelism(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            controller = NormalModeController(Path(tmp))
+            root = Path(tmp)
             tasks = [
                 self._task("ta1", ["docs/**"]),
                 self._task("ta2", ["src/api/**"]),
@@ -316,29 +317,49 @@ class NormalModeTests(unittest.TestCase):
                 self._task("ta5", ["README.md"]),
             ]
 
-            options = controller.worker_plan_options(tasks)
-            message = controller._worker_plan_message(tasks)
+            options = WorkerParallelismAdvisor(root).options(tasks)
+            message = WorkerParallelismAdvisor(root).message(tasks)
 
-            self.assertEqual([option.workers for option in options], [1, 2, 3, 4, 5])
-            self.assertEqual([option.workers for option in options if option.recommended], [3])
-            self.assertIn("Empfohlen: 3 Worker", message)
-            self.assertIn("+24% Token-/Kontext-Overhead", message)
-            self.assertIn("5 Worker", message)
+            self.assertEqual([option.workers for option in options], list(range(1, len(options) + 1)))
+            self.assertEqual(len([option for option in options if option.recommended]), 1)
+            self.assertGreater(options[-1].speedup_pct, options[0].speedup_pct)
+            self.assertGreater(options[-1].token_overhead_pct, options[0].token_overhead_pct)
+            self.assertIn("Worker-Vorschlag des Visionaers", message)
+            self.assertIn("Empfohlen:", message)
 
     def test_visionary_worker_plan_respects_scope_conflicts_and_dependencies(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            controller = NormalModeController(Path(tmp))
+            root = Path(tmp)
             tasks = [
                 self._task("ta1", ["docs/**"]),
                 self._task("ta2", ["docs/readme.md"]),
                 self._task("ta3", ["src/api/**"], dependencies=["ta1"]),
             ]
 
-            options = controller.worker_plan_options(tasks)
+            options = WorkerParallelismAdvisor(root).options(tasks)
 
             self.assertEqual([option.workers for option in options], [1])
             self.assertEqual(options[0].runnable_tasks, 1)
             self.assertTrue(options[0].recommended)
+
+    def test_visionary_worker_plan_reduces_parallelism_for_broad_context_heavy_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            large_context = "context " * 1200
+            tasks = [
+                self._task("ta1", ["src/**"]),
+                self._task("ta2", ["docs/**"]),
+                self._task("ta3", ["tests/**"]),
+            ]
+            for task in tasks:
+                task.context_pack = large_context
+                task.tests = ["unit", "integration", "manual review"]
+
+            options = WorkerParallelismAdvisor(root).options(tasks)
+            recommended = next(option for option in options if option.recommended)
+
+            self.assertLess(recommended.workers, len(options))
+            self.assertEqual(options[-1].conflict_risk, "hoch")
 
     def test_new_goal_resets_active_intake(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

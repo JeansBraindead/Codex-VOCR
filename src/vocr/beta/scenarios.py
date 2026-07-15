@@ -35,7 +35,7 @@ from vocr.orchestration.workflow import (
     render_task_template,
     review_task,
 )
-from vocr.ui.normal_mode import NormalModeController
+from vocr.orchestration.worker_advisor import WorkerParallelismAdvisor
 
 
 def _task(task_id: str, *, scope: list[str] | None = None, tests: list[str] | None = None) -> VocrTask:
@@ -411,7 +411,7 @@ def _s19(scenario: Scenario, ctx: BetaContext):
 
 
 def _s20(scenario: Scenario, ctx: BetaContext):
-    controller = NormalModeController(ctx.temp_root / "s20-repo", vocr_home=ctx.temp_root / "s20-vocr")
+    advisor = WorkerParallelismAdvisor(ctx.temp_root / "s20-repo")
     tasks = [
         _task("task-s20-docs", scope=["docs/**"]),
         _task("task-s20-api", scope=["src/api/**"]),
@@ -421,13 +421,13 @@ def _s20(scenario: Scenario, ctx: BetaContext):
         _task("task-s20-blocked", scope=["src/blocked/**"]),
     ]
     tasks[-1].dependencies = ["task-s20-api"]
-    options = controller.worker_plan_options(tasks)
-    message = controller._worker_plan_message(tasks)
+    options = advisor.options(tasks)
+    message = advisor.message(tasks)
     recommended = [option for option in options if option.recommended]
     steps = [
-        step("offers worker options", [option.workers for option in options] == [1, 2, 3, 4]),
-        step("recommends balanced count", len(recommended) == 1 and recommended[0].workers == 3),
-        step("explains token overhead", "+24% Token-/Kontext-Overhead" in message),
+        step("offers ordered worker options", [option.workers for option in options] == list(range(1, len(options) + 1))),
+        step("recommends one scored option", len(recommended) == 1 and recommended[0].score == max(option.score for option in options)),
+        step("explains token overhead", "Token-/Kontext-Overhead" in message),
         step("excludes conflicts and dependencies from wave", options[-1].runnable_tasks == 4),
     ]
     return _scenario_result(scenario, steps)
