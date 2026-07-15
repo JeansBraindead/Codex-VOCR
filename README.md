@@ -12,6 +12,24 @@ und kein Fork oder vendored Copy von VOIT.
 
 ## Quickstart
 
+Empfohlen auf Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install-vocr.ps1 -Tests -NoStart
+.\start-vocr.ps1
+```
+
+Der Installer legt `.venv` an, installiert VOCR editable, fuehrt den Bootstrap
+aus und erkennt fehlendes Git oder Python 3.11+. Wenn `winget` verfuegbar ist,
+fragt er nach und installiert fehlende Voraussetzungen automatisch. Fuer
+unbeaufsichtigte Setups beantwortet `-AutoYes` diese Rueckfragen mit ja:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install-vocr.ps1 -Tests -NoStart -AutoYes
+```
+
+Manueller Fallback:
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
@@ -23,6 +41,8 @@ vocr start
 `vocr bootstrap` prueft Repo, Python, Git, `.env`, `.vocr`, Installation und
 Graphify. Wenn etwas fehlt, wird es idempotent vorbereitet; wenn der Ordner
 falsch ist, stoppt VOCR mit einer Diagnose statt mit einem rohen Traceback.
+Details, Troubleshooting und der Beta-Walkthrough stehen in
+[docs/INSTALLATION.md](docs/INSTALLATION.md).
 
 ## Normaler Ablauf
 
