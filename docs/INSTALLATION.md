@@ -7,7 +7,12 @@ Editieren von `.env`.
 
 ## 1. Voraussetzungen
 
-Pruefe zuerst diese Werkzeuge:
+PowerShell ist erforderlich. Git und Python 3.11+ muessen nicht zwingend vorab
+manuell installiert werden: `install-vocr.ps1` erkennt fehlendes Git oder Python,
+fragt nach und installiert bei Zustimmung per `winget`. Nur wenn `winget` fehlt
+oder du den Installer nicht nutzen willst, installiere die Tools manuell.
+
+Optional kannst du vorab pruefen:
 
 ```powershell
 python --version
@@ -16,8 +21,8 @@ git --version
 
 Erwartung:
 
-- Python 3.11 oder neuer
-- Git installiert
+- Python 3.11 oder neuer, falls bereits installiert
+- Git, falls bereits installiert
 - PowerShell
 - Optional: Codex CLI fuer echte Worker-Laeufe
 - Optional: LM Studio fuer lokale OpenAI-kompatible Modelle
@@ -30,6 +35,11 @@ Launcher oder Pfad, z.B.:
 ```powershell
 py -3.11 --version
 ```
+
+Fallback-Links, falls `winget` nicht verfuegbar ist:
+
+- Git: <https://git-scm.com/download/win>
+- Python: <https://www.python.org/downloads/>
 
 ## 2. Repository holen
 
@@ -46,7 +56,36 @@ cd C:\Users\jeenz\Desktop\Agent
 git pull origin main
 ```
 
-## 3. Virtuelle Python-Umgebung erstellen
+## 3. Empfohlene Installation per Windows-Installer
+
+Der Installer legt `.venv` an, installiert VOCR editable, fuehrt den Bootstrap
+aus und kann fehlendes Git/Python nach Rueckfrage per `winget` nachinstallieren.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install-vocr.ps1 -Tests -NoStart
+```
+
+Wichtige Schalter:
+
+- `-Tests`: laesst die Suite direkt im Bootstrap mitlaufen.
+- `-NoStart`: verhindert den Autostart des Normalmodus nach der Installation.
+- `-AutoYes`: beantwortet Installer-Rueckfragen automatisch mit ja, z.B. fuer
+  unbeaufsichtigte Setups. Fehlendes Git/Python wird dann via `winget`
+  installiert, sofern `winget` verfuegbar ist.
+
+`-ExecutionPolicy Bypass` gilt nur fuer diesen einen Aufruf. Wenn `winget` Git
+oder Python installiert, kann ein neues PowerShell-Fenster noetig sein, bevor
+PATH-Aenderungen sichtbar sind.
+
+Erwartetes Ende mit `-NoStart`:
+
+```text
+Installation fertig. Starte spaeter mit: .\start-vocr.ps1
+```
+
+## 4. Manuelle Installation
+
+Nutze diesen Weg nur, wenn du den Installer nicht verwenden willst.
 
 ```powershell
 python -m venv .venv
@@ -61,7 +100,7 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 .\.venv\Scripts\Activate.ps1
 ```
 
-## 4. VOCR installieren
+### VOCR installieren
 
 Im aktivierten venv:
 
@@ -338,7 +377,95 @@ vocr learn
 vocr compact --keep-last 200
 ```
 
-## 12. Standard-Dateien und Ordner
+## 12. Erster Beta-Lauf
+
+Tier `core` braucht keine API-Keys, kein Codex-Login und kein LM Studio. Der
+Kernlauf nutzt deterministische Fixtures und Mocks, kostet also kein
+Cloud-Kontingent.
+
+Szenario-Katalog ansehen:
+
+```powershell
+vocr beta --list
+```
+
+Vollen Kernlauf starten:
+
+```powershell
+vocr beta --tier core
+echo "Exit-Code: $LASTEXITCODE"
+```
+
+Erwartung:
+
+- S00 bis S16 sowie S18 und S19 melden `passed`.
+- S17 erscheint im Core-Lauf nicht, weil es zum Cloud-Tier gehoert.
+- JSON- und Markdown-Reports werden unter `beta_reports/` geschrieben.
+- Exit-Code `0` bedeutet alles gruen.
+
+Exit-Codes:
+
+- `0`: alle Szenarien gruen oder nur erlaubte Skips
+- `1`: mindestens ein hartes Szenario rot
+- `2`: nur weiche Szenarien rot
+
+Report lesen:
+
+```powershell
+Get-ChildItem .\beta_reports\
+notepad .\beta_reports\beta_report_<zeitstempel>.md
+```
+
+Gezielte Wiederholung, zum Beispiel Claims und ScopeGuard:
+
+```powershell
+vocr beta --only S18,S03
+```
+
+### Optional: Tier local
+
+Aktuell gibt es noch kein Szenario mit `tier="local"`. `vocr beta --tier local`
+waehlt deshalb effektiv die Core-Szenarien; S12/S13 sind mock-basierte
+Embedding-/Local-Assist-Pruefungen und kontaktieren kein echtes Modell. Die
+folgenden LM-Studio-Variablen sind vorbereitend fuer die noch zu bauende
+Live-Phase, nicht fuer einen bereits aktiven Live-Test:
+
+```powershell
+$env:VOCR_EMBED_BASE_URL = "http://localhost:1234/v1"
+$env:VOCR_EMBED_MODEL    = "<embedding-modell-id>"
+$env:VOCR_LOCAL_BASE_URL = "http://localhost:1234/v1"
+$env:VOCR_LOCAL_MODEL    = "<chat-modell-id>"
+vocr beta --tier local
+```
+
+Danach die Variablen entfernen oder das Fenster schliessen:
+
+```powershell
+Remove-Item Env:VOCR_EMBED_BASE_URL, Env:VOCR_EMBED_MODEL, Env:VOCR_LOCAL_BASE_URL, Env:VOCR_LOCAL_MODEL
+```
+
+### Optional: Tier cloud
+
+S17 laeuft nur mit explizitem `--allow-cloud` und kann Codex-Kontingent
+verbrauchen:
+
+```powershell
+vocr beta --tier cloud --allow-cloud --max-cloud-tasks 3
+```
+
+### Bekannte Beta-Harness-Luecken
+
+- S11 prueft aktuell die Byte-Konstanz des Contract-Prompts, schreibt aber noch
+  keine Legacy-vs.-Contract-Token-Metrik ins JSON.
+- Der Report ist noch minimal: Verdikt und Szenario-Tabelle sind vorhanden, der
+  volle KPI-/Modus-Block aus dem Beta-Plan ist noch offen. Ein einfacher
+  Status-Trend erscheint, sobald ein vorheriges Report-JSON im Report-Ordner
+  liegt.
+- Tier-local-Live-Szenarien S20/S21 existieren noch nicht. Der Nachruestauftrag
+  `VOCR_Beta_Vervollstaendigung_Prompt.md` beschreibt die geplante Ergaenzung:
+  S11-Token-Metriken, Report-KPI-/Modus-Block und echte Local-Live-Metriken.
+
+## 13. Standard-Dateien und Ordner
 
 - `.vocr/ledger.jsonl`: aktueller lokaler Event-Ledger
 - `.vocr/graph.json`: Graphify-Index
@@ -347,7 +474,7 @@ vocr compact --keep-last 200
 - `.vocr/artifacts/<task-id>/review.md`: Review-Artefakte
 - `<repo>.vocr-worktrees/`: isolierte Task-Worktrees neben dem Repo
 
-## 13. Update bestehender Installation
+## 14. Update bestehender Installation
 
 ```powershell
 cd C:\Users\jeenz\Desktop\Agent
@@ -357,7 +484,7 @@ pip install -e .
 vocr test
 ```
 
-## 14. Haeufige Probleme
+## 15. Haeufige Probleme
 
 ### `vocr` wird nicht gefunden
 
@@ -367,6 +494,18 @@ Aktiviere das venv erneut:
 .\.venv\Scripts\Activate.ps1
 pip install -e .
 ```
+
+### Python oder Git fehlen
+
+Starte den Installer erneut:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install-vocr.ps1 -Tests -NoStart
+```
+
+Der Installer bietet fehlendes Git oder Python 3.11+ per `winget` an. Falls
+`winget` nicht verfuegbar ist, installiere manuell ueber die Fallback-Links aus
+Abschnitt 1 und oeffne danach ein neues PowerShell-Fenster.
 
 ### LM Studio reagiert nicht
 
