@@ -250,6 +250,7 @@ def review_task(
         return review
 
     issues = ScopeGuard().validate_task(task)
+    warning_risks: list[str] = []
     if task.status not in {TaskStatus.dispatched, TaskStatus.review_ready, TaskStatus.needs_changes}:
         issues.append(f"Task status is {task.status.value}; expected dispatched or review_ready.")
 
@@ -277,6 +278,11 @@ def review_task(
     failed_checks = [result for result in test_results if result.status == "failed"]
     if failed_checks:
         issues.extend(f"Check failed: {result.command}" for result in failed_checks)
+    check_coverage_issues = _acceptance_coverage_issues(task)
+    if _require_checks_mode() == "warn":
+        warning_risks.extend(check_coverage_issues)
+    else:
+        issues.extend(check_coverage_issues)
 
     if decision is None:
         decision = ReviewDecision.needs_changes
@@ -300,11 +306,11 @@ def review_task(
         task_id=task.id,
         decision=decision,
         summary=review_summary,
-        risks=issues,
-        required_changes=issues,
         tests_reviewed=task.tests,
         test_results=test_results,
         comments=comments,
+        risks=issues + warning_risks,
+        required_changes=issues,
         git_status=git_status,
         diff_summary=diff_summary,
         diff_files=changed_files if task.worktree_path else [],
@@ -463,6 +469,32 @@ def run_task_checks(task: VocrTask) -> list[TestRunResult]:
             )
         )
     return results
+
+
+def _require_checks_mode() -> str:
+    mode = os.getenv("VOCR_REQUIRE_CHECKS", "off").strip().lower()
+    if mode in {"warn", "block"}:
+        return mode
+    return "off"
+
+
+def _acceptance_coverage_issues(task: VocrTask) -> list[str]:
+    mode = _require_checks_mode()
+    if mode == "off":
+        return []
+
+    issues: list[str] = []
+    for criterion in task.acceptance_criteria:
+        if criterion.check_command:
+            continue
+        if _is_manual_acceptance_mapping(criterion.verified_by):
+            continue
+        issues.append(f"Kriterium ohne ausfuehrbaren Check: {criterion.text}")
+    return issues
+
+
+def _is_manual_acceptance_mapping(verified_by: str) -> bool:
+    return verified_by.strip().lower() in {"manual", "manual review", "review"}
 
 
 def normalize_check_command(check: str) -> list[str] | None:

@@ -78,6 +78,7 @@ class LedgerEventType(str, Enum):
 class AcceptanceCriterion(BaseModel):
     text: str
     verified_by: str = "manual review"
+    check_command: str | None = None
 
 
 class ClarificationQuestion(BaseModel):

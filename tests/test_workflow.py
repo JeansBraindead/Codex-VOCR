@@ -27,11 +27,12 @@ from vocr.models import (
     ReviewDecision,
     ReviewResult,
     RunTelemetry,
+    TaskStatus,
     TaskContract,
     TokenUsage,
     VocrTask,
 )
-from vocr.orchestration.workflow import create_vision, organize_slice, render_task_template
+from vocr.orchestration.workflow import create_vision, organize_slice, render_task_template, review_task
 
 GOOD_REQUEST = (
     "Ziel: Baue eine Healthcheck-API im Backend. "
@@ -293,6 +294,98 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(provider_from_env(values), "local-openai-compatible")
         self.assertEqual(values["OPENAI_MODEL"], "local-model")
         self.assertEqual(redact_env(values)["OPENAI_API_KEY"], "[set]")
+
+    def test_require_checks_off_keeps_generic_tests_escape_hatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = MemoryLedger(Path(tmp) / ".vocr")
+            task = VocrTask(
+                id="task-check-off",
+                slice_id="slice-checks",
+                title="Manualish criterion",
+                summary="Keep old behavior when the ratchet is off.",
+                scope=["docs"],
+                acceptance_criteria=[AcceptanceCriterion(text="Docs explain setup", verified_by="vocr review")],
+                tests=["manual review"],
+                status=TaskStatus.dispatched,
+            )
+            ledger.append(LedgerEventType.task_created, task)
+
+            with patch.dict(os.environ, {"VOCR_REQUIRE_CHECKS": "off"}):
+                review = review_task(ledger, task.id, decision=ReviewDecision.accepted)
+
+        self.assertEqual(review.decision, ReviewDecision.accepted)
+        self.assertEqual(review.required_changes, [])
+
+    def test_require_checks_warn_adds_risk_without_blocking_promotion_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = MemoryLedger(Path(tmp) / ".vocr")
+            task = VocrTask(
+                id="task-check-warn",
+                slice_id="slice-checks",
+                title="Warn missing checks",
+                summary="Warn for criteria that have no executable check.",
+                scope=["docs"],
+                acceptance_criteria=[AcceptanceCriterion(text="Docs explain setup", verified_by="vocr review")],
+                tests=["manual review"],
+                status=TaskStatus.dispatched,
+            )
+            ledger.append(LedgerEventType.task_created, task)
+
+            with patch.dict(os.environ, {"VOCR_REQUIRE_CHECKS": "warn"}):
+                review = review_task(ledger, task.id, decision=ReviewDecision.accepted)
+
+        self.assertEqual(review.decision, ReviewDecision.accepted)
+        self.assertEqual(review.required_changes, [])
+        self.assertTrue(any("Kriterium ohne ausfuehrbaren Check" in risk for risk in review.risks))
+
+    def test_require_checks_block_downgrades_text_criterion_even_with_generic_tests(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = MemoryLedger(Path(tmp) / ".vocr")
+            task = VocrTask(
+                id="task-check-block",
+                slice_id="slice-checks",
+                title="Block missing checks",
+                summary="Block criteria that have no executable check.",
+                scope=["docs"],
+                acceptance_criteria=[AcceptanceCriterion(text="Docs explain setup", verified_by="vocr review")],
+                tests=["manual review"],
+                status=TaskStatus.dispatched,
+            )
+            ledger.append(LedgerEventType.task_created, task)
+
+            with patch.dict(os.environ, {"VOCR_REQUIRE_CHECKS": "block"}):
+                review = review_task(ledger, task.id, decision=ReviewDecision.accepted)
+
+        self.assertEqual(review.decision, ReviewDecision.needs_changes)
+        self.assertTrue(any("Kriterium ohne ausfuehrbaren Check" in item for item in review.required_changes))
+
+    def test_require_checks_block_accepts_executable_or_manual_mapped_criteria(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = MemoryLedger(Path(tmp) / ".vocr")
+            task = VocrTask(
+                id="task-check-ok",
+                slice_id="slice-checks",
+                title="Executable criteria",
+                summary="Executable or explicit manual coverage is allowed.",
+                scope=["docs"],
+                acceptance_criteria=[
+                    AcceptanceCriterion(
+                        text="Compile succeeds",
+                        verified_by="automation",
+                        check_command="python -m compileall src",
+                    ),
+                    AcceptanceCriterion(text="Copy reviewed", verified_by="manual"),
+                ],
+                tests=["manual review"],
+                status=TaskStatus.dispatched,
+            )
+            ledger.append(LedgerEventType.task_created, task)
+
+            with patch.dict(os.environ, {"VOCR_REQUIRE_CHECKS": "block"}):
+                review = review_task(ledger, task.id, decision=ReviewDecision.accepted)
+
+        self.assertEqual(review.decision, ReviewDecision.accepted)
+        self.assertEqual(review.required_changes, [])
 
     def test_learning_store_aggregates_reviews_without_raw_diff(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
