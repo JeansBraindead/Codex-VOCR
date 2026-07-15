@@ -218,6 +218,8 @@ vocr dispatch-ready
 vocr work-ready --fix
 vocr claims list
 vocr claims release <task-id>
+vocr beta
+vocr beta --only S03,S07
 vocr review <task-id> --decision accepted --summary "Manual review passed"
 vocr review <task-id> --codex-review
 vocr memory list
@@ -233,6 +235,15 @@ vocr doctor
 ```
 
 Mehr Details stehen in [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md).
+
+## Beta-Pruefstand
+
+`vocr beta` startet einen deterministischen, netzfreien Pruefstand fuer die
+VOCR-Gates, Guards, Flag-Matrix, Claim-Koordination und Project Memory. Jeder
+Lauf arbeitet in temporaeren Fixture-Repositories mit eigenem VOCR-Home; das
+echte Arbeitsverzeichnis wird nicht als Testobjekt benutzt. Gezielt laufen
+Szenarien mit `vocr beta --only S03,S07`; Live-/Cloud-Pfade bleiben opt-in via
+`vocr beta --tier all --allow-cloud`.
 
 ## Speicherorte
 
