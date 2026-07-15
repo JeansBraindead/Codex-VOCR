@@ -81,11 +81,31 @@ app.add_typer(memory_app, name="memory")
 app.add_typer(beta_app, name="beta")
 console = Console()
 WARMUP_STAGGER_SECONDS = 20.0
+DANGEROUS_PERMISSION_REASON = "User enabled dangerous global approve-all at session start."
+DANGEROUS_PERMISSION_WARNING = (
+    "Dangerous Approve-all is active globally. VOCR will skip internal worker permission prompts "
+    "where possible. Review, ScopeGuard, secret scan and Promote gates remain active."
+)
 
 
 def safe_text(value: str) -> str:
     sanitized = sanitize_payload(value)
     return escape(sanitized if isinstance(sanitized, str) else str(sanitized))
+
+
+def grant_dangerous_global_permissions(store: MemoryLedger) -> PermissionGrant:
+    store.init()
+    grant = PermissionGrant(
+        mode=PermissionMode.approve_all,
+        scope="global",
+        reason=DANGEROUS_PERMISSION_REASON,
+    )
+    store.append(LedgerEventType.permission_granted, grant)
+    return grant
+
+
+def print_dangerous_permission_warning() -> None:
+    console.print(f"[bold red]WARNUNG:[/bold red] {safe_text(DANGEROUS_PERMISSION_WARNING)}")
 
 
 def ledger() -> MemoryLedger:
@@ -336,9 +356,13 @@ def run_vision_pipeline(
     live_agent: bool,
     auto: bool,
     dispatch_workers: bool,
+    dangerously_skip_permissions: bool = False,
 ) -> None:
     store = ledger()
     store.init()
+    if dangerously_skip_permissions:
+        grant_dangerous_global_permissions(store)
+        print_dangerous_permission_warning()
     if request_clarification(store, request):
         return
 
@@ -362,6 +386,8 @@ def run_vision_pipeline(
     console.print(f"Goal: {safe_text(item.goal)}")
     if go:
         console.print("[yellow]Approve-all is active for this slice.[/yellow]")
+    if dangerously_skip_permissions:
+        console.print("[yellow]Approve-all is active globally for this VOCR workspace.[/yellow]")
 
     if not auto:
         console.print("[yellow]Plan-only mode:[/yellow] run organize/dispatch manually if needed.")
@@ -437,10 +463,22 @@ def start_normal_mode(
         "--console",
         help="Use the terminal fallback instead of the local GUI.",
     ),
+    dangerously_skip_permissions: bool = typer.Option(
+        False,
+        "--dangerously-skip-permissions",
+        "--skip-permissions-dangerously",
+        help=(
+            "DANGEROUS: grant global approve-all for VOCR worker permission prompts. "
+            "Review and promote gates remain active."
+        ),
+    ),
 ) -> None:
     """Open the non-technical local GUI Visionary conversation."""
 
     result = prepare_start_or_exit()
+    if dangerously_skip_permissions:
+        grant_dangerous_global_permissions(MemoryLedger(result.repo_root / ".vocr"))
+        print_dangerous_permission_warning()
     open_normal_mode(result.repo_root, console_only=console_only)
 
 
@@ -460,7 +498,7 @@ def open_normal_mode(repo_root: Path, *, console_only: bool) -> None:
 def gui() -> None:
     """Alias for the local Visionary GUI."""
 
-    start_normal_mode(console_only=False)
+    start_normal_mode(console_only=False, dangerously_skip_permissions=False)
 
 
 @app.command("codex-config")
@@ -717,6 +755,15 @@ def vision(
         "--dispatch/--no-dispatch",
         help="With --go, dispatch generated tasks to isolated worktrees.",
     ),
+    dangerously_skip_permissions: bool = typer.Option(
+        False,
+        "--dangerously-skip-permissions",
+        "--skip-permissions-dangerously",
+        help=(
+            "DANGEROUS: grant global approve-all for VOCR worker permission prompts. "
+            "Does not imply promote or merge."
+        ),
+    ),
 ) -> None:
     run_vision_pipeline(
         request,
@@ -724,6 +771,7 @@ def vision(
         live_agent=live_agent,
         auto=auto,
         dispatch_workers=dispatch_workers,
+        dangerously_skip_permissions=dangerously_skip_permissions,
     )
 
 
@@ -740,6 +788,15 @@ def answer(
     ),
     live_agent: bool = typer.Option(False, "--live-agent", help="Use OpenAI Agents SDK when available."),
     dispatch_workers: bool = typer.Option(True, "--dispatch/--no-dispatch"),
+    dangerously_skip_permissions: bool = typer.Option(
+        False,
+        "--dangerously-skip-permissions",
+        "--skip-permissions-dangerously",
+        help=(
+            "DANGEROUS: grant global approve-all for VOCR worker permission prompts. "
+            "Does not imply promote or merge."
+        ),
+    ),
 ) -> None:
     store = ledger()
     if len(clarification_args) == 1:
@@ -765,6 +822,7 @@ def answer(
         live_agent=live_agent,
         auto=True,
         dispatch_workers=dispatch_workers,
+        dangerously_skip_permissions=dangerously_skip_permissions,
     )
 
 
@@ -784,6 +842,8 @@ def grant_go(
     all_permissions: bool = typer.Option(
         False,
         "--all",
+        "--dangerously-skip-permissions",
+        "--skip-permissions-dangerously",
         help="Required explicit flag for approve-all unattended execution.",
     ),
     reason: str = typer.Option(
@@ -793,9 +853,10 @@ def grant_go(
     ),
 ) -> None:
     if not all_permissions:
-        raise typer.BadParameter("Use --all to explicitly grant approve-all permission.")
+        raise typer.BadParameter("Use --all or --dangerously-skip-permissions to explicitly grant approve-all permission.")
     grant = PermissionGrant(mode=PermissionMode.approve_all, scope=scope, reason=reason)
     ledger().append(LedgerEventType.permission_granted, grant)
+    print_dangerous_permission_warning()
     console.print(f"[green]Approve-all granted[/green] for scope: {scope}")
 
 

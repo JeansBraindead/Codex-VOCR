@@ -102,10 +102,19 @@ class NormalModeController:
         self.prepared_worktree_count = 0
 
     def opening_message(self) -> NormalModeResponse:
+        permission_note = (
+            "\n\nWARNUNG: Globale Approve-all-Freigabe ist aktiv. Ich ueberspringe interne "
+            "Worker-Permission-Nachfragen, aber Review, Secret-Scan und Promote-Gates bleiben aktiv."
+            if self.ledger.active_permission("global")
+            else "\n\nOption fuer bewusst unbeaufsichtigtes Arbeiten: Starte mit "
+            "`vocr start --dangerously-skip-permissions`, um globale Worker-Permissions zu erlauben. "
+            "Das ist riskanter und aendert nicht die Review- oder Promote-Gates."
+        )
         return NormalModeResponse(
             message=self._normal_mode_text(
                 "Ich bin der Visionaer. Sag mir frei, was du bauen oder aendern willst. "
                 "Ich frage gezielt nach, bis Ziel, Grenzen und Pruefung belastbar sind."
+                + permission_note
             ),
             status=self.status(),
             phase=self.phase,

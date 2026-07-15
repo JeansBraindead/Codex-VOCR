@@ -4,6 +4,22 @@ This reference lists expert/debug commands added around contract handoff,
 context precision, parallel coordination, and accepted-review project memory.
 The normal user entry point remains `vocr start`.
 
+## Permissions
+
+```powershell
+vocr start --dangerously-skip-permissions
+vocr ask "Ziel: ... Arbeitsbereich: ... Akzeptanz: ... Verifikation: ... Nicht-Ziele: ... Ausfuehrung: ..." --dangerously-skip-permissions
+vocr go global --dangerously-skip-permissions
+```
+
+- `--dangerously-skip-permissions` grants global approve-all for VOCR worker
+  permission prompts. It is intentionally loud because generated worker commands
+  can run with fewer confirmations.
+- The alias `--skip-permissions-dangerously` is accepted for the same behavior.
+- This does not bypass Review, ScopeGuard, secret scanning, or Promote gates.
+- For one planned slice only, `vocr ask ... --go` still grants slice-scoped
+  approve-all without making it global.
+
 ## Context
 
 ```powershell

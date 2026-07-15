@@ -9,7 +9,8 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from vocr.cli.app import app
-from vocr.models import NormalModePhase
+from vocr.memory.ledger import MemoryLedger
+from vocr.models import LedgerEventType, NormalModePhase, PermissionGrant, PermissionMode
 from vocr.ui.normal_mode import NormalModeController, normal_mode_surface_decision
 
 
@@ -69,6 +70,7 @@ class NormalModeTests(unittest.TestCase):
         self.assertIn("local GUI Visionary conversation", result.output)
         self.assertIn("console", result.output)
         self.assertIn("terminal fallback", result.output)
+        self.assertIn("dangerously-skip-permissions", result.output)
 
         with tempfile.TemporaryDirectory() as tmp:
             with patch("vocr.cli.app.prepare_start_or_exit", return_value=SimpleNamespace(repo_root=Path(tmp))):
@@ -77,6 +79,43 @@ class NormalModeTests(unittest.TestCase):
 
         self.assertEqual(console_result.exit_code, 0, console_result.output)
         open_normal_mode.assert_called_once_with(Path(tmp), console_only=True)
+
+    def test_start_can_grant_dangerous_global_permissions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch("vocr.cli.app.prepare_start_or_exit", return_value=SimpleNamespace(repo_root=root)):
+                with patch("vocr.cli.app.open_normal_mode") as open_normal_mode:
+                    result = CliRunner().invoke(app, ["start", "--console", "--dangerously-skip-permissions"])
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertIn("WARNUNG", result.output)
+            self.assertIn("Approve-all", result.output)
+            open_normal_mode.assert_called_once_with(root, console_only=True)
+            grant = MemoryLedger(root / ".vocr").active_permission("global")
+            self.assertIsNotNone(grant)
+            self.assertEqual(grant.mode, PermissionMode.approve_all)
+            self.assertEqual(grant.scope, "global")
+
+    def test_normal_opening_explains_dangerous_permission_option(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            controller = NormalModeController(root)
+
+            opening = controller.opening_message()
+
+            self.assertIn("dangerously-skip-permissions", opening.message)
+            self.assertIn("riskanter", opening.message)
+
+            ledger = MemoryLedger(root / ".vocr")
+            ledger.init()
+            ledger.append(
+                LedgerEventType.permission_granted,
+                PermissionGrant(mode=PermissionMode.approve_all, scope="global", reason="test"),
+            )
+            active_opening = NormalModeController(root).opening_message()
+
+            self.assertIn("Globale Approve-all-Freigabe ist aktiv", active_opening.message)
+            self.assertIn("Promote-Gates bleiben aktiv", active_opening.message)
 
     def test_normal_mode_surface_decision_uses_local_gui_without_buildchain(self) -> None:
         decision = normal_mode_surface_decision()
@@ -260,6 +299,30 @@ class NormalModeTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Approve-all is active", result.output)
         self.assertIn("Created task", result.output)
+
+    def test_expert_cli_can_grant_dangerous_global_permissions_at_start(self) -> None:
+        request = (
+            "Ziel: Baue eine Healthcheck-API. "
+            "Arbeitsbereich: src und tests. "
+            "Akzeptanz: GET /health liefert 200. "
+            "Verifikation: Syntax-Check. "
+            "Nicht-Ziele: keine Auth. "
+            "Ausfuehrung: nur planen, Review vor Promote."
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            vocr_home = Path(tmp) / ".vocr"
+            result = CliRunner().invoke(
+                app,
+                ["ask", request, "--plan-only", "--dangerously-skip-permissions"],
+                env={"VOCR_HOME": str(vocr_home)},
+            )
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertIn("WARNUNG", result.output)
+            self.assertIn("Approve-all is active globally", result.output)
+            grant = MemoryLedger(vocr_home).active_permission("global")
+            self.assertIsNotNone(grant)
+            self.assertEqual(grant.mode, PermissionMode.approve_all)
 
     def test_expert_cli_commands_remain_available(self) -> None:
         command_help = [

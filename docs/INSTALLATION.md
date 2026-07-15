@@ -215,6 +215,17 @@ vocr start --console
 
 Der Console-Modus ist derselbe Normalmodus, nur ohne Fenster.
 
+Bewusster Danger-Start fuer unbeaufsichtigtes Arbeiten:
+
+```powershell
+vocr start --dangerously-skip-permissions
+```
+
+Diese Option setzt globale Approve-all-Permissions fuer VOCR/Codex-Worker-
+Nachfragen. VOCR zeigt dazu eine Warnung. Review, ScopeGuard, Secret-Scan und
+Promote bleiben weiterhin aktiv; die Option bedeutet nicht Auto-Merge oder
+automatische Veroeffentlichung.
+
 Alias fuer das lokale Fenster:
 
 ```powershell

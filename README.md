@@ -74,6 +74,17 @@ verfuegbar ist oder du im Terminal bleiben willst:
 vocr start --console
 ```
 
+Wenn du eine Session bewusst ohne einzelne Worker-Permission-Nachfragen starten
+willst, gibt es die riskantere Startoption:
+
+```powershell
+vocr start --dangerously-skip-permissions
+```
+
+Das setzt globale Approve-all-Permissions fuer VOCR/Codex-Worker-Prompts.
+Review, ScopeGuard, Secret-Scan und Promote bleiben trotzdem aktiv; es ist kein
+Auto-Merge und keine Freigabe zum Veroeffentlichen.
+
 Im Normalmodus kennt der User keine technischen Rueckfrage-Codes, Task-IDs oder
 Worktree-Pfade. Der Visionary fragt fehlende Informationen ab und startet keine
 Planung, solange Ziel, Arbeitsbereich, Akzeptanzkriterien, Verifikation,
@@ -233,6 +244,7 @@ vocr graphify
 vocr context "git worktree review" --limit 10
 vocr context --symbol src/vocr/cli/app.py:review
 vocr ask "Ziel: ... Arbeitsbereich: ... Akzeptanz: ... Verifikation: ... Nicht-Ziele: ... Ausfuehrung: ..." --go
+vocr ask "Ziel: ... Arbeitsbereich: ... Akzeptanz: ... Verifikation: ... Nicht-Ziele: ... Ausfuehrung: ..." --dangerously-skip-permissions --go
 vocr organize <slice-id>
 vocr dispatch-ready
 vocr work-ready --fix
