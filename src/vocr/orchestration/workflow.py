@@ -7,7 +7,7 @@ import re
 
 from vocr.guardrails.scope_guard import ScopeGuard
 from vocr.guardrails.secrets import scan_diff_for_secrets
-from vocr.git.worktrees import GitWorktreeManager
+from vocr.git.worktrees import GitWorktreeError, GitWorktreeManager
 from vocr.graph.graphify import GraphStore, RepoGraphBuilder
 from vocr.memory.ledger import MemoryLedger
 from vocr.memory.learning import LearningStore
@@ -317,6 +317,11 @@ def review_task(
 
     issues = ScopeGuard().validate_task(task)
     warning_risks: list[str] = []
+    reviewed_ref = None
+    codex_base_ref = base_ref
+    if codex_base_ref is None and _incremental_review_enabled():
+        previous_review = ledger.last_review(task.id)
+        codex_base_ref = previous_review.reviewed_ref if previous_review else None
     if task.status not in {TaskStatus.dispatched, TaskStatus.review_ready, TaskStatus.needs_changes}:
         issues.append(f"Task status is {task.status.value}; expected dispatched or review_ready.")
 
@@ -324,10 +329,14 @@ def review_task(
     diff_summary = None
     if task.worktree_path:
         worktree_git = GitWorktreeManager(task.worktree_path)
+        try:
+            reviewed_ref = worktree_git.head_sha()
+        except GitWorktreeError as exc:
+            issues.append(f"Could not resolve review HEAD: {exc}")
         git_status = worktree_git.status_porcelain()
         uncommitted_diff = worktree_git.diff_stat()
         committed_diff = worktree_git.branch_diff_stat()
-        full_diff = worktree_git.diff_for_scan(base_ref=base_ref)
+        full_diff = worktree_git.diff_for_scan()
         diff_summary = f"Committed diff:\n{committed_diff}\n\nUncommitted diff:\n{uncommitted_diff}"
         changed_files = sorted(set(worktree_git.changed_files() + worktree_git.branch_diff_files()))
         issues.extend(ScopeGuard().validate_changed_files(task, changed_files))
@@ -361,7 +370,7 @@ def review_task(
     if task.worktree_path:
         comments.extend(_diff_review_comments(changed_files, issues, full_diff))
     if codex_review:
-        comments.extend(run_codex_review(task, base_ref=base_ref))
+        comments.extend(run_codex_review(task, base_ref=codex_base_ref))
 
     review_summary = summary or (
         "Manual review accepted the task."
@@ -380,6 +389,7 @@ def review_task(
         git_status=git_status,
         diff_summary=diff_summary,
         diff_files=changed_files if task.worktree_path else [],
+        reviewed_ref=reviewed_ref,
     )
     ledger.append(LedgerEventType.review_recorded, review)
     return review
@@ -561,6 +571,10 @@ def _acceptance_coverage_issues(task: VocrTask) -> list[str]:
 
 def _is_manual_acceptance_mapping(verified_by: str) -> bool:
     return verified_by.strip().lower() in {"manual", "manual review", "review"}
+
+
+def _incremental_review_enabled() -> bool:
+    return os.getenv("VOCR_INCREMENTAL_REVIEW", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def normalize_check_command(check: str) -> list[str] | None:

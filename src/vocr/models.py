@@ -246,6 +246,7 @@ class ReviewResult(BaseModel):
     git_status: str | None = None
     diff_summary: str | None = None
     diff_files: list[str] = Field(default_factory=list)
+    reviewed_ref: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
 
 

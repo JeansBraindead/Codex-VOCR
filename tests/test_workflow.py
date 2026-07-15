@@ -641,6 +641,143 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(review.decision, ReviewDecision.accepted)
         self.assertEqual(review.required_changes, [])
 
+    def test_incremental_review_passes_previous_review_ref_only_to_codex_review(self) -> None:
+        class FakeGit:
+            instances: list["FakeGit"] = []
+
+            def __init__(self, *_: object, **__: object) -> None:
+                self.repo_root = Path(".")
+                self.diff_for_scan_base_refs: list[str | None] = []
+                self.branch_diff_files_base_refs: list[str | None] = []
+                FakeGit.instances.append(self)
+
+            def head_sha(self) -> str:
+                return "new-review-sha"
+
+            def status_porcelain(self) -> str:
+                return "clean"
+
+            def diff_stat(self) -> str:
+                return "no uncommitted diff"
+
+            def branch_diff_stat(self, base_ref: str | None = None) -> str:
+                return "full committed diff"
+
+            def diff_for_scan(self, base_ref: str | None = None) -> str:
+                self.diff_for_scan_base_refs.append(base_ref)
+                return "no diff"
+
+            def changed_files(self) -> list[str]:
+                return []
+
+            def branch_diff_files(self, base_ref: str | None = None) -> list[str]:
+                self.branch_diff_files_base_refs.append(base_ref)
+                return []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = MemoryLedger(Path(tmp) / ".vocr")
+            task = VocrTask(
+                id="tb-incremental",
+                slice_id="slice-review",
+                title="Incremental review",
+                summary="Use last review ref for Codex only.",
+                scope=["docs"],
+                acceptance_criteria=[AcceptanceCriterion(text="Review is incremental")],
+                tests=["manual review"],
+                status=TaskStatus.needs_changes,
+                worktree_path=Path(tmp),
+            )
+            ledger.append(LedgerEventType.task_created, task)
+            ledger.append(
+                LedgerEventType.review_recorded,
+                ReviewResult(
+                    task_id=task.id,
+                    decision=ReviewDecision.needs_changes,
+                    summary="Previous review",
+                    reviewed_ref="previous-review-sha",
+                ),
+            )
+            captured: dict[str, str | None] = {}
+
+            def fake_codex_review(_: VocrTask, base_ref: str | None = None) -> list:
+                captured["base_ref"] = base_ref
+                return []
+
+            with patch.dict(os.environ, {"VOCR_INCREMENTAL_REVIEW": "true"}), patch(
+                "vocr.orchestration.workflow.GitWorktreeManager",
+                FakeGit,
+            ), patch("vocr.orchestration.workflow.run_codex_review", side_effect=fake_codex_review):
+                review = review_task(ledger, task.id, codex_review=True)
+
+        self.assertEqual(captured["base_ref"], "previous-review-sha")
+        self.assertEqual(review.reviewed_ref, "new-review-sha")
+        self.assertEqual(FakeGit.instances[0].diff_for_scan_base_refs, [None])
+        self.assertEqual(FakeGit.instances[0].branch_diff_files_base_refs, [None])
+
+    def test_incremental_review_flag_off_keeps_codex_full_diff(self) -> None:
+        class FakeGit:
+            def __init__(self, *_: object, **__: object) -> None:
+                self.repo_root = Path(".")
+
+            def head_sha(self) -> str:
+                return "new-review-sha"
+
+            def status_porcelain(self) -> str:
+                return "clean"
+
+            def diff_stat(self) -> str:
+                return "no uncommitted diff"
+
+            def branch_diff_stat(self, base_ref: str | None = None) -> str:
+                return "full committed diff"
+
+            def diff_for_scan(self, base_ref: str | None = None) -> str:
+                return "no diff"
+
+            def changed_files(self) -> list[str]:
+                return []
+
+            def branch_diff_files(self, base_ref: str | None = None) -> list[str]:
+                return []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = MemoryLedger(Path(tmp) / ".vocr")
+            task = VocrTask(
+                id="tb-full-review",
+                slice_id="slice-review",
+                title="Full review",
+                summary="Keep full review by default.",
+                scope=["docs"],
+                acceptance_criteria=[AcceptanceCriterion(text="Review remains full")],
+                tests=["manual review"],
+                status=TaskStatus.needs_changes,
+                worktree_path=Path(tmp),
+            )
+            ledger.append(LedgerEventType.task_created, task)
+            ledger.append(
+                LedgerEventType.review_recorded,
+                ReviewResult(
+                    task_id=task.id,
+                    decision=ReviewDecision.needs_changes,
+                    summary="Previous review",
+                    reviewed_ref="previous-review-sha",
+                ),
+            )
+            captured: dict[str, str | None] = {}
+
+            def fake_codex_review(_: VocrTask, base_ref: str | None = None) -> list:
+                captured["base_ref"] = base_ref
+                return []
+
+            with patch.dict(os.environ, {"VOCR_INCREMENTAL_REVIEW": ""}), patch(
+                "vocr.orchestration.workflow.GitWorktreeManager",
+                FakeGit,
+            ), patch("vocr.orchestration.workflow.run_codex_review", side_effect=fake_codex_review):
+                review = review_task(ledger, task.id, codex_review=True)
+
+        self.assertIsNone(captured["base_ref"])
+        self.assertEqual(review.reviewed_ref, "new-review-sha")
+
     def test_learning_store_aggregates_reviews_without_raw_diff(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / ".vocr"

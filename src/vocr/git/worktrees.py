@@ -89,6 +89,12 @@ class GitWorktreeManager:
             return result.stderr.strip() or result.stdout.strip()
         return result.stdout.strip() or "clean"
 
+    def head_sha(self) -> str:
+        result = self._git("rev-parse", "HEAD")
+        if result.returncode != 0:
+            raise GitWorktreeError(result.stderr.strip() or result.stdout.strip())
+        return result.stdout.strip()
+
     def diff_stat(self) -> str:
         result = self._git("diff", "--stat")
         if result.returncode != 0:

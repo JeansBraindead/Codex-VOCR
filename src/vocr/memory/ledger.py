@@ -137,6 +137,10 @@ class MemoryLedger:
             if event.type == LedgerEventType.review_recorded
         ]
 
+    def last_review(self, task_id: str) -> ReviewResult | None:
+        matches = [review for review in self.reviews() if review.task_id == task_id]
+        return matches[-1] if matches else None
+
     def telemetry(self) -> list[RunTelemetry]:
         return [
             RunTelemetry.model_validate(event.payload)
