@@ -72,11 +72,13 @@ secrets_app = typer.Typer(help="Scan diffs for secrets without printing secret v
 worker_app = typer.Typer(help="Configure and diagnose Codex worker execution.")
 claims_app = typer.Typer(help="Inspect and release VOCR scope claims.")
 memory_app = typer.Typer(help="Inspect and prune accepted-review project memory.")
+beta_app = typer.Typer(help="Run deterministic VOCR beta harness scenarios.")
 app.add_typer(model_app, name="model")
 app.add_typer(secrets_app, name="secrets")
 app.add_typer(worker_app, name="worker")
 app.add_typer(claims_app, name="claims")
 app.add_typer(memory_app, name="memory")
+app.add_typer(beta_app, name="beta")
 console = Console()
 WARMUP_STAGGER_SECONDS = 20.0
 
@@ -1415,6 +1417,54 @@ def memory_prune(entry_id: str) -> None:
     if not ProjectMemoryStore(ledger().root).prune(entry_id):
         raise typer.BadParameter(f"Unknown memory entry id: {entry_id}")
     console.print(f"[green]Pruned memory entry[/green] {entry_id}")
+
+
+@beta_app.callback(invoke_without_command=True)
+def beta_run(
+    ctx: typer.Context,
+    tier: str = typer.Option("core", "--tier", help="Scenario tier: core, local, cloud, all."),
+    only: str = typer.Option("", "--only", help="Comma-separated scenario IDs, e.g. S03,S07."),
+    list_scenarios: bool = typer.Option(False, "--list", help="List available beta scenarios."),
+    report_dir: Path = typer.Option(Path("beta_reports"), "--report-dir", help="Directory for beta reports."),
+    allow_cloud: bool = typer.Option(False, "--allow-cloud", help="Allow cloud-tier scenarios."),
+    max_cloud_tasks: int = typer.Option(3, "--max-cloud-tasks", help="Maximum live cloud tasks."),
+    json_only: bool = typer.Option(False, "--json-only", help="Write JSON report only."),
+    tag: str | None = typer.Option(None, "--tag", help="Optional report tag for trend grouping."),
+) -> None:
+    if ctx.invoked_subcommand is not None:
+        return
+    from vocr.beta.runner import run_beta
+    from vocr.beta.scenarios import SCENARIOS
+
+    if list_scenarios:
+        table = Table(title="VOCR Beta Scenarios")
+        table.add_column("ID")
+        table.add_column("Title")
+        table.add_column("Tier")
+        table.add_column("Hard")
+        for scenario in SCENARIOS.values():
+            table.add_row(scenario.id, scenario.title, scenario.tier, "yes" if scenario.hard else "no")
+        console.print(table)
+        return
+    selected = [item.strip().upper() for item in only.split(",") if item.strip()]
+    run = run_beta(
+        SCENARIOS.values(),
+        tier=tier,
+        only=selected or None,
+        report_dir=report_dir,
+        allow_cloud=allow_cloud,
+        max_cloud_tasks=max_cloud_tasks,
+        json_only=json_only,
+        tag=tag,
+    )
+    for item in run.results:
+        color = "green" if item.status == "passed" else ("yellow" if item.status == "skipped" else "red")
+        console.print(f"[{color}]{item.id} {item.title}: {item.status}[/{color}]")
+    if run.report_json:
+        console.print(f"[cyan]JSON report:[/cyan] {run.report_json}")
+    if run.report_markdown:
+        console.print(f"[cyan]Markdown report:[/cyan] {run.report_markdown}")
+    raise typer.Exit(run.exit_code)
 
 
 @app.command()

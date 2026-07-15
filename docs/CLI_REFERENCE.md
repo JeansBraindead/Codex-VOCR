@@ -44,3 +44,24 @@ vocr memory prune <entry-id>
   decision is `accepted`.
 - `memory list` displays accepted-review memory entries.
 - `memory prune` removes one entry by ID. There is no automatic expiry.
+
+## Beta Harness
+
+```powershell
+vocr beta
+vocr beta --list
+vocr beta --only S03,S07
+vocr beta --tier all --allow-cloud --max-cloud-tasks 3
+vocr beta --json-only --report-dir beta_reports
+```
+
+- `vocr beta` runs the core deterministic scenario set and writes JSON plus
+  Markdown reports under `beta_reports/`.
+- `--only` accepts comma-separated stable scenario IDs.
+- `--tier` accepts `core`, `local`, `cloud`, or `all`; cloud scenarios are skipped
+  unless `--allow-cloud` is passed.
+- `--json-only` suppresses Markdown for CI.
+- Exit codes: 0 all green, 1 at least one hard scenario failed, 2 only soft
+  scenarios failed, 3 reserved for harness-internal errors.
+- The harness uses temporary fixture repositories and a temporary VOCR home per
+  run. It must not mutate the real project worktree.

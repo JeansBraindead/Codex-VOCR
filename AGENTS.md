@@ -26,5 +26,6 @@ this repo without explicit license review and attribution in the touched files.
 - `VOCR_LOCAL_ASSIST` may only expand trusted task title/goal into search terms. It must not author plans, contracts, reviews, or project memory.
 - `VOCR_PARALLEL_WORKERS` may run only claim-disjunkt tasks in parallel. Claims coordinate workers, but ScopeGuard and accepted review are still the safety gates.
 - `VOCR_PROJECT_MEMORY` persists only compact notes from accepted reviews; retrieved memory remains untrusted context.
+- `vocr beta` is the deterministic beta harness. It must run scenarios in temporary fixture repositories with isolated VOCR homes; scenario IDs (`S00` etc.) are stable report/trend references.
 - `approve_all` removes VOCR-internal permission prompts only; keep promote review-gated.
 - Prefer simple Python 3.11 code and Pydantic models over framework-heavy abstractions.
