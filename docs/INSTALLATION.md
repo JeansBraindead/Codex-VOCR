@@ -1,9 +1,10 @@
 # VOCR Installation Guide
 
 Diese Anleitung beschreibt eine saubere lokale Installation von VOCR auf Windows
-mit PowerShell. VOCR ist Codex-first. Lokale Modelle ueber LM Studio sind
-optional und werden ueber `vocr model ...` konfiguriert, nicht durch manuelles
-Editieren von `.env`.
+mit PowerShell. VOCR ist Codex-first: vor der normalen Benutzung meldest du dich
+einmal mit `codex login` an. Ein OpenAI-API-Key ist fuer den Standardpfad nicht
+noetig. Lokale Modelle ueber LM Studio sind optional und werden ueber
+`vocr model ...` konfiguriert, nicht durch manuelles Editieren von `.env`.
 
 ## 1. Voraussetzungen
 
@@ -24,7 +25,7 @@ Erwartung:
 - Python 3.11 oder neuer, falls bereits installiert
 - Git, falls bereits installiert
 - PowerShell
-- Optional: Codex CLI fuer echte Worker-Laeufe
+- Codex CLI fuer echte Worker-Laeufe, danach `codex login`
 - Optional: LM Studio fuer lokale OpenAI-kompatible Modelle
 - Optional: GitHub CLI `gh` fuer PR-Funktionen
 - Optional: `gitleaks` fuer zusaetzliches Secret-Scanning
@@ -176,6 +177,15 @@ vocr doctor
 
 ## 6. Normalmodus starten
 
+Vor der ersten Benutzung:
+
+```powershell
+codex login
+```
+
+Damit authentifizierst du die Codex CLI. Im normalen VOCR-Pfad musst du keinen
+API-Key eintragen.
+
 Der normale Einstieg ist der Visionaer-Dialog:
 
 ```powershell
@@ -188,6 +198,7 @@ Erwartung:
 - Links ist der Dialog mit dem Visionaer.
 - Unten ist das Textfeld fuer freie Eingaben.
 - Rechts steht der kompakte Projektstatus.
+- Der Expertmodus ist ueber den Menuepunkt `Expertmodus` erreichbar.
 - Der Visionaer schlaegt den naechsten sinnvollen Schritt vor und fragt fehlende Informationen ab.
 - Der User bestaetigt oder korrigiert natuerlichsprachlich.
 - Pro Fenster oder Console-Session gibt es genau einen aktiven Intake-Zustand.
@@ -221,10 +232,10 @@ Bewusster Danger-Start fuer unbeaufsichtigtes Arbeiten:
 vocr start --dangerously-skip-permissions
 ```
 
-Diese Option setzt globale Approve-all-Permissions fuer VOCR/Codex-Worker-
-Nachfragen. VOCR zeigt dazu eine Warnung. Review, ScopeGuard, Secret-Scan und
-Promote bleiben weiterhin aktiv; die Option bedeutet nicht Auto-Merge oder
-automatische Veroeffentlichung.
+Diese Option setzt Approve-all-Permissions nur fuer diese laufende Session.
+VOCR zeigt dazu eine Warnung. Review, ScopeGuard, Secret-Scan und Promote
+bleiben weiterhin aktiv; die Option bedeutet nicht Auto-Merge oder automatische
+Veroeffentlichung. Beim naechsten Start wird wieder neu entschieden.
 
 Alias fuer das lokale Fenster:
 
@@ -388,93 +399,20 @@ vocr learn
 vocr compact --keep-last 200
 ```
 
-## 12. Erster Beta-Lauf
+## 12. Beta separat testen
 
-Tier `core` braucht keine API-Keys, kein Codex-Login und kein LM Studio. Der
-Kernlauf nutzt deterministische Fixtures und Mocks, kostet also kein
-Cloud-Kontingent.
+Der Beta-Pruefstand ist absichtlich aus der Installationsstrecke herausgeloest.
+Nach der Installation findest du Ablauf, Szenarien, Exit-Codes und Session-
+Template in [BETA_TESTING.md](BETA_TESTING.md).
 
-Szenario-Katalog ansehen:
-
-```powershell
-vocr beta --list
-```
-
-Vollen Kernlauf starten:
+Kurzcheck:
 
 ```powershell
 vocr beta --tier core
-echo "Exit-Code: $LASTEXITCODE"
 ```
 
-Erwartung:
-
-- S00 bis S16 sowie S18 und S19 melden `passed`.
-- S17 erscheint im Core-Lauf nicht, weil es zum Cloud-Tier gehoert.
-- JSON- und Markdown-Reports werden unter `beta_reports/` geschrieben.
-- Exit-Code `0` bedeutet alles gruen.
-
-Exit-Codes:
-
-- `0`: alle Szenarien gruen oder nur erlaubte Skips
-- `1`: mindestens ein hartes Szenario rot
-- `2`: nur weiche Szenarien rot
-
-Report lesen:
-
-```powershell
-Get-ChildItem .\beta_reports\
-notepad .\beta_reports\beta_report_<zeitstempel>.md
-```
-
-Gezielte Wiederholung, zum Beispiel Claims und ScopeGuard:
-
-```powershell
-vocr beta --only S18,S03
-```
-
-### Optional: Tier local
-
-Aktuell gibt es noch kein Szenario mit `tier="local"`. `vocr beta --tier local`
-waehlt deshalb effektiv die Core-Szenarien; S12/S13 sind mock-basierte
-Embedding-/Local-Assist-Pruefungen und kontaktieren kein echtes Modell. Die
-folgenden LM-Studio-Variablen sind vorbereitend fuer die noch zu bauende
-Live-Phase, nicht fuer einen bereits aktiven Live-Test:
-
-```powershell
-$env:VOCR_EMBED_BASE_URL = "http://localhost:1234/v1"
-$env:VOCR_EMBED_MODEL    = "<embedding-modell-id>"
-$env:VOCR_LOCAL_BASE_URL = "http://localhost:1234/v1"
-$env:VOCR_LOCAL_MODEL    = "<chat-modell-id>"
-vocr beta --tier local
-```
-
-Danach die Variablen entfernen oder das Fenster schliessen:
-
-```powershell
-Remove-Item Env:VOCR_EMBED_BASE_URL, Env:VOCR_EMBED_MODEL, Env:VOCR_LOCAL_BASE_URL, Env:VOCR_LOCAL_MODEL
-```
-
-### Optional: Tier cloud
-
-S17 laeuft nur mit explizitem `--allow-cloud` und kann Codex-Kontingent
-verbrauchen:
-
-```powershell
-vocr beta --tier cloud --allow-cloud --max-cloud-tasks 3
-```
-
-### Bekannte Beta-Harness-Luecken
-
-- S11 prueft aktuell die Byte-Konstanz des Contract-Prompts, schreibt aber noch
-  keine Legacy-vs.-Contract-Token-Metrik ins JSON.
-- Der Report ist noch minimal: Verdikt und Szenario-Tabelle sind vorhanden, der
-  volle KPI-/Modus-Block aus dem Beta-Plan ist noch offen. Ein einfacher
-  Status-Trend erscheint, sobald ein vorheriges Report-JSON im Report-Ordner
-  liegt.
-- Tier-local-Live-Szenarien S20/S21 existieren noch nicht. Der Nachruestauftrag
-  `VOCR_Beta_Vervollstaendigung_Prompt.md` beschreibt die geplante Ergaenzung:
-  S11-Token-Metriken, Report-KPI-/Modus-Block und echte Local-Live-Metriken.
+Tier `core` braucht keine API-Keys, kein Codex-Login und kein LM Studio. Live-/
+Cloud-Pfade bleiben in der Beta-Anleitung separat beschrieben.
 
 ## 13. Standard-Dateien und Ordner
 

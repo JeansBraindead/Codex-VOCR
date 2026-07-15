@@ -9,12 +9,11 @@ The normal user entry point remains `vocr start`.
 ```powershell
 vocr start --dangerously-skip-permissions
 vocr ask "Ziel: ... Arbeitsbereich: ... Akzeptanz: ... Verifikation: ... Nicht-Ziele: ... Ausfuehrung: ..." --dangerously-skip-permissions
-vocr go global --dangerously-skip-permissions
 ```
 
-- `--dangerously-skip-permissions` grants global approve-all for VOCR worker
-  permission prompts. It is intentionally loud because generated worker commands
-  can run with fewer confirmations.
+- `--dangerously-skip-permissions` grants approve-all for VOCR worker permission
+  prompts in the current session only. It is intentionally loud because generated
+  worker commands can run with fewer confirmations.
 - The alias `--skip-permissions-dangerously` is accepted for the same behavior.
 - This does not bypass Review, ScopeGuard, secret scanning, or Promote gates.
 - For one planned slice only, `vocr ask ... --go` still grants slice-scoped

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -89,10 +90,16 @@ class NormalModeUiError(RuntimeError):
 
 
 class NormalModeController:
-    def __init__(self, repo_root: str | Path = ".", vocr_home: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        repo_root: str | Path = ".",
+        vocr_home: str | Path | None = None,
+        session_permission: PermissionGrant | None = None,
+    ) -> None:
         self.repo_root = Path(repo_root).resolve()
         self.ledger = MemoryLedger(Path(vocr_home) if vocr_home else self.repo_root / ".vocr")
         self.graph_store = GraphStore(self.ledger.root)
+        self.session_permission = session_permission
         self.phase = NormalModePhase.welcome
         self.intake = ProjectIntake()
         self.pending_proposal: IntakeProposal | None = None
@@ -102,14 +109,22 @@ class NormalModeController:
         self.prepared_worktree_count = 0
 
     def opening_message(self) -> NormalModeResponse:
-        permission_note = (
-            "\n\nWARNUNG: Globale Approve-all-Freigabe ist aktiv. Ich ueberspringe interne "
-            "Worker-Permission-Nachfragen, aber Review, Secret-Scan und Promote-Gates bleiben aktiv."
-            if self.ledger.active_permission("global")
-            else "\n\nOption fuer bewusst unbeaufsichtigtes Arbeiten: Starte mit "
-            "`vocr start --dangerously-skip-permissions`, um globale Worker-Permissions zu erlauben. "
-            "Das ist riskanter und aendert nicht die Review- oder Promote-Gates."
-        )
+        if self.session_permission:
+            permission_note = (
+                "\n\nWARNUNG: Approve-all ist fuer diese Session aktiv. Ich ueberspringe interne "
+                "Worker-Permission-Nachfragen, aber Review, Secret-Scan und Promote-Gates bleiben aktiv."
+            )
+        elif self.ledger.active_permission("global"):
+            permission_note = (
+                "\n\nWARNUNG: Ein persistenter Approve-all-Grant ist im VOCR-Ledger aktiv. "
+                "Review, Secret-Scan und Promote-Gates bleiben aktiv."
+            )
+        else:
+            permission_note = (
+                "\n\nOption fuer bewusst unbeaufsichtigtes Arbeiten: Starte mit "
+                "`vocr start --dangerously-skip-permissions`, um Worker-Permissions fuer diese Session zu erlauben. "
+                "Das gilt nur fuer die aktuelle Session, ist riskanter und aendert nicht die Review- oder Promote-Gates."
+            )
         return NormalModeResponse(
             message=self._normal_mode_text(
                 "Ich bin der Visionaer. Sag mir frei, was du bauen oder aendern willst. "
@@ -338,7 +353,7 @@ class NormalModeController:
                 continue
             try:
                 dispatched = dispatch_task(self.ledger, manager, task.id)
-                permission = self.ledger.active_permission(dispatched.slice_id)
+                permission = self.session_permission or self.ledger.active_permission(dispatched.slice_id)
                 CodexMcpClient().write_manifest(dispatched, permission=permission)
                 guard.write_worker_policy(dispatched)
                 guard.write_worker_agents_file(dispatched)
@@ -833,8 +848,8 @@ class NormalModeController:
         return sanitized
 
 
-def launch_console_mode(repo_root: str | Path = ".") -> None:
-    controller = NormalModeController(repo_root)
+def launch_console_mode(repo_root: str | Path = ".", session_permission: PermissionGrant | None = None) -> None:
+    controller = NormalModeController(repo_root, session_permission=session_permission)
     opening = controller.opening_message()
     print(f"\nVisionaer: {opening.message}\n")
     while True:
@@ -852,14 +867,26 @@ def launch_console_mode(repo_root: str | Path = ".") -> None:
             return
 
 
-def launch_normal_mode(repo_root: str | Path = ".") -> None:
+def open_expert_shell(repo_root: str | Path = ".") -> None:
+    root = Path(repo_root).resolve()
+    root_literal = str(root).replace("'", "''")
+    command = (
+        "Write-Host 'VOCR Expertmodus' -ForegroundColor Cyan; "
+        "Write-Host 'Startpunkte: vocr --help, vocr doctor, vocr worker doctor, vocr beta --help'; "
+        "Write-Host ''; "
+        f"Set-Location -LiteralPath '{root_literal}'"
+    )
+    subprocess.Popen(["powershell", "-NoExit", "-Command", command], cwd=str(root))
+
+
+def launch_normal_mode(repo_root: str | Path = ".", session_permission: PermissionGrant | None = None) -> None:
     try:
         import tkinter as tk
         from tkinter import scrolledtext, ttk
     except Exception as exc:  # pragma: no cover - depends on local Python build
         raise NormalModeUiError(str(exc)) from exc
 
-    controller = NormalModeController(repo_root)
+    controller = NormalModeController(repo_root, session_permission=session_permission)
     root = tk.Tk()
     root.title("VOCR Visionaer")
     root.geometry("980x660")
@@ -872,6 +899,19 @@ def launch_normal_mode(repo_root: str | Path = ".") -> None:
         style.configure("TLabel", font=("Segoe UI", 10))
     except tk.TclError:
         pass
+
+    menu = tk.Menu(root)
+    expert_menu = tk.Menu(menu, tearoff=0)
+    expert_menu.add_command(label="Expertmodus oeffnen", command=lambda: open_expert_shell(controller.repo_root))
+    expert_menu.add_command(
+        label="Expert-Hilfe anzeigen",
+        command=lambda: append(
+            "System",
+            "Expertmodus: Nutze vocr --help, vocr doctor, vocr worker doctor oder vocr beta --help in der Shell.",
+        ),
+    )
+    menu.add_cascade(label="Expertmodus", menu=expert_menu)
+    root.config(menu=menu)
 
     root.columnconfigure(0, weight=3)
     root.columnconfigure(1, weight=1)
@@ -959,5 +999,6 @@ __all__ = [
     "NormalModeUiError",
     "launch_console_mode",
     "launch_normal_mode",
+    "open_expert_shell",
     "normal_mode_surface_decision",
 ]

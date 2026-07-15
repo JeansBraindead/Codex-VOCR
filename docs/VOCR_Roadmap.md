@@ -13,8 +13,8 @@ bevor echte Zahlen auf deiner Hardware vorliegen.
 **Fertige Artefakte (Bauaufträge, kein Code):**
 - `VOCR_Phasenplan_Final.md` — Contract-Handoff + Token-Ökonomie + **Parallelisierung
   (Scope-Claims + Parallel-Waves)** + **Projektgedächtnis**, 16 Phasen (0–15).
-- `VOCR_Beta_Testsequenz_Prompt.md` — Prüfstand `vocr beta`, 18 Szenarien (S00–S17),
-  inkl. Addendum M (Modell-Matrix-Anschluss) und Dual-Mode-Pflicht.
+- `docs/BETA_TESTING.md` — separater Beta-Testleitfaden fuer den Pruefstand `vocr beta`,
+  inkl. Szenarien, manuellen Checks und Session-Template.
   **Offen: 3 neue Szenarien für Claims/Parallel/Memory (S18–S20) vor M1 ergänzen.**
 - `LLM_Profiler_Bauauftrag.md` — Standalone-Werkzeug `llm-profiler`, 9 Phasen.
 - (`VOCR_Contract_Handoff_Prompt.md` v1 und `VOCR_Phasenplan_v2.md` — **überholt durch
@@ -60,7 +60,7 @@ nochmal alles durchgehen"). Erst dann Meilenstein 1.
 ## MEILENSTEIN 1 — Prüfstand bauen: `vocr beta`
 **Ziel:** Ein wiederverwendbares Testinstrument, das die v2-Zusagen prüft — für den
 gesamten Beta-Zyklus, nicht einmalig.
-**Werkzeug:** Codex/Claude Code, Input = `VOCR_Beta_Testsequenz_Prompt.md`.
+**Werkzeug:** Codex/Claude Code, Input = aktueller Beta-Testleitfaden unter `docs/BETA_TESTING.md`.
 **Kosten:** Einmalig Cloud-Kontingent (Coding-Session).
 
 **Schritte:**

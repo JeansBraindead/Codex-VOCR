@@ -11,7 +11,7 @@ from typer.testing import CliRunner
 from vocr.cli.app import app
 from vocr.memory.ledger import MemoryLedger
 from vocr.models import LedgerEventType, NormalModePhase, PermissionGrant, PermissionMode
-from vocr.ui.normal_mode import NormalModeController, normal_mode_surface_decision
+from vocr.ui.normal_mode import NormalModeController, normal_mode_surface_decision, open_expert_shell
 
 
 def assert_no_normal_mode_debug_ids(testcase: unittest.TestCase, message: str) -> None:
@@ -79,9 +79,9 @@ class NormalModeTests(unittest.TestCase):
                     console_result = CliRunner().invoke(app, ["start", "--console"])
 
         self.assertEqual(console_result.exit_code, 0, console_result.output)
-        open_normal_mode.assert_called_once_with(Path(tmp), console_only=True)
+        open_normal_mode.assert_called_once_with(Path(tmp), console_only=True, session_permission=None)
 
-    def test_start_can_grant_dangerous_global_permissions(self) -> None:
+    def test_start_uses_dangerous_permissions_for_current_session_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             with patch("vocr.cli.app.prepare_start_or_exit", return_value=SimpleNamespace(repo_root=root)):
@@ -91,11 +91,12 @@ class NormalModeTests(unittest.TestCase):
             self.assertEqual(result.exit_code, 0, result.output)
             self.assertIn("WARNUNG", result.output)
             self.assertIn("Approve-all", result.output)
-            open_normal_mode.assert_called_once_with(root, console_only=True)
+            _, kwargs = open_normal_mode.call_args
+            self.assertEqual(kwargs["console_only"], True)
+            self.assertEqual(kwargs["session_permission"].mode, PermissionMode.approve_all)
+            self.assertEqual(kwargs["session_permission"].scope, "global")
             grant = MemoryLedger(root / ".vocr").active_permission("global")
-            self.assertIsNotNone(grant)
-            self.assertEqual(grant.mode, PermissionMode.approve_all)
-            self.assertEqual(grant.scope, "global")
+            self.assertIsNone(grant)
 
     def test_normal_opening_explains_dangerous_permission_option(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -113,10 +114,26 @@ class NormalModeTests(unittest.TestCase):
                 LedgerEventType.permission_granted,
                 PermissionGrant(mode=PermissionMode.approve_all, scope="global", reason="test"),
             )
-            active_opening = NormalModeController(root).opening_message()
+            active_opening = NormalModeController(root, session_permission=PermissionGrant(mode=PermissionMode.approve_all, scope="global")).opening_message()
 
-            self.assertIn("Globale Approve-all-Freigabe ist aktiv", active_opening.message)
+            self.assertIn("Approve-all ist fuer diese Session aktiv", active_opening.message)
             self.assertIn("Promote-Gates bleiben aktiv", active_opening.message)
+
+            persistent_opening = NormalModeController(root).opening_message()
+
+            self.assertIn("persistenter Approve-all-Grant", persistent_opening.message)
+
+    def test_expert_mode_menu_opens_shell_in_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch("vocr.ui.normal_mode.subprocess.Popen") as popen:
+                open_expert_shell(root)
+
+            args, kwargs = popen.call_args
+            self.assertEqual(kwargs["cwd"], str(root.resolve()))
+            self.assertIn("powershell", args[0][0])
+            self.assertIn("-NoExit", args[0])
+            self.assertIn("vocr --help", args[0][-1])
 
     def test_normal_mode_surface_decision_uses_local_gui_without_buildchain(self) -> None:
         decision = normal_mode_surface_decision()
@@ -301,7 +318,7 @@ class NormalModeTests(unittest.TestCase):
         self.assertIn("Approve-all is active", result.output)
         self.assertIn("Created task", result.output)
 
-    def test_expert_cli_can_grant_dangerous_global_permissions_at_start(self) -> None:
+    def test_expert_cli_can_use_dangerous_permissions_for_current_run(self) -> None:
         request = (
             "Ziel: Baue eine Healthcheck-API. "
             "Arbeitsbereich: src und tests. "
@@ -320,10 +337,9 @@ class NormalModeTests(unittest.TestCase):
 
             self.assertEqual(result.exit_code, 0, result.output)
             self.assertIn("WARNUNG", result.output)
-            self.assertIn("Approve-all is active globally", result.output)
+            self.assertIn("Approve-all is active for this session only", result.output)
             grant = MemoryLedger(vocr_home).active_permission("global")
-            self.assertIsNotNone(grant)
-            self.assertEqual(grant.mode, PermissionMode.approve_all)
+            self.assertIsNone(grant)
 
     def test_expert_cli_commands_remain_available(self) -> None:
         command_help = [

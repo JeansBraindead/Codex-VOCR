@@ -81,9 +81,9 @@ app.add_typer(memory_app, name="memory")
 app.add_typer(beta_app, name="beta")
 console = Console()
 WARMUP_STAGGER_SECONDS = 20.0
-DANGEROUS_PERMISSION_REASON = "User enabled dangerous global approve-all at session start."
+DANGEROUS_PERMISSION_REASON = "User enabled dangerous session approve-all."
 DANGEROUS_PERMISSION_WARNING = (
-    "Dangerous Approve-all is active globally. VOCR will skip internal worker permission prompts "
+    "Dangerous Approve-all is active for this session. VOCR will skip internal worker permission prompts "
     "where possible. Review, ScopeGuard, secret scan and Promote gates remain active."
 )
 
@@ -93,15 +93,12 @@ def safe_text(value: str) -> str:
     return escape(sanitized if isinstance(sanitized, str) else str(sanitized))
 
 
-def grant_dangerous_global_permissions(store: MemoryLedger) -> PermissionGrant:
-    store.init()
-    grant = PermissionGrant(
+def dangerous_session_permission() -> PermissionGrant:
+    return PermissionGrant(
         mode=PermissionMode.approve_all,
         scope="global",
         reason=DANGEROUS_PERMISSION_REASON,
     )
-    store.append(LedgerEventType.permission_granted, grant)
-    return grant
 
 
 def print_dangerous_permission_warning() -> None:
@@ -310,10 +307,10 @@ def persist_tasks(store: MemoryLedger, tasks: list, *, print_tasks: bool = True)
             console.print(render_task_template(task))
 
 
-def write_dispatch_handoff(store: MemoryLedger, task_id: str) -> None:
+def write_dispatch_handoff(store: MemoryLedger, task_id: str, *, session_permission: PermissionGrant | None = None) -> None:
     task = dispatch_task(store, GitWorktreeManager(), task_id)
     MessageBus(store).publish("dispatch", "vocr", f"Task {task.id} dispatched to {task.worktree_path}")
-    permission = store.active_permission(task.slice_id) or store.active_permission("global")
+    permission = session_permission or store.active_permission(task.slice_id) or store.active_permission("global")
     manifest_path = CodexMcpClient().write_manifest(task, permission=permission)
     guard = ScopeGuard()
     scope_path = guard.write_worker_policy(task)
@@ -360,8 +357,8 @@ def run_vision_pipeline(
 ) -> None:
     store = ledger()
     store.init()
+    session_permission = dangerous_session_permission() if dangerously_skip_permissions else None
     if dangerously_skip_permissions:
-        grant_dangerous_global_permissions(store)
         print_dangerous_permission_warning()
     if request_clarification(store, request):
         return
@@ -387,7 +384,7 @@ def run_vision_pipeline(
     if go:
         console.print("[yellow]Approve-all is active for this slice.[/yellow]")
     if dangerously_skip_permissions:
-        console.print("[yellow]Approve-all is active globally for this VOCR workspace.[/yellow]")
+        console.print("[yellow]Approve-all is active for this session only.[/yellow]")
 
     if not auto:
         console.print("[yellow]Plan-only mode:[/yellow] run organize/dispatch manually if needed.")
@@ -411,7 +408,7 @@ def run_vision_pipeline(
     if go and dispatch_workers:
         for task in tasks:
             try:
-                write_dispatch_handoff(store, task.id)
+                write_dispatch_handoff(store, task.id, session_permission=session_permission)
             except (GitWorktreeError, ValueError) as exc:
                 console.print(f"[yellow]Dispatch skipped for {task.id}:[/yellow] {safe_text(str(exc))}")
     elif not go:
@@ -468,7 +465,7 @@ def start_normal_mode(
         "--dangerously-skip-permissions",
         "--skip-permissions-dangerously",
         help=(
-            "DANGEROUS: grant global approve-all for VOCR worker permission prompts. "
+            "DANGEROUS: grant session approve-all for VOCR worker permission prompts. "
             "Review and promote gates remain active."
         ),
     ),
@@ -476,22 +473,22 @@ def start_normal_mode(
     """Open the non-technical local GUI Visionary conversation."""
 
     result = prepare_start_or_exit()
+    session_permission = dangerous_session_permission() if dangerously_skip_permissions else None
     if dangerously_skip_permissions:
-        grant_dangerous_global_permissions(MemoryLedger(result.repo_root / ".vocr"))
         print_dangerous_permission_warning()
-    open_normal_mode(result.repo_root, console_only=console_only)
+    open_normal_mode(result.repo_root, console_only=console_only, session_permission=session_permission)
 
 
-def open_normal_mode(repo_root: Path, *, console_only: bool) -> None:
+def open_normal_mode(repo_root: Path, *, console_only: bool, session_permission: PermissionGrant | None = None) -> None:
     if console_only:
-        launch_console_mode(repo_root)
+        launch_console_mode(repo_root, session_permission=session_permission)
         return
     try:
-        launch_normal_mode(repo_root)
+        launch_normal_mode(repo_root, session_permission=session_permission)
     except NormalModeUiError as exc:
         console.print(f"[yellow]Lokales Fenster nicht verfuegbar:[/yellow] {safe_text(str(exc))}")
         console.print("[cyan]Ich starte den ruhigen Dialog stattdessen im Terminal.[/cyan]")
-        launch_console_mode(repo_root)
+        launch_console_mode(repo_root, session_permission=session_permission)
 
 
 @app.command("gui")
@@ -760,7 +757,7 @@ def vision(
         "--dangerously-skip-permissions",
         "--skip-permissions-dangerously",
         help=(
-            "DANGEROUS: grant global approve-all for VOCR worker permission prompts. "
+            "DANGEROUS: grant session approve-all for VOCR worker permission prompts. "
             "Does not imply promote or merge."
         ),
     ),
@@ -793,7 +790,7 @@ def answer(
         "--dangerously-skip-permissions",
         "--skip-permissions-dangerously",
         help=(
-            "DANGEROUS: grant global approve-all for VOCR worker permission prompts. "
+            "DANGEROUS: grant session approve-all for VOCR worker permission prompts. "
             "Does not imply promote or merge."
         ),
     ),
@@ -842,8 +839,6 @@ def grant_go(
     all_permissions: bool = typer.Option(
         False,
         "--all",
-        "--dangerously-skip-permissions",
-        "--skip-permissions-dangerously",
         help="Required explicit flag for approve-all unattended execution.",
     ),
     reason: str = typer.Option(
@@ -853,10 +848,13 @@ def grant_go(
     ),
 ) -> None:
     if not all_permissions:
-        raise typer.BadParameter("Use --all or --dangerously-skip-permissions to explicitly grant approve-all permission.")
+        raise typer.BadParameter("Use --all to explicitly grant persistent approve-all permission.")
     grant = PermissionGrant(mode=PermissionMode.approve_all, scope=scope, reason=reason)
     ledger().append(LedgerEventType.permission_granted, grant)
-    print_dangerous_permission_warning()
+    console.print(
+        "[bold red]WARNUNG:[/bold red] Persistent approve-all grant written to the VOCR ledger. "
+        "Review, ScopeGuard, secret scan and Promote gates remain active."
+    )
     console.print(f"[green]Approve-all granted[/green] for scope: {scope}")
 
 

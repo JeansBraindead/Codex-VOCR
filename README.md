@@ -16,6 +16,7 @@ Empfohlen auf Windows:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install-vocr.ps1 -Tests -NoStart
+codex login
 .\start-vocr.ps1
 ```
 
@@ -41,8 +42,8 @@ vocr start
 `vocr bootstrap` prueft Repo, Python, Git, `.env`, `.vocr`, Installation und
 Graphify. Wenn etwas fehlt, wird es idempotent vorbereitet; wenn der Ordner
 falsch ist, stoppt VOCR mit einer Diagnose statt mit einem rohen Traceback.
-Details, Troubleshooting und der Beta-Walkthrough stehen in
-[docs/INSTALLATION.md](docs/INSTALLATION.md).
+Details und Troubleshooting stehen in [docs/INSTALLATION.md](docs/INSTALLATION.md).
+Die Beta-Anleitung steht separat in [docs/BETA_TESTING.md](docs/BETA_TESTING.md).
 
 ## Normaler Ablauf
 
@@ -67,8 +68,9 @@ Der normale Einstieg ist:
 vocr start
 ```
 
-`vocr start` oeffnet im MVP eine lokale Tkinter-Oberflaeche. Falls kein Fenster
-verfuegbar ist oder du im Terminal bleiben willst:
+`vocr start` oeffnet im MVP eine lokale Tkinter-Oberflaeche. Der Expertmodus ist
+ueber den Menuepunkt `Expertmodus` erreichbar. Falls kein Fenster verfuegbar ist
+oder du im Terminal bleiben willst:
 
 ```powershell
 vocr start --console
@@ -81,9 +83,9 @@ willst, gibt es die riskantere Startoption:
 vocr start --dangerously-skip-permissions
 ```
 
-Das setzt globale Approve-all-Permissions fuer VOCR/Codex-Worker-Prompts.
-Review, ScopeGuard, Secret-Scan und Promote bleiben trotzdem aktiv; es ist kein
-Auto-Merge und keine Freigabe zum Veroeffentlichen.
+Das setzt Approve-all-Permissions nur fuer diese laufende Session. Review,
+ScopeGuard, Secret-Scan und Promote bleiben trotzdem aktiv; es ist kein Auto-Merge
+und keine Freigabe zum Veroeffentlichen.
 
 Im Normalmodus kennt der User keine technischen Rueckfrage-Codes, Task-IDs oder
 Worktree-Pfade. Der Visionary fragt fehlende Informationen ab und startet keine
