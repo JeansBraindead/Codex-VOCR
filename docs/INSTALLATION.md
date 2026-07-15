@@ -63,43 +63,20 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 
 ## 4. VOCR installieren
 
-Normaler Windows-Weg:
-
-```powershell
-.\install-vocr.ps1
-```
-
-Wenn PowerShell blockiert oder du doppelklicken willst:
-
-```powershell
-.\Start-VOCR.bat
-```
-
-Die sichtbaren Installer-Dateien liegen direkt im Repo-Root:
-
-- `install-vocr.ps1`: installiert und startet VOCR.
-- `start-vocr.ps1`: prueft die Umgebung und startet VOCR erneut.
-- `Start-VOCR.bat`: Fallback fuer blockierte PowerShell ExecutionPolicy.
-
-Wenn du nur `install-vocr.ps1` in einem leeren Ordner hast, kann es VOCR selbst
-klonen:
-
-```powershell
-.\install-vocr.ps1
-```
-
-Standardziel ist `.\Codex-VOCR`. Ein eigener Zielordner geht so:
-
-```powershell
-.\install-vocr.ps1 -InstallDir D:\Tools\Codex-VOCR
-```
-
-Expert-Weg im aktivierten venv:
+Im aktivierten venv:
 
 ```powershell
 pip install -e .
+```
+
+Pruefen:
+
+```powershell
 vocr --help
 ```
+
+Erwartung: Die Hilfe zeigt Kommandos wie `start`, `vision`, `model`, `worker`,
+`dispatch-ready`, `work-ready`, `learn`, `compact`, `test`.
 
 ## 5. Robuster Bootstrap
 
@@ -141,12 +118,6 @@ vocr start
 
 ```powershell
 vocr install --tests
-```
-
-Wenn `vocr` bereits global verfuegbar ist und du in einem leeren Ordner stehst:
-
-```powershell
-vocr bootstrap --clone --install-dir Codex-VOCR
 ```
 
 Wenn PowerShell wegen ExecutionPolicy blockiert, nutze den `.bat`-Fallback:
@@ -241,8 +212,6 @@ vocr model lmstudio --model "dein-modellname-aus-model-list"
 Status pruefen:
 
 ```powershell
-vocr model check --model "dein-modellname-aus-model-list"
-vocr model check --api-key "dein-lm-studio-token"
 vocr model status
 ```
 
@@ -279,14 +248,6 @@ deaktivieren oder VOCR mit einem gueltigen lokalen Token konfigurieren:
 
 ```powershell
 vocr model local --model "dein-modellname" --base-url http://localhost:1234/v1 --api-key "dein-lm-studio-token"
-```
-
-Oder kuerzer fuer LM Studio:
-
-```powershell
-vocr model lmstudio --model "dein-modellname" --api-key "dein-lm-studio-token"
-vocr model check --model "dein-modellname"
-vocr model list --api-key "dein-lm-studio-token"
 ```
 
 VOCR behandelt diesen Fehler nicht als erfolgreichen Live-Agent-Lauf. Der
@@ -385,9 +346,6 @@ vocr compact --keep-last 200
 - `.vocr/archive/`: kompaktierte alte Ledger-Segmente
 - `.vocr/artifacts/<task-id>/review.md`: Review-Artefakte
 - `<repo>.vocr-worktrees/`: isolierte Task-Worktrees neben dem Repo
-
-Hinweis: `vocr clean --archives` loescht alte Dateien unter `.vocr/archive/`
-dauerhaft. Es gibt keinen Papierkorb-/Trash-Move.
 
 ## 13. Update bestehender Installation
 

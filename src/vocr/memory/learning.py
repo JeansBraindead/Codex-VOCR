@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
+from statistics import median
 
 from vocr.memory.ledger import MemoryLedger
-from vocr.models import LearningEntry, LearningSnapshot, ReviewDecision
+from vocr.models import LearningEntry, LearningSnapshot, ReviewDecision, VocrTask
 
 
 class LearningStore:
@@ -46,20 +48,10 @@ class LearningStore:
             decisions = _top_items(entry.decisions, 3)
             lines.append(
                 f"- {entry.key}: count={entry.count}; files={files or '-'}; "
-                f"tests={tests or '-'}; decisions={decisions or '-'}; "
-                f"token_est={entry.estimated_tokens}; retries={entry.retry_count}; "
-                f"avg_review_s={_average_seconds(entry.review_seconds_total, entry.count)}; "
-                f"avg_success_s={_average_seconds(entry.accepted_review_seconds_total, entry.decisions.get(ReviewDecision.accepted.value, 0))}"
+                f"tests={tests or '-'}; decisions={decisions or '-'}; token_est={entry.estimated_tokens}"
             )
         if not ranked:
             lines.append("- no learning signals yet")
-        if snapshot.clarifications_requested:
-            lines.append(
-                "Clarifications: "
-                f"requested={snapshot.clarifications_requested}; answered={snapshot.clarifications_answered}; "
-                f"answer_rate={snapshot.clarification_answer_rate_percent}%; "
-                f"topics={_top_items(snapshot.clarification_topics, 5) or '-'}"
-            )
         return "\n".join(lines)
 
     def file_boosts(self, query: str | None = None, max_boost: float = 2.5) -> dict[str, float]:
@@ -84,26 +76,32 @@ class LearningStore:
                 boosts[path] = boosts.get(path, 0.0) + min(count * 0.35 * risk_multiplier * success_multiplier, max_boost)
         return {path: min(score, max_boost) for path, score in boosts.items()}
 
+    def predict_task_tokens(self, task: VocrTask) -> int | None:
+        snapshot = self.load()
+        task_terms = set(_terms(" ".join([task.title, *task.scope])))
+        if not task_terms:
+            return None
+
+        estimates: list[float] = []
+        for entry in [*snapshot.scopes.values(), *snapshot.task_titles.values()]:
+            entry_terms = set(_terms(entry.key))
+            if not entry_terms.intersection(task_terms):
+                continue
+            if entry.estimated_tokens <= 0:
+                continue
+            estimates.append(entry.estimated_tokens / max(entry.count, 1))
+        if not estimates:
+            return None
+        return int(median(estimates))
+
 
 def build_learning_snapshot(ledger: MemoryLedger) -> LearningSnapshot:
     snapshot = LearningSnapshot()
     tasks = {task.id: task for task in ledger.tasks()}
     telemetry_by_task: dict[str, int] = {}
-    telemetry_runs_by_task: dict[str, int] = {}
-    clarification_sessions = ledger.clarification_sessions()
-    snapshot.clarifications_requested = len(clarification_sessions)
-    snapshot.clarifications_answered = sum(1 for session in clarification_sessions if session.answers)
-    snapshot.clarification_answer_rate_percent = _percent(
-        snapshot.clarifications_answered,
-        snapshot.clarifications_requested,
-    )
-    for session in clarification_sessions:
-        topics = [question.topic for question in session.report.questions] + session.report.missing_topics
-        _count_many(snapshot.clarification_topics, topics)
     for item in ledger.telemetry():
         if not item.task_id:
             continue
-        telemetry_runs_by_task[item.task_id] = telemetry_runs_by_task.get(item.task_id, 0) + 1
         usage = item.token_usage
         total = usage.total_tokens or (usage.prompt_tokens_estimate or 0) + (
             usage.completion_tokens_estimate or 0
@@ -118,9 +116,6 @@ def build_learning_snapshot(ledger: MemoryLedger) -> LearningSnapshot:
         tests = review.tests_reviewed
         risks = review.required_changes + review.risks
         token_total = telemetry_by_task.get(task.id, 0)
-        retry_count = max(0, telemetry_runs_by_task.get(task.id, 0) - 1)
-        review_seconds = max(0, int((review.created_at - task.created_at).total_seconds()))
-        accepted_review_seconds = review_seconds if review.decision == ReviewDecision.accepted else 0
 
         for scope in task.scope:
             _apply_signal(
@@ -130,9 +125,6 @@ def build_learning_snapshot(ledger: MemoryLedger) -> LearningSnapshot:
                 review.decision.value,
                 risks,
                 token_total,
-                retry_count,
-                review_seconds,
-                accepted_review_seconds,
             )
         _apply_signal(
             _entry(snapshot.task_titles, f"task:{task.title.lower()}"),
@@ -141,9 +133,6 @@ def build_learning_snapshot(ledger: MemoryLedger) -> LearningSnapshot:
             review.decision.value,
             risks,
             token_total,
-            retry_count,
-            review_seconds,
-            accepted_review_seconds,
         )
         for path in files:
             _apply_signal(
@@ -153,9 +142,6 @@ def build_learning_snapshot(ledger: MemoryLedger) -> LearningSnapshot:
                 review.decision.value,
                 risks,
                 token_total,
-                retry_count,
-                review_seconds,
-                accepted_review_seconds,
             )
     return snapshot
 
@@ -173,15 +159,9 @@ def _apply_signal(
     decision: str,
     risks: list[str],
     token_total: int,
-    retry_count: int,
-    review_seconds: int,
-    accepted_review_seconds: int,
 ) -> None:
     entry.count += 1
     entry.estimated_tokens += token_total
-    entry.retry_count += retry_count
-    entry.review_seconds_total += review_seconds
-    entry.accepted_review_seconds_total += accepted_review_seconds
     _count_many(entry.files, files)
     _count_many(entry.tests, tests)
     _count_many(entry.decisions, [decision])
@@ -200,13 +180,5 @@ def _top_items(values: dict[str, int], limit: int) -> str:
     return ", ".join(f"{key}({count})" for key, count in items)
 
 
-def _average_seconds(total: int, count: int) -> int:
-    return int(total / count) if count else 0
-
-
-def _percent(value: int, total: int) -> int:
-    return int((value / total) * 100) if total else 0
-
-
 def _terms(query: str) -> list[str]:
-    return [term.strip().lower() for term in query.split() if term.strip()]
+    return [term.lower() for term in re.findall(r"[A-Za-z0-9]+", query) if term]

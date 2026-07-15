@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import os
 
 
 MODEL_KEYS = {"OPENAI_BASE_URL", "OPENAI_MODEL", "OPENAI_API_KEY"}
@@ -19,15 +18,6 @@ def read_env_file(path: Path | str = ".env") -> dict[str, str]:
             continue
         key, value = stripped.split("=", 1)
         values[key.strip()] = value.strip()
-    return values
-
-
-def read_model_env(path: Path | str = ".env") -> dict[str, str]:
-    values = read_env_file(path)
-    for key in MODEL_KEYS:
-        value = os.getenv(key)
-        if value:
-            values[key] = value
     return values
 
 

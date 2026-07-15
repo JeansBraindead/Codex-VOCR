@@ -1,43 +1,20 @@
-# AUTOPILOT_LOG
+# VOCR Autopilot Log
 
-## ZUSAMMENFASSUNG
+## Contract-Handoff Phases
 
-- Branch: `vocr-autopilot-2026-07-10`
-- Phasen fertig / angefangen: 0 angefangen; Installer-Fix abgeschlossen; Phase-Spec `VOCR_Phasen_Upgrade.md` fehlt.
-- Tasks done / blocked / needs-human: 17 done / 0 blocked / 1 needs-human.
-- Commits: 17 auf diesem Branch nach LM-Studio-Endpoint-Fix.
-- Beta-ready: sichtbarer Windows-Installer im Repo-Root, Clone-aus-leerem-Ordner, portable Script-Generierung, Bootstrap-Tests und Teststage-Smokes gruen.
-- Rollout offen: echte Review durch User, fehlende Phasen-Spec nachreichen, Installer manuell auf Windows doppelklicken, PR-Review-Posting gegen echten Test-PR validieren.
-- Claude Review / Resume / Todo: siehe `CLAUDE_REVIEW.md`.
-- Phase-4-Status: nicht begonnen; default OFF / review-pending bleibt unveraendert.
-- Lokale KI: LM Studio erreichbar, aber `/v1/models` liefert 401 Auth.
-- Claude: `claude` CLI aktuell nicht gefunden; Retry bis 20:15 Berlin-Zeit vorgesehen.
-
-## LOG
-
-[19:11] SETUP - Autopilot-Prompt gelesen - Branch-Regeln uebernommen.
-[19:12] SETUP - `VOCR_Phasen_Upgrade.md` fehlt - NEEDS_HUMAN - Phasen 0 bis 4 koennen nicht exakt aus Spec abgearbeitet werden.
-[19:13] SETUP - LM Studio Check - WARN - `http://localhost:1234/v1/models` liefert 401 Auth.
-[19:13] SETUP - Claude Check - WARN - `claude` CLI nicht gefunden; non-blocking Retry bis 20:15.
-[19:17] PHASE installer - Sichtbare Windows-Installer - DONE (Score 4/4) - commit pending - lokal: compileall/unittest gruen - Repo enthaelt install-vocr.ps1, start-vocr.ps1 und Start-VOCR.bat.
-[19:23] PHASE installer - Clone-Flow fuer leere Ordner - DONE (Score 4/4) - commit pending - lokal: compileall/unittest/PS syntax gruen - install-vocr.ps1 kann ohne pyproject nach Codex-VOCR klonen.
-[19:27] PHASE installer - Python-Version im Script hart pruefen - DONE (Score 3/3) - commit pending - lokal: compileall/unittest/PS syntax gruen - Fallback `python` muss jetzt 3.11+ sein.
-[19:31] PHASE installer - BAT-Fallback Python 3.11 haerten - DONE (Score 3/3) - commit pending - lokal: compileall/unittest gruen - Start-VOCR.bat nutzt bevorzugt py -3.11 und stoppt bei altem Python.
-[19:36] PHASE installer - Native Commands hart auswerten - DONE (Score 4/4) - commit pending - lokal: compileall/unittest/PS syntax gruen - git/pip/bootstrap/start koennen nicht mehr still fehlschlagen.
-[19:40] PHASE installer - Start-Script Native Commands hart auswerten - DONE (Score 3/3) - commit pending - lokal: compileall/unittest/PS syntax gruen - start-vocr.ps1 stoppt bei pip/bootstrap/start-Fehlern.
-[19:43] PHASE installer - Windows-Skript-Zeilenenden fixieren - DONE (Score 2/2) - commit pending - lokal: compileall/unittest/diff-check gruen - .ps1/.bat sind in .gitattributes auf CRLF gesetzt.
-[19:48] PHASE installer - CLI Bootstrap Clone-Option - DONE (Score 4/4) - commit pending - lokal: compileall/unittest/help gruen - `vocr bootstrap --clone --install-dir ...` kann aus leerem Ordner clonen.
-[19:54] PHASE housekeeping - Archive-Retention fuer clean - DONE (Score 3/3) - commit pending - lokal: compileall/unittest/diff-check gruen - `vocr clean --archives --archive-older-than-days N` entfernt alte Ledger-Archive.
-[resume] PHASE learning - Retry- und Clarification-Signale - DONE (Score 3/3) - commit pending - lokal: compileall/unittest/diff-check gruen - LearningSnapshot zaehlt Rueckfragen, Antworten, Token und Worker-Retries ohne Rohdaten-Bloat.
-[resume] PHASE mcp - Confirmed Promote Tool - DONE (Score 3/3) - commit pending - lokal: compileall/unittest/diff-check gruen - MCP kann accepted Tasks nur mit confirm=true ueber denselben Promote-Gate-Pfad promoten.
-[resume] PHASE learning - Review-Dauer-Signale - DONE (Score 3/3) - commit pending - lokal: compileall/unittest/diff-check gruen - LearningEntry aggregiert Review- und Accepted-Review-Sekunden aus vorhandenen Timestamps.
-[resume] PHASE review - Optionaler GitHub PR-Review - DONE (Score 3/3) - commit pending - lokal: compileall/unittest/help/diff-check gruen - `vocr review --post-pr-review` nutzt Inline-Kommentare mit sicherer Datei-/Zeilenposition und faellt sonst auf normalen PR-Review zurueck.
-[resume] PHASE learning - Clarification-Qualitaetsproxy - DONE (Score 3/3) - commit pending - lokal: compileall/unittest/diff-check gruen - LearningSnapshot aggregiert Answer-Rate und offene Rueckfrage-Topics ohne Antwort-Rohtexte.
-[resume] TESTSTAGE - Lokale Smoke-Abnahme - DONE (Score 4/4) - commit pending - `vocr test`, `doctor`, `worker doctor`, `graphify`, `learn`, `context --learning` und `secrets scan` gruen.
-[resume] PHASE model - LM-Studio/Auth-Diagnose repariert - DONE (Score 4/4) - commit pending - lokal: compileall/unittest/help/diff-check gruen - Model-Status nutzt effektive Env, zeigt `[set]`, `model list/check` senden lokale Tokens nur bei lokaler Base-URL und geben klare 401-Diagnose aus.
-[resume] PHASE model - LM-Studio-Endpoint-Fallback und Chat-Smoke - DONE (Score 4/4) - commit pending - lokal: compileall/unittest/help/diff-check gruen - `model list/check` erkennen falsche 200-Antworten, fallbacken auf `/api/v1/models` und `/api/v0/models`; `model check --model` prueft Chat-Completions direkt.
-[2026-07-11] REVIEW - Claude-Review nachgereicht - DONE - lokaler Claude-Call uebersprungen; Review in `CLAUDE_REVIEW.md` dokumentiert; Doku-Hinweis zu dauerhaftem `clean --archives` ergaenzt.
-[2026-07-11] PHASE 0 - Fundament geschlossen - DONE - Ledger-Lock Windows/POSIX, echtes Worker-Usage-Parsing mit Estimate-Fallback, `vocr eval-golden` Stub-Worker-Gate-Test, compileall/unittest/eval-golden gruen.
-[2026-07-11] PHASE 0.5 - Effizienz-Ernte geschlossen - DONE - Confidence-Gate, kollabierter Live-Fan-out, taskgescopte Budget-Context-Packs, Docs-Downweight, persistierte BM25-Tokens, Ledger-Cache, Retry-Delta, konsolidierte Worker-Guidance und scoped compileall; unittest/eval-golden/context/test gruen.
-[2026-07-11] PHASE 1 - Gates haerten geschlossen - DONE - Dispatch blockiert Plan-Invarianten (Scope/Verifikation/Dependency-Zyklen), AcceptanceCriterion kann sichere check_command tragen, `vocr revert` reverted geloggte Task-Commits und setzt Tasks auf needs_changes; compileall/unittest/eval-golden gruen.
-[2026-07-11] PHASE 2 - Orchestrierung geschlossen - DONE - DAG-Wellen, ready dispatch/work Selektoren, paralleles `dispatch-ready`/`work-ready`, Graphify einmal pro Dispatch-Welle, `vocr orchestrate`/`vocr afk` als AFK-Loop ohne Review/Promote/Merge; compileall/unittest/eval-golden gruen.
+- Phase 0 (`bed07f6`): Baseline captured without code changes; gates established on the venv test path.
+- Phase 1 (`9038d5a`): Added task contract handoff with `.vocr/VOCR_TASK.json`, separated context pack, and stable contract prompt mode.
+- Phase 2 (`d47c302`): Added structured Codex review reports with schema validation, retry, and unstructured fallback.
+- Phase 3 (`7b51175`): Added check ratchet modes through `VOCR_REQUIRE_CHECKS`.
+- Phase 4 (`70d54fb`): Switched organize context from slice-wide copy to per-task context queries.
+- Phase 5 (`0e1b881`): Added optional baseline checks in task contracts without blocking dispatch.
+- Phase 6 (`22a1172`): Replaced raw retry tails with bounded failure distillates.
+- Phase 7 (`24539fe`): Added Python symbol spans and `vocr context --symbol`.
+- Phase 8 (`bc83fa1`): Added predictive retry token budget warnings/blocking from LearningStore history.
+- Phase 9 (`6bd146b`): Added optional incremental Codex review base refs while deterministic gates stay full-diff.
+- Phase 10 (`1cc3944`): Added default-off embedding retrieval with BM25 fallback.
+- Phase 11 (`23da69a`): Added default-off local query expansion for trusted task title and goal text.
+- Phase 12 (`7cb5780`): Added inert scope claims in the ledger with list/release support.
+- Phase 13 (`585703c`): Added optional parallel `work-ready` waves for claim-disjunkt tasks.
+- Phase 14 (`d34c2bc`): Added default-off accepted-review project memory and manual prune/list commands.
+- Phase 15 (this commit): Added final docs, threat model updates, CLI reference, and rollout summary.

@@ -93,17 +93,9 @@ class Bootstrapper:
         run_tests: bool = False,
         write_scripts: bool = False,
         allow_install: bool = True,
-        clone_if_missing: bool = False,
-        repo_url: str = REPO_URL,
-        install_dir: str = "Codex-VOCR",
     ) -> BootstrapResult:
-        repo_root, pre_steps = self._require_repo_root(
-            clone_if_missing=clone_if_missing,
-            repo_url=repo_url,
-            install_dir=install_dir,
-        )
+        repo_root = self._require_repo_root()
         result = BootstrapResult(repo_root=repo_root)
-        result.steps.extend(pre_steps)
         self._check_python(result)
         self._check_git(result)
         self._ensure_env_file(result, repo_root)
@@ -126,9 +118,8 @@ class Bootstrapper:
         return result
 
     def prepare_start(self) -> BootstrapResult:
-        repo_root, pre_steps = self._require_repo_root()
+        repo_root = self._require_repo_root()
         result = BootstrapResult(repo_root=repo_root)
-        result.steps.extend(pre_steps)
         self._check_python(result)
         self._check_git(result)
         self._ensure_env_file(result, repo_root)
@@ -136,46 +127,16 @@ class Bootstrapper:
         self._ensure_graph(result, repo_root)
         return result
 
-    def _require_repo_root(
-        self,
-        *,
-        clone_if_missing: bool = False,
-        repo_url: str = REPO_URL,
-        install_dir: str = "Codex-VOCR",
-    ) -> tuple[Path, list[BootstrapStep]]:
+    def _require_repo_root(self) -> Path:
         repo_root = find_repo_root(self.start_path)
-        if repo_root is not None:
-            return repo_root, []
-        if not clone_if_missing:
+        if repo_root is None:
             raise BootstrapError(
                 "Hier liegt kein VOCR-Repo. Wechsle in den geklonten Codex-VOCR-Ordner "
                 "oder klone zuerst das Repo:\n"
                 f"git clone {REPO_URL} Codex-VOCR\n"
                 "cd Codex-VOCR"
             )
-        if self.which("git") is None:
-            raise BootstrapError(
-                "Hier liegt kein VOCR-Repo und Git wurde nicht gefunden. "
-                "Installiere Git fuer Windows: https://git-scm.com/download/win"
-            )
-        parent = self.start_path if self.start_path.is_dir() else self.start_path.parent
-        target = (parent / install_dir).resolve()
-        if is_vocr_repo(target):
-            return target, [BootstrapStep("clone", "ok", f"Existing VOCR repo reused at {target}.")]
-        if target.exists():
-            raise BootstrapError(
-                f"Zielordner existiert bereits, ist aber kein VOCR-Repo: {target}. "
-                "Waehle einen leeren Ordner mit --install-dir."
-            )
-        completed = self._run(["git", "clone", repo_url, str(target)], cwd=parent)
-        if completed.returncode != 0:
-            raise BootstrapError(
-                "Git clone ist fehlgeschlagen. "
-                f"Details: {(completed.stderr or completed.stdout).strip()}"
-            )
-        if not is_vocr_repo(target):
-            raise BootstrapError(f"Clone abgeschlossen, aber Ziel ist kein VOCR-Repo: {target}")
-        return target, [BootstrapStep("clone", "changed", f"Cloned VOCR repo to {target}.")]
+        return repo_root
 
     def _check_python(self, result: BootstrapResult) -> None:
         if tuple(self.python_version[:2]) < MIN_PYTHON:
@@ -273,9 +234,25 @@ class Bootstrapper:
         install_script = repo_root / "install-vocr.ps1"
         start_script = repo_root / "start-vocr.ps1"
         bat_script = repo_root / "Start-VOCR.bat"
-        install_script.write_text(INSTALL_PS1, encoding="utf-8")
-        start_script.write_text(START_PS1, encoding="utf-8")
-        bat_script.write_text(START_BAT, encoding="utf-8")
+        bootstrap_line = "python -m vocr.main bootstrap --no-start --write-scripts"
+        start_line = "python -m vocr.main start"
+        ps_header = (
+            "$ErrorActionPreference = 'Stop'\n"
+            f"Set-Location -LiteralPath '{repo_root}'\n"
+            "if (-not (Test-Path .venv)) { python -m venv .venv }\n"
+            ". .\\.venv\\Scripts\\Activate.ps1\n"
+        )
+        install_script.write_text(ps_header + "python -m pip install -e .\n" + bootstrap_line + "\n", encoding="utf-8")
+        start_script.write_text(ps_header + "python -m pip install -e .\n" + bootstrap_line + "\n" + start_line + "\n", encoding="utf-8")
+        bat_script.write_text(
+            "@echo off\r\n"
+            f"cd /d \"{repo_root}\"\r\n"
+            "if not exist .venv\\Scripts\\python.exe python -m venv .venv\r\n"
+            ".venv\\Scripts\\python.exe -m pip install -e .\r\n"
+            ".venv\\Scripts\\python.exe -m vocr.main bootstrap --no-start\r\n"
+            ".venv\\Scripts\\python.exe -m vocr.main start\r\n",
+            encoding="utf-8",
+        )
 
     def _run(
         self,
@@ -292,190 +269,3 @@ class Bootstrapper:
             check=False,
             env=env,
         )
-
-
-INSTALL_PS1 = r'''param(
-    [switch]$Tests,
-    [switch]$NoStart,
-    [string]$InstallDir = "Codex-VOCR",
-    [string]$RepoUrl = "https://github.com/JeansBraindead/Codex-VOCR.git"
-)
-
-$ErrorActionPreference = "Stop"
-
-function Write-Step($Message) {
-    Write-Host "[VOCR] $Message" -ForegroundColor Cyan
-}
-
-function Invoke-Checked($Exe, $Arguments, $FailureMessage) {
-    & $Exe @Arguments
-    if ($LASTEXITCODE -ne 0) { throw $FailureMessage }
-}
-
-function Resolve-Python {
-    $py = Get-Command py -ErrorAction SilentlyContinue
-    if ($py) {
-        try {
-            & py -3.11 --version *> $null
-            if ($LASTEXITCODE -eq 0) { return @{ Exe = "py"; Args = @("-3.11") } }
-        } catch {}
-    }
-    $python = Get-Command python -ErrorAction SilentlyContinue
-    if ($python) {
-        & python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" *> $null
-        if ($LASTEXITCODE -eq 0) { return @{ Exe = "python"; Args = @() } }
-    }
-    throw "Python 3.11+ wurde nicht gefunden. Installiere Python 3.11 oder neuer und starte den Installer erneut."
-}
-
-try {
-    $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-    Set-Location -LiteralPath $repoRoot
-
-    if (-not (Test-Path "pyproject.toml")) {
-        if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-            throw "Hier liegt kein VOCR-Repo und Git wurde nicht gefunden. Installiere Git fuer Windows: https://git-scm.com/download/win"
-        }
-        $target = Join-Path $repoRoot $InstallDir
-        if (Test-Path (Join-Path $target "pyproject.toml")) {
-            Write-Step "Nutze vorhandenes Repo: $target"
-        } elseif (Test-Path $target) {
-            throw "Zielordner existiert bereits, ist aber kein VOCR-Repo: $target. Bitte gib mit -InstallDir einen leeren oder passenden Ordner an."
-        } else {
-            Write-Step "Kein VOCR-Repo gefunden. Klone nach: $target"
-            Invoke-Checked -Exe "git" -Arguments @("clone", $RepoUrl, $target) -FailureMessage "Git clone ist fehlgeschlagen. Pruefe Repo-URL, Netzwerk und Git-Anmeldung."
-        }
-        Set-Location -LiteralPath $target
-        $repoRoot = $target
-    }
-
-    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-        throw "Git wurde nicht gefunden. Installiere Git fuer Windows: https://git-scm.com/download/win"
-    }
-
-    $pythonCmd = Resolve-Python
-    Write-Step "Repo: $repoRoot"
-
-    if (-not (Test-Path ".venv")) {
-        Write-Step "Lege .venv an"
-        Invoke-Checked -Exe $pythonCmd.Exe -Arguments ($pythonCmd.Args + @("-m", "venv", ".venv")) -FailureMessage "Virtuelle Umgebung konnte nicht angelegt werden."
-    } else {
-        Write-Step "Nutze vorhandene .venv"
-    }
-
-    $venvPython = Join-Path $repoRoot ".venv\Scripts\python.exe"
-    if (-not (Test-Path $venvPython)) {
-        throw ".venv wurde gefunden, aber .venv\Scripts\python.exe fehlt. Bitte .venv pruefen oder neu anlegen."
-    }
-
-    Write-Step "Installiere VOCR editable"
-    Invoke-Checked -Exe $venvPython -Arguments @("-m", "pip", "install", "-e", ".") -FailureMessage "pip install -e . ist fehlgeschlagen."
-
-    $bootstrapArgs = @("bootstrap", "--no-start", "--write-scripts")
-    if ($Tests) { $bootstrapArgs += "--tests" }
-
-    Write-Step "Fuehre VOCR Bootstrap aus"
-    Invoke-Checked -Exe $venvPython -Arguments (@("-m", "vocr.main") + $bootstrapArgs) -FailureMessage "VOCR Bootstrap ist fehlgeschlagen."
-
-    if (-not $NoStart) {
-        Write-Step "Starte VOCR Normalmodus"
-        Invoke-Checked -Exe $venvPython -Arguments @("-m", "vocr.main", "start") -FailureMessage "VOCR Start ist fehlgeschlagen."
-    } else {
-        Write-Step "Installation fertig. Starte spaeter mit: .\start-vocr.ps1"
-    }
-} catch {
-    Write-Host ""
-    Write-Host "VOCR Installation konnte nicht abgeschlossen werden:" -ForegroundColor Red
-    Write-Host $_.Exception.Message -ForegroundColor Red
-    Write-Host ""
-    Write-Host "Naechste Schritte:" -ForegroundColor Yellow
-    Write-Host "1. Pruefe, ob du im geklonten Codex-VOCR-Repo bist."
-    Write-Host "2. Pruefe Python 3.11+: python --version"
-    Write-Host "3. Pruefe Git: git --version"
-    Write-Host "4. Wenn PowerShell blockiert, nutze Start-VOCR.bat."
-    exit 1
-}
-'''
-
-
-START_PS1 = r'''param(
-    [switch]$Console
-)
-
-$ErrorActionPreference = "Stop"
-
-function Invoke-Checked($Exe, $Arguments, $FailureMessage) {
-    & $Exe @Arguments
-    if ($LASTEXITCODE -ne 0) { throw $FailureMessage }
-}
-
-try {
-    $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-    Set-Location -LiteralPath $repoRoot
-
-    if (-not (Test-Path "pyproject.toml")) {
-        throw "Hier liegt kein VOCR-Repo: pyproject.toml fehlt. Starte dieses Skript aus dem geklonten Codex-VOCR-Ordner."
-    }
-
-    if (-not (Test-Path ".venv\Scripts\python.exe")) {
-        Write-Host "[VOCR] .venv fehlt, starte Installer zuerst." -ForegroundColor Yellow
-        & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot "install-vocr.ps1") -NoStart
-    }
-
-    $venvPython = Join-Path $repoRoot ".venv\Scripts\python.exe"
-    Invoke-Checked -Exe $venvPython -Arguments @("-m", "pip", "install", "-e", ".") -FailureMessage "pip install -e . ist fehlgeschlagen."
-    Invoke-Checked -Exe $venvPython -Arguments @("-m", "vocr.main", "bootstrap", "--no-start") -FailureMessage "VOCR Bootstrap ist fehlgeschlagen."
-
-    if ($Console) {
-        Invoke-Checked -Exe $venvPython -Arguments @("-m", "vocr.main", "start", "--console") -FailureMessage "VOCR Start ist fehlgeschlagen."
-    } else {
-        Invoke-Checked -Exe $venvPython -Arguments @("-m", "vocr.main", "start") -FailureMessage "VOCR Start ist fehlgeschlagen."
-    }
-} catch {
-    Write-Host ""
-    Write-Host "VOCR Start konnte nicht abgeschlossen werden:" -ForegroundColor Red
-    Write-Host $_.Exception.Message -ForegroundColor Red
-    Write-Host ""
-    Write-Host "Fallback: Starte .\Start-VOCR.bat oder fuehre .\install-vocr.ps1 erneut aus." -ForegroundColor Yellow
-    exit 1
-}
-'''
-
-
-START_BAT = r'''@echo off
-setlocal
-cd /d "%~dp0"
-
-where powershell >nul 2>nul
-if %ERRORLEVEL%==0 (
-  powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0start-vocr.ps1"
-  exit /b %ERRORLEVEL%
-)
-
-if not exist ".venv\Scripts\python.exe" (
-  py -3.11 -m venv .venv
-  if errorlevel 1 python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)"
-  if errorlevel 1 goto failed_python
-  if not exist ".venv\Scripts\python.exe" python -m venv .venv
-  if errorlevel 1 goto failed
-)
-
-".venv\Scripts\python.exe" -m pip install -e .
-if errorlevel 1 goto failed
-".venv\Scripts\python.exe" -m vocr.main bootstrap --no-start
-if errorlevel 1 goto failed
-".venv\Scripts\python.exe" -m vocr.main start
-exit /b %ERRORLEVEL%
-
-:failed
-echo.
-echo VOCR konnte nicht gestartet werden.
-echo Pruefe Python 3.11+, Git und ob dieses Skript im Codex-VOCR-Repo liegt.
-exit /b 1
-
-:failed_python
-echo.
-echo Python 3.11 oder neuer wurde nicht gefunden.
-echo Installiere Python 3.11+ und starte Start-VOCR.bat erneut.
-exit /b 1
-'''

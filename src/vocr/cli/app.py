@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import os
 import subprocess
 import sys
+import time
 import urllib.error
-import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from shutil import which
@@ -21,12 +20,6 @@ from rich.markup import escape
 from rich.table import Table
 
 from vocr.agents.common import live_model_config
-from vocr.agents.hybrid import (
-    HYBRID_ENABLE_ENV,
-    hybrid_create_task_plan,
-    hybrid_create_vision,
-    hybrid_enabled,
-)
 from vocr.agents.runtime import (
     create_live_task_plan,
     create_live_vision,
@@ -36,7 +29,7 @@ from vocr.agents.runtime import (
 from vocr.bus.bus import MessageBus
 from vocr.codex.config import codex_available, write_mcp_config
 from vocr.codex.mcp_client import CodexMcpClient
-from vocr.config.env_file import provider_from_env, read_env_file, read_model_env, redact_env, update_env_file
+from vocr.config.env_file import provider_from_env, read_env_file, redact_env, update_env_file
 from vocr.git.worktrees import GitWorktreeError, GitWorktreeManager
 from vocr.graph.graphify import GraphStore, RepoGraphBuilder
 from vocr.guardrails.scope_guard import ScopeGuard
@@ -44,47 +37,48 @@ from vocr.guardrails.secrets import scan_diff_for_secrets
 from vocr.install.bootstrap import BootstrapError, BootstrapResult, Bootstrapper
 from vocr.memory.ledger import MemoryLedger, sanitize_payload
 from vocr.memory.learning import LearningStore
+from vocr.memory.project_memory import ProjectMemoryStore
 from vocr.mcp.server import serve_stdio
 from vocr.models import (
     ClarificationSession,
-    CodexRunResult,
     LedgerEventType,
+    MemoryNote,
+    MemoryNoteKind,
     PermissionGrant,
     PermissionMode,
-    OrchestrationRunResult,
-    OrchestrationStep,
-    OrchestrationWave,
     ReviewDecision,
     ReviewResult,
     RunTelemetry,
     TaskStatus,
+    TokenUsage,
+    VocrTask,
 )
 from vocr.orchestration.workflow import (
-    build_slice_replay,
     create_vision,
     dispatch_task,
+    distill_failure_output,
     organize_slice,
     promote_task,
-    ready_dispatch_tasks,
-    ready_work_tasks,
     render_review_markdown,
     review_task,
     render_task_template,
-    revert_task,
 )
-from vocr.orchestration.golden import run_golden_eval
 from vocr.orchestration.readiness import assess_request_readiness
-from vocr.telemetry import estimated_token_usage, extract_token_usage, token_total
 from vocr.ui.normal_mode import NormalModeUiError, launch_console_mode, launch_normal_mode
 
 app = typer.Typer(help="VOCR: Vision / Organize / Code / Review")
 model_app = typer.Typer(help="Configure local or cloud LLMs without editing files.")
 secrets_app = typer.Typer(help="Scan diffs for secrets without printing secret values.")
 worker_app = typer.Typer(help="Configure and diagnose Codex worker execution.")
+claims_app = typer.Typer(help="Inspect and release VOCR scope claims.")
+memory_app = typer.Typer(help="Inspect and prune accepted-review project memory.")
 app.add_typer(model_app, name="model")
 app.add_typer(secrets_app, name="secrets")
 app.add_typer(worker_app, name="worker")
+app.add_typer(claims_app, name="claims")
+app.add_typer(memory_app, name="memory")
 console = Console()
+WARMUP_STAGGER_SECONDS = 20.0
 
 
 def safe_text(value: str) -> str:
@@ -107,6 +101,24 @@ def learning_store() -> LearningStore:
     return LearningStore(Path(os.getenv("VOCR_HOME", ".vocr")))
 
 
+def parallel_worker_count() -> int:
+    try:
+        count = int(os.getenv("VOCR_PARALLEL_WORKERS", "1"))
+    except ValueError:
+        return 1
+    return max(1, count)
+
+
+def parse_memory_note(raw: str) -> MemoryNote:
+    if ":" not in raw:
+        raise typer.BadParameter("Memory note must use kind:text.")
+    kind, text = raw.split(":", 1)
+    try:
+        return MemoryNote(kind=MemoryNoteKind(kind.strip()), text=text.strip())
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
 def refresh_graph() -> None:
     graph_store().refresh(".")
 
@@ -119,11 +131,13 @@ def artifacts_root() -> Path:
     return ledger().root / "artifacts"
 
 
-def record_worker_telemetry(store: MemoryLedger, task_id: str, result, prompt_text: str) -> None:
+def estimate_tokens(text: str) -> int:
+    return max(1, len(text) // 4) if text else 0
+
+
+def record_worker_telemetry(store: MemoryLedger, task_id: str, result, prompt_text: str) -> int:
     task = store.get_task(task_id)
     config = live_model_config()
-    output_text = (result.stdout or "") + (result.stderr or "")
-    usage = extract_token_usage(output_text) or estimated_token_usage(prompt_text, output_text)
     telemetry = RunTelemetry(
         provider="codex-cli",
         model=config["model"],
@@ -132,9 +146,50 @@ def record_worker_telemetry(store: MemoryLedger, task_id: str, result, prompt_te
         task_id=task_id,
         agent="codex-worker",
         command=result.command,
-        token_usage=usage,
+        token_usage=TokenUsage(
+            prompt_tokens_estimate=estimate_tokens(prompt_text),
+            completion_tokens_estimate=estimate_tokens((result.stdout or "") + (result.stderr or "")),
+        ),
     )
+    total = (telemetry.token_usage.prompt_tokens_estimate or 0) + (
+        telemetry.token_usage.completion_tokens_estimate or 0
+    )
+    telemetry.token_usage.total_tokens = total
     store.append(LedgerEventType.telemetry_recorded, telemetry)
+    return total
+
+
+def token_budget_mode() -> str:
+    mode = os.getenv("VOCR_TOKEN_BUDGET_MODE", "off").strip().lower()
+    if mode in {"warn", "block"}:
+        return mode
+    return "off"
+
+
+def token_budget_factor() -> float:
+    try:
+        return max(float(os.getenv("VOCR_TOKEN_BUDGET_FACTOR", "2.0")), 0.1)
+    except ValueError:
+        return 2.0
+
+
+def retry_blocked_by_token_budget(store: MemoryLedger, task: VocrTask, actual_tokens: int) -> bool:
+    mode = token_budget_mode()
+    if mode == "off":
+        return False
+    predicted = LearningStore(store.root).predict_task_tokens(task)
+    if predicted is None:
+        return False
+    factor = token_budget_factor()
+    if actual_tokens <= predicted * factor:
+        return False
+    message = (
+        f"token budget exceeded: {actual_tokens} vs median {predicted} "
+        f"- consider splitting {task.scope[0] if task.scope else task.title}"
+    )
+    console.print(f"[yellow]{safe_text(message)}[/yellow]")
+    store.append(LedgerEventType.message, {"task_id": task.id, "message": message})
+    return mode == "block"
 
 
 def print_live_agent_fallback(component: str, exc: BaseException) -> None:
@@ -157,18 +212,12 @@ def run_bootstrap_or_exit(
     run_tests: bool,
     write_scripts: bool,
     allow_install: bool,
-    clone_if_missing: bool = False,
-    install_dir: str = "Codex-VOCR",
-    repo_url: str = "https://github.com/JeansBraindead/Codex-VOCR.git",
 ) -> BootstrapResult:
     try:
         result = Bootstrapper(Path.cwd()).bootstrap(
             run_tests=run_tests,
             write_scripts=write_scripts,
             allow_install=allow_install,
-            clone_if_missing=clone_if_missing,
-            install_dir=install_dir,
-            repo_url=repo_url,
         )
     except BootstrapError as exc:
         console.print(f"[red]{safe_text(str(exc))}[/red]")
@@ -211,9 +260,6 @@ def record_secret_block(store: MemoryLedger, task_id: str, issues: list[str]) ->
     store.append(LedgerEventType.review_recorded, review)
 
 
-RETRY_DIFF_CHAR_CAP = 2500
-
-
 def retry_prompt(attempt: int, issues: list[str], diff_text: str, task_scope: list[str]) -> str:
     return "\n".join(
         [
@@ -226,20 +272,12 @@ def retry_prompt(attempt: int, issues: list[str], diff_text: str, task_scope: li
             "Failures to fix:",
             "\n".join(f"- {issue}" for issue in issues),
             "",
-            "Delta diff since previous attempt:",
+            "Current diff:",
             "```diff",
-            diff_text[-RETRY_DIFF_CHAR_CAP:],
+            diff_text[-6000:],
             "```",
         ]
     )
-
-
-def diff_delta(previous: str, current: str) -> str:
-    if not previous:
-        return current
-    previous_lines = set(previous.splitlines())
-    delta_lines = [line for line in current.splitlines() if line not in previous_lines]
-    return "\n".join(delta_lines) or "no new diff since previous attempt"
 
 
 def persist_tasks(store: MemoryLedger, tasks: list, *, print_tasks: bool = True) -> None:
@@ -250,18 +288,7 @@ def persist_tasks(store: MemoryLedger, tasks: list, *, print_tasks: bool = True)
             console.print(render_task_template(task))
 
 
-@dataclass(slots=True)
-class DispatchHandoffResult:
-    task_id: str
-    worktree_path: str
-    manifest_path: str
-    scope_path: str
-    agents_path: str
-    permission_mode: str
-    permission_scope: str
-
-
-def prepare_dispatch_handoff(store: MemoryLedger, task_id: str) -> DispatchHandoffResult:
+def write_dispatch_handoff(store: MemoryLedger, task_id: str) -> None:
     task = dispatch_task(store, GitWorktreeManager(), task_id)
     MessageBus(store).publish("dispatch", "vocr", f"Task {task.id} dispatched to {task.worktree_path}")
     permission = store.active_permission(task.slice_id) or store.active_permission("global")
@@ -269,160 +296,15 @@ def prepare_dispatch_handoff(store: MemoryLedger, task_id: str) -> DispatchHando
     guard = ScopeGuard()
     scope_path = guard.write_worker_policy(task)
     agents_path = guard.write_worker_agents_file(task)
-    return DispatchHandoffResult(
-        task_id=task.id,
-        worktree_path=str(task.worktree_path),
-        manifest_path=str(manifest_path),
-        scope_path=str(scope_path),
-        agents_path=str(agents_path),
-        permission_mode=permission.mode.value if permission else PermissionMode.ask_each_time.value,
-        permission_scope=permission.scope if permission else "none",
-    )
-
-
-def print_dispatch_handoff(result: DispatchHandoffResult) -> None:
-    console.print(f"[green]Dispatched[/green] {result.task_id} to {result.worktree_path}")
-    if result.permission_mode != PermissionMode.ask_each_time.value:
-        console.print(f"[yellow]Permission mode:[/yellow] {result.permission_mode} ({result.permission_scope})")
+    console.print(f"[green]Dispatched[/green] {task.id} to {task.worktree_path}")
+    if permission:
+        console.print(f"[yellow]Permission mode:[/yellow] {permission.mode.value} ({permission.scope})")
     else:
         console.print("[yellow]Permission mode:[/yellow] ask_each_time")
-    console.print(f"[cyan]Task manifest:[/cyan] {result.manifest_path}")
-    console.print(f"[cyan]Scope policy:[/cyan] {result.scope_path}")
-    console.print(f"[cyan]Worker guidance:[/cyan] {result.agents_path}")
-    console.print(
-        f"Worktree prepared. Run [bold]vocr work {result.task_id}[/bold] to execute the worker in it."
-    )
-
-
-def write_dispatch_handoff(store: MemoryLedger, task_id: str) -> None:
-    result = prepare_dispatch_handoff(store, task_id)
-    print_dispatch_handoff(result)
-
-
-def execute_worker_task(
-    store: MemoryLedger,
-    task_id: str,
-    *,
-    timeout_seconds: int,
-    commit: bool,
-    auto_fix: bool,
-    max_retries: int,
-) -> CodexRunResult:
-    task = store.get_task(task_id)
-    if task is None:
-        raise ValueError(f"Unknown task id: {task_id}")
-    permission = store.active_permission(task.slice_id) or store.active_permission("global")
-    client = CodexMcpClient()
-    extra_prompt: str | None = None
-    final_result = None
-    full_prompt_text = render_task_template(task, include_context_pack=True)
-    retry_prompt_text = render_task_template(task, include_context_pack=False)
-    previous_diff = ""
-    for attempt in range(max_retries + 1):
-        include_context_pack = attempt == 0
-        result = client.run_task(
-            task,
-            permission=permission,
-            timeout_seconds=timeout_seconds,
-            extra_prompt=extra_prompt,
-            include_context_pack=include_context_pack,
-        )
-        final_result = result
-        attempt_prompt_text = full_prompt_text if include_context_pack else retry_prompt_text
-        record_worker_telemetry(store, task_id, result, attempt_prompt_text + (extra_prompt or ""))
-        if result.exit_code != 0:
-            if not auto_fix or attempt >= max_retries:
-                break
-            issues = [f"Worker exited with {result.exit_code}", (result.stderr or result.stdout)[-1200:]]
-            current_diff = GitWorktreeManager(task.worktree_path or ".").diff()
-            extra_prompt = retry_prompt(attempt + 1, issues, diff_delta(previous_diff, current_diff), task.scope)
-            previous_diff = current_diff
-            continue
-        if commit:
-            worktree_git = GitWorktreeManager(task.worktree_path or ".")
-            scope_issues = ScopeGuard().validate_changed_files(task, worktree_git.changed_files())
-            if scope_issues:
-                store.append(LedgerEventType.task_worker_ran, result)
-                record_scope_block(store, task.id, scope_issues)
-                if not auto_fix or attempt >= max_retries:
-                    raise ValueError("Scope guard blocked commit: " + "; ".join(scope_issues))
-                current_diff = worktree_git.diff()
-                extra_prompt = retry_prompt(attempt + 1, scope_issues, diff_delta(previous_diff, current_diff), task.scope)
-                previous_diff = current_diff
-                continue
-            secret_scan = scan_diff_for_secrets(worktree_git.diff_for_scan(), repo_root=worktree_git.repo_root)
-            if secret_scan.blocked:
-                issues = [
-                    f"{finding.rule_id}: {finding.path or 'unknown'}:{finding.line or '?'} {finding.summary}"
-                    for finding in secret_scan.findings
-                ]
-                store.append(LedgerEventType.task_worker_ran, result)
-                record_secret_block(store, task.id, issues)
-                if not auto_fix or attempt >= max_retries:
-                    raise ValueError("Secret scanner blocked commit: " + "; ".join(issues))
-                current_diff = worktree_git.diff_for_scan()
-                extra_prompt = retry_prompt(attempt + 1, issues, diff_delta(previous_diff, current_diff), task.scope)
-                previous_diff = current_diff
-                continue
-            if worktree_git.has_changes():
-                sha = worktree_git.commit_all(f"VOCR task {task.id}: {task.title}")
-                result.committed = True
-                result.commit_sha = sha
-                store.append(LedgerEventType.task_committed, {"task_id": task.id, "commit_sha": sha})
-        break
-    if final_result is None:
-        raise ValueError("Worker did not run.")
-    store.append(LedgerEventType.task_worker_ran, final_result)
-    return final_result
-
-
-def print_worker_result(result: CodexRunResult) -> None:
-    console.print(f"[green]Worker finished[/green] exit={result.exit_code}")
-    if result.committed:
-        console.print(f"[green]Committed[/green] {result.commit_sha}")
-    if result.stdout:
-        console.print(safe_text(result.stdout[-2000:]))
-    if result.stderr:
-        console.print(f"[yellow]{safe_text(result.stderr[-2000:])}[/yellow]")
-
-
-def refresh_graph_for_wave() -> None:
-    graph_store().refresh(Path("."))
-
-
-def run_parallel(items: list[str], max_workers: int, fn) -> list[tuple[str, object | None, str | None]]:
-    if not items:
-        return []
-    workers = max(1, min(max_workers, len(items)))
-    results: list[tuple[str, object | None, str | None]] = []
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(fn, item): item for item in items}
-        for future in as_completed(futures):
-            item = futures[future]
-            try:
-                results.append((item, future.result(), None))
-            except Exception as exc:
-                results.append((item, None, str(exc)))
-    return sorted(results, key=lambda entry: entry[0])
-
-
-def print_orchestration_summary(result: OrchestrationRunResult) -> None:
-    table = Table(title="VOCR Orchestration")
-    table.add_column("Wave")
-    table.add_column("Action")
-    table.add_column("Task")
-    table.add_column("Status")
-    table.add_column("Detail")
-    for wave in result.waves:
-        if wave.graph_refreshed:
-            table.add_row(str(wave.index), "graphify", "-", "ok", "refreshed once for wave")
-        for step in wave.steps:
-            table.add_row(str(wave.index), step.action, step.task_id, step.status, safe_text(step.detail))
-    console.print(table)
-    console.print(
-        f"[green]Orchestration stopped:[/green] {safe_text(result.stopped_reason)} "
-        f"dispatched={result.dispatched} worked={result.worked} promoted={result.promoted}"
-    )
+    console.print(f"[cyan]Task manifest:[/cyan] {manifest_path}")
+    console.print(f"[cyan]Scope policy:[/cyan] {scope_path}")
+    console.print(f"[cyan]Worker guidance:[/cyan] {agents_path}")
+    console.print("Codex MCP execution is prepared but not implemented yet.")
 
 
 def request_clarification(store: MemoryLedger, request: str) -> bool:
@@ -455,7 +337,6 @@ def run_vision_pipeline(
 ) -> None:
     store = ledger()
     store.init()
-    readiness = assess_request_readiness(request)
     if request_clarification(store, request):
         return
 
@@ -464,15 +345,12 @@ def run_vision_pipeline(
         console.print("[green]Graphify complete[/green] Visionary will use token-efficient context.")
 
     item = create_vision(request)
-    use_live = live_agent and readiness.confidence < 0.92
-    if live_agent and not use_live:
-        console.print("[cyan]Deterministic confidence high; skipping live Visionary overwrite.[/cyan]")
-    if use_live and live_agents_available():
+    if live_agent and live_agents_available():
         try:
             item = asyncio.run(create_live_vision(request))
         except Exception as exc:
             print_live_agent_fallback("Live Visionary", exc)
-    elif use_live:
+    elif live_agent:
         console.print("[yellow]No live OpenAI-compatible model config found, using local fallback.[/yellow]")
     store.append(LedgerEventType.vision_created, item)
     if go:
@@ -488,34 +366,26 @@ def run_vision_pipeline(
         return
 
     tasks = organize_slice(item, vocr_home=str(store.root))
-    if use_live and live_agents_available():
+    if live_agent and live_agents_available():
         try:
-            context_pack = "\n\n".join(task.context_pack or "" for task in tasks)
+            context_pack = graph_store().context_pack(query=item.goal, limit=12)
             plan = asyncio.run(create_live_task_plan(item, context_pack))
             tasks = plan.tasks or tasks
             for task in tasks:
                 if not task.context_pack:
                     task.context_query = task.context_query or item.goal
-                    task.context_pack = graph_store().context_pack(query=task.context_query, limit=12, token_budget=900)
+                    task.context_pack = graph_store().context_pack(query=task.context_query, limit=12)
         except Exception as exc:
             print_live_agent_fallback("Live Organizer", exc)
 
     persist_tasks(store, tasks)
 
     if go and dispatch_workers:
-        dispatchable = ready_dispatch_tasks(store.tasks(), limit=len(tasks))
-        if dispatchable:
-            refresh_graph_for_wave()
-            console.print("[green]Graphify refreshed[/green] once for initial dispatch wave.")
-        for task_id, result, error in run_parallel(
-            [task.id for task in dispatchable],
-            4,
-            lambda item: prepare_dispatch_handoff(store, item),
-        ):
-            if error:
-                console.print(f"[yellow]Dispatch skipped for {task_id}:[/yellow] {safe_text(error)}")
-            else:
-                print_dispatch_handoff(result)
+        for task in tasks:
+            try:
+                write_dispatch_handoff(store, task.id)
+            except (GitWorktreeError, ValueError) as exc:
+                console.print(f"[yellow]Dispatch skipped for {task.id}:[/yellow] {safe_text(str(exc))}")
     elif not go:
         console.print("[yellow]Dispatch paused:[/yellow] pass --go when the Visionary should continue unattended.")
 
@@ -537,20 +407,10 @@ def bootstrap(
     write_scripts: bool = typer.Option(False, "--write-scripts", help="Write install-vocr.ps1, start-vocr.ps1 and Start-VOCR.bat."),
     start_after: bool = typer.Option(False, "--start/--no-start", help="Open normal Visionary mode after bootstrap."),
     console_only: bool = typer.Option(False, "--console", help="With --start, use the terminal fallback."),
-    clone_if_missing: bool = typer.Option(False, "--clone", help="Clone VOCR into --install-dir if no repo is found."),
-    install_dir: str = typer.Option("Codex-VOCR", "--install-dir", help="Target folder for --clone."),
-    repo_url: str = typer.Option("https://github.com/JeansBraindead/Codex-VOCR.git", "--repo-url", help="Repository URL for --clone."),
 ) -> None:
     """Prepare the local VOCR repo safely and idempotently."""
 
-    result = run_bootstrap_or_exit(
-        run_tests=run_tests,
-        write_scripts=write_scripts,
-        allow_install=True,
-        clone_if_missing=clone_if_missing,
-        install_dir=install_dir,
-        repo_url=repo_url,
-    )
+    result = run_bootstrap_or_exit(run_tests=run_tests, write_scripts=write_scripts, allow_install=True)
     if start_after:
         open_normal_mode(result.repo_root, console_only=console_only)
     else:
@@ -561,18 +421,10 @@ def bootstrap(
 def install(
     run_tests: bool = typer.Option(False, "--tests", help="Run compileall and unittest after setup."),
     write_scripts: bool = typer.Option(True, "--scripts/--no-scripts", help="Write Windows helper scripts."),
-    clone_if_missing: bool = typer.Option(False, "--clone", help="Clone VOCR into --install-dir if no repo is found."),
-    install_dir: str = typer.Option("Codex-VOCR", "--install-dir", help="Target folder for --clone."),
 ) -> None:
     """Alias for bootstrap focused on installation."""
 
-    run_bootstrap_or_exit(
-        run_tests=run_tests,
-        write_scripts=write_scripts,
-        allow_install=True,
-        clone_if_missing=clone_if_missing,
-        install_dir=install_dir,
-    )
+    run_bootstrap_or_exit(run_tests=run_tests, write_scripts=write_scripts, allow_install=True)
     console.print("[green]Installation ready.[/green] Start with: vocr start")
 
 
@@ -618,15 +470,15 @@ def codex_config() -> None:
 
 @model_app.command("status")
 def model_status() -> None:
-    values = read_model_env(env_path())
+    values = read_env_file(env_path())
     redacted = redact_env(values)
     table = Table(title="VOCR Model Config")
     table.add_column("Setting")
     table.add_column("Value")
     table.add_row("Provider", provider_from_env(values))
-    table.add_row("OPENAI_BASE_URL", safe_text(redacted.get("OPENAI_BASE_URL", "-") or "-"))
-    table.add_row("OPENAI_MODEL", safe_text(redacted.get("OPENAI_MODEL", "-") or "-"))
-    table.add_row("OPENAI_API_KEY", safe_text(redacted.get("OPENAI_API_KEY", "-") or "-"))
+    table.add_row("OPENAI_BASE_URL", redacted.get("OPENAI_BASE_URL", "-") or "-")
+    table.add_row("OPENAI_MODEL", redacted.get("OPENAI_MODEL", "-") or "-")
+    table.add_row("OPENAI_API_KEY", redacted.get("OPENAI_API_KEY", "-") or "-")
     console.print(table)
 
 
@@ -662,13 +514,8 @@ def model_local(
 def model_lmstudio(
     model: str = typer.Option(..., "--model", "-m", help="Model id loaded in LM Studio."),
     port: int = typer.Option(1234, "--port", help="LM Studio local server port."),
-    api_key: str = typer.Option(
-        "lm-studio",
-        "--api-key",
-        help="Local LM Studio API token or placeholder when LM Studio Auth is disabled.",
-    ),
 ) -> None:
-    model_local(model=model, base_url=f"http://localhost:{port}/v1", api_key=api_key)
+    model_local(model=model, base_url=f"http://localhost:{port}/v1", api_key="lm-studio")
 
 
 @model_app.command("openai")
@@ -703,12 +550,12 @@ def model_off(
 @model_app.command("list")
 def model_list(
     base_url: str | None = typer.Option(None, "--base-url", help="Override local OpenAI-compatible base URL."),
-    api_key: str | None = typer.Option(None, "--api-key", help="Local API token for this check; not printed."),
 ) -> None:
-    values = read_model_env(env_path())
+    values = read_env_file(env_path())
     url = (base_url or values.get("OPENAI_BASE_URL") or "http://localhost:1234/v1").rstrip("/")
     try:
-        payload, endpoint = fetch_model_catalog(url, api_key=api_key or _local_api_key(values, base_url))
+        with urllib.request.urlopen(f"{url}/models", timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         if exc.code == 401:
             raise typer.BadParameter(
@@ -717,138 +564,12 @@ def model_list(
         raise typer.BadParameter(f"Could not list models from {url}: {exc}") from exc
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         raise typer.BadParameter(f"Could not list models from {url}: {exc}") from exc
-    table = Table(title=f"Models at {endpoint}")
+    table = Table(title=f"Models at {url}")
     table.add_column("Model ID")
     for item in payload.get("data", []):
         model_id = item.get("id") if isinstance(item, dict) else str(item)
         table.add_row(safe_text(str(model_id)))
     console.print(table)
-
-
-@model_app.command("check")
-def model_check(
-    base_url: str | None = typer.Option(None, "--base-url", help="Override local OpenAI-compatible base URL."),
-    api_key: str | None = typer.Option(None, "--api-key", help="Local API token for this check; not printed."),
-    model: str | None = typer.Option(None, "--model", "-m", help="Run a tiny chat completion check with this model."),
-) -> None:
-    values = read_model_env(env_path())
-    url = (base_url or values.get("OPENAI_BASE_URL") or "http://localhost:1234/v1").rstrip("/")
-    active_api_key = api_key or _local_api_key(values, base_url)
-    active_model = model or values.get("OPENAI_MODEL")
-    if active_model:
-        try:
-            fetch_chat_completion(url, model=active_model, api_key=active_api_key)
-        except urllib.error.HTTPError as exc:
-            if exc.code == 401:
-                raise typer.BadParameter(
-                    diagnose_live_agent_error(exc, provider="local-openai-compatible", base_url=url)
-                ) from exc
-            raise typer.BadParameter(f"Chat check failed for {url}: {exc}") from exc
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            raise typer.BadParameter(f"Chat check failed for {url}: {exc}") from exc
-        console.print(f"[green]Local chat endpoint reachable[/green] {chat_completion_endpoint(url)}")
-        console.print(f"Model checked: {safe_text(active_model)}")
-        return
-
-    try:
-        payload, endpoint = fetch_model_catalog(url, api_key=active_api_key)
-    except urllib.error.HTTPError as exc:
-        if exc.code == 401:
-            raise typer.BadParameter(
-                diagnose_live_agent_error(exc, provider="local-openai-compatible", base_url=url)
-            ) from exc
-        raise typer.BadParameter(f"Model check failed for {url}: {exc}") from exc
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-        raise typer.BadParameter(f"Model check failed for {url}: {exc}") from exc
-    count = len(payload.get("data", []))
-    console.print(f"[green]Local model endpoint reachable[/green] {endpoint}")
-    console.print(f"Models visible: {count}")
-
-
-def fetch_model_catalog(base_url: str, *, api_key: str | None = None) -> tuple[dict, str]:
-    errors: list[BaseException] = []
-    for endpoint in model_list_endpoints(base_url):
-        try:
-            payload = fetch_model_list(endpoint, api_key=api_key)
-            if isinstance(payload.get("data"), list):
-                return payload, endpoint
-            errors.append(ValueError(f"{endpoint} did not return a model list"))
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError) as exc:
-            errors.append(exc)
-            continue
-    if errors:
-        raise errors[-1]
-    raise ValueError(f"No model-list endpoints derived from {base_url}")
-
-
-def model_list_endpoints(base_url: str) -> list[str]:
-    parsed = urllib.parse.urlparse(base_url.rstrip("/"))
-    path = parsed.path.rstrip("/")
-    root = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, "", "", "", "")).rstrip("/")
-    candidates: list[str] = []
-
-    if path.endswith("/models"):
-        candidates.append(base_url.rstrip("/"))
-    elif path in {"", "/"}:
-        candidates.extend([f"{root}/v1/models", f"{root}/api/v1/models", f"{root}/api/v0/models"])
-    elif path == "/v1":
-        candidates.extend([f"{root}/v1/models", f"{root}/api/v1/models", f"{root}/api/v0/models"])
-    elif path == "/api/v1":
-        candidates.extend([f"{root}/api/v1/models", f"{root}/v1/models", f"{root}/api/v0/models"])
-    elif path == "/api/v0":
-        candidates.extend([f"{root}/api/v0/models", f"{root}/api/v1/models", f"{root}/v1/models"])
-    else:
-        candidates.append(f"{base_url.rstrip('/')}/models")
-
-    unique: list[str] = []
-    for candidate in candidates:
-        if candidate not in unique:
-            unique.append(candidate)
-    return unique
-
-
-def fetch_model_list(url: str, *, api_key: str | None = None) -> dict:
-    request = urllib.request.Request(url)
-    if api_key:
-        request.add_header("Authorization", f"Bearer {api_key}")
-    with urllib.request.urlopen(request, timeout=5) as response:
-        return json.loads(response.read().decode("utf-8"))
-
-
-def fetch_chat_completion(base_url: str, *, model: str, api_key: str | None = None) -> dict:
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": "Reply with ok."}],
-        "max_tokens": 4,
-        "temperature": 0,
-    }
-    request = urllib.request.Request(
-        chat_completion_endpoint(base_url),
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    if api_key:
-        request.add_header("Authorization", f"Bearer {api_key}")
-    with urllib.request.urlopen(request, timeout=20) as response:
-        return json.loads(response.read().decode("utf-8"))
-
-
-def chat_completion_endpoint(base_url: str) -> str:
-    parsed = urllib.parse.urlparse(base_url.rstrip("/"))
-    path = parsed.path.rstrip("/")
-    root = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, "", "", "", "")).rstrip("/")
-    if path == "/v1":
-        return f"{root}/v1/chat/completions"
-    if path in {"", "/"}:
-        return f"{root}/v1/chat/completions"
-    return f"{base_url.rstrip('/')}/chat/completions"
-
-
-def _local_api_key(values: dict[str, str], base_url_override: str | None) -> str | None:
-    if base_url_override or values.get("OPENAI_BASE_URL"):
-        return values.get("OPENAI_API_KEY")
-    return None
 
 
 @secrets_app.command("scan")
@@ -930,13 +651,16 @@ def context(
         help="Optional search terms for a smaller context pack.",
     ),
     limit: int = typer.Option(20, "--limit", "-n", help="Maximum files in the brief."),
-    budget: int = typer.Option(1200, "--budget", help="Approximate token budget for the graph brief."),
     learning: bool = typer.Option(False, "--learning", help="Include compact local learning signals."),
+    symbol: str | None = typer.Option(None, "--symbol", help="Print exact lines for PFAD:NAME from the graph."),
 ) -> None:
     store = graph_store()
     if not store.exists():
         raise typer.BadParameter("No graph found. Run 'vocr graphify' first.")
-    console.print(store.context_pack(query=query, limit=limit, token_budget=budget))
+    if symbol:
+        console.print(_symbol_source(store, symbol), markup=False)
+        return
+    console.print(store.context_pack(query=query, limit=limit))
     if learning:
         boosts = learning_store().file_boosts(query=query) if learning_store().exists() else {}
         if boosts:
@@ -947,6 +671,25 @@ def context(
                 console.print(f"- {safe_text(path)} +{score:.2f}")
         console.print("")
         console.print(learning_store().brief(query=query, limit=limit))
+
+
+def _symbol_source(store: GraphStore, spec: str) -> str:
+    if ":" not in spec:
+        raise typer.BadParameter("--symbol must use PFAD:NAME.")
+    path_text, name = spec.rsplit(":", 1)
+    path_text = path_text.replace("\\", "/").strip()
+    name = name.strip()
+    graph = store.load()
+    node = next((item for item in graph.nodes if item.path == path_text), None)
+    if node is None:
+        raise typer.BadParameter(f"Unknown graph path: {path_text}")
+    span = next((item for item in node.symbol_spans if item.name == name or item.name.split(" ", 1)[-1] == name), None)
+    if span is None:
+        raise typer.BadParameter(f"Unknown symbol for {path_text}: {name}")
+    root = Path(graph.root)
+    source_path = root / node.path
+    lines = source_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    return "\n".join(lines[span.start - 1 : span.end])
 
 
 @app.command()
@@ -1068,96 +811,20 @@ def organize(
     if slice_item is None:
         raise typer.BadParameter(f"Unknown slice id: {slice_id}")
     tasks = organize_slice(slice_item, vocr_home=str(store.root))
-    readiness = assess_request_readiness(slice_item.request)
-    use_live = live_agent and readiness.confidence < 0.92
-    if live_agent and not use_live:
-        console.print("[cyan]Deterministic confidence high; skipping live Organizer overwrite.[/cyan]")
-    if use_live and live_agents_available():
+    if live_agent and live_agents_available():
         try:
-            context_pack = "\n\n".join(task.context_pack or "" for task in tasks)
+            context_pack = graph_store().context_pack(query=slice_item.goal, limit=12)
             plan = asyncio.run(create_live_task_plan(slice_item, context_pack))
             tasks = plan.tasks or tasks
         except Exception as exc:
             print_live_agent_fallback("Live Organizer", exc)
-    elif use_live:
+    elif live_agent:
         console.print("[yellow]No live OpenAI-compatible model config found, using local fallback.[/yellow]")
     for task in tasks:
         if not task.context_pack:
             task.context_query = task.context_query or slice_item.goal
-            task.context_pack = graph_store().context_pack(query=task.context_query, limit=12, token_budget=900)
+            task.context_pack = graph_store().context_pack(query=task.context_query, limit=12)
     persist_tasks(store, tasks)
-
-
-@app.command("hybrid-vision")
-def hybrid_vision(request: str) -> None:
-    """Experimental Phase 4: cloud-only VisionSlice creation.
-
-    Default-off and isolated from `vocr vision`: this never runs unless VOCR_HYBRID_ENABLED
-    is set, and `vocr vision`/`vocr ask` never call into this path. Review-pending, not for
-    production rollout.
-    """
-    if not hybrid_enabled():
-        raise typer.BadParameter(
-            f"Hybrid routing is default-off (experimental, review-pending). "
-            f"Set {HYBRID_ENABLE_ENV}=true to opt in."
-        )
-    store = ledger()
-    store.init()
-    if request_clarification(store, request):
-        return
-
-    item = create_vision(request)
-    try:
-        hybrid_result = asyncio.run(hybrid_create_vision(request))
-        item = hybrid_result.output
-        console.print(f"[cyan]Hybrid route:[/cyan] {hybrid_result.route}")
-    except Exception as exc:
-        console.print("[yellow]Hybrid Visionary nicht verfuegbar, deterministischer Fallback aktiv.[/yellow]")
-        console.print(safe_text(str(exc)))
-
-    store.append(LedgerEventType.vision_created, item)
-    console.print(f"[green]Created slice[/green] {item.id}")
-    console.print(f"Goal: {safe_text(item.goal)}")
-    console.print("[yellow]Experimenteller Hybrid-Pfad: review-pending, nicht fuer produktiven Rollout.[/yellow]")
-
-
-@app.command("hybrid-plan")
-def hybrid_plan(slice_id: str) -> None:
-    """Experimental Phase 4: cloud-only task planning over untrusted repo context.
-
-    Default-off and isolated from `vocr organize`: this never runs unless
-    VOCR_HYBRID_ENABLED is set, and never routes repo context to the local model.
-    Review-pending, not for production rollout.
-    """
-    if not hybrid_enabled():
-        raise typer.BadParameter(
-            f"Hybrid routing is default-off (experimental, review-pending). "
-            f"Set {HYBRID_ENABLE_ENV}=true to opt in."
-        )
-    store = ledger()
-    slice_item = store.get_slice(slice_id)
-    if slice_item is None:
-        raise typer.BadParameter(f"Unknown slice id: {slice_id}")
-
-    tasks = organize_slice(slice_item, vocr_home=str(store.root))
-    context_pack = "\n\n".join(task.context_pack or "" for task in tasks)
-    try:
-        hybrid_result = asyncio.run(hybrid_create_task_plan(slice_item, context_pack))
-        if hybrid_result.output.tasks:
-            tasks = hybrid_result.output.tasks
-            for task in tasks:
-                task.slice_id = slice_item.id
-        console.print(f"[cyan]Hybrid route:[/cyan] {hybrid_result.route}")
-    except Exception as exc:
-        console.print("[yellow]Hybrid Organizer nicht verfuegbar, deterministischer Fallback aktiv.[/yellow]")
-        console.print(safe_text(str(exc)))
-
-    for task in tasks:
-        if not task.context_pack:
-            task.context_query = task.context_query or slice_item.goal
-            task.context_pack = graph_store().context_pack(query=task.context_query, limit=12, token_budget=900)
-    persist_tasks(store, tasks)
-    console.print("[yellow]Experimenteller Hybrid-Pfad: review-pending, nicht fuer produktiven Rollout.[/yellow]")
 
 
 @app.command()
@@ -1170,24 +837,22 @@ def dispatch(task_id: str) -> None:
 
 
 @app.command("dispatch-ready")
-def dispatch_ready(
-    limit: int = typer.Option(10, "--limit", help="Maximum ready tasks to dispatch."),
-    parallel: int = typer.Option(4, "--parallel", min=1, max=16, help="Maximum parallel worktree dispatches."),
-    refresh_graph_once: bool = typer.Option(True, "--graphify/--no-graphify", help="Refresh Graphify once before this dispatch wave."),
-) -> None:
+def dispatch_ready(limit: int = typer.Option(10, "--limit", help="Maximum ready tasks to dispatch.")) -> None:
     store = ledger()
-    tasks = ready_dispatch_tasks(store.tasks(), limit=limit)
-    if tasks and refresh_graph_once:
-        refresh_graph_for_wave()
-        console.print("[green]Graphify refreshed[/green] once for dispatch wave.")
-    results = run_parallel([task.id for task in tasks], parallel, lambda task_id: prepare_dispatch_handoff(store, task_id))
     dispatched = 0
-    for task_id, result, error in results:
-        if error:
-            console.print(f"[yellow]Dispatch skipped for {task_id}:[/yellow] {safe_text(error)}")
+    task_ids = {task.id: task for task in store.tasks()}
+    for task in task_ids.values():
+        if dispatched >= limit:
+            break
+        if task.status != TaskStatus.planned:
             continue
-        print_dispatch_handoff(result)
-        dispatched += 1
+        if any(task_ids.get(dep) is None or task_ids[dep].status != TaskStatus.promoted for dep in task.dependencies):
+            continue
+        try:
+            write_dispatch_handoff(store, task.id)
+            dispatched += 1
+        except (GitWorktreeError, ValueError) as exc:
+            console.print(f"[yellow]Dispatch skipped for {task.id}:[/yellow] {safe_text(str(exc))}")
     console.print(f"[green]Ready dispatch complete[/green] dispatched={dispatched}")
 
 
@@ -1200,35 +865,140 @@ def run_worker(
     max_retries: int = typer.Option(2, "--max-retries", min=0, max=3, help="Bounded worker retry count."),
 ) -> None:
     store = ledger()
+    task = store.get_task(task_id)
+    if task is None:
+        raise typer.BadParameter(f"Unknown task id: {task_id}")
+    permission = store.active_permission(task.slice_id) or store.active_permission("global")
+    client = CodexMcpClient()
+    extra_prompt: str | None = None
+    final_result = None
+    prompt_text = render_task_template(task)
     try:
-        result = execute_worker_task(
-            store,
-            task_id,
-            timeout_seconds=timeout_seconds,
-            commit=commit,
-            auto_fix=auto_fix,
-            max_retries=max_retries,
-        )
+        for attempt in range(max_retries + 1):
+            result = client.run_task(
+                task,
+                permission=permission,
+                timeout_seconds=timeout_seconds,
+                extra_prompt=extra_prompt,
+            )
+            final_result = result
+            actual_tokens = record_worker_telemetry(store, task_id, result, prompt_text + (extra_prompt or ""))
+            retry_budget_blocked = retry_blocked_by_token_budget(store, task, actual_tokens)
+            if result.exit_code != 0:
+                if not auto_fix or attempt >= max_retries or retry_budget_blocked:
+                    break
+                issues = [f"Worker exited with {result.exit_code}", distill_failure_output(result.stderr or result.stdout)]
+                diff_text = GitWorktreeManager(task.worktree_path or ".").diff()
+                extra_prompt = retry_prompt(attempt + 1, issues, diff_text, task.scope)
+                continue
+            if commit:
+                worktree_git = GitWorktreeManager(task.worktree_path or ".")
+                scope_issues = ScopeGuard().validate_changed_files(task, worktree_git.changed_files())
+                if scope_issues:
+                    store.append(LedgerEventType.task_worker_ran, result)
+                    record_scope_block(store, task.id, scope_issues)
+                    if not auto_fix or attempt >= max_retries or retry_budget_blocked:
+                        raise typer.BadParameter("Scope guard blocked commit: " + "; ".join(scope_issues))
+                    extra_prompt = retry_prompt(attempt + 1, scope_issues, worktree_git.diff(), task.scope)
+                    continue
+                secret_scan = scan_diff_for_secrets(worktree_git.diff_for_scan(), repo_root=worktree_git.repo_root)
+                if secret_scan.blocked:
+                    issues = [
+                        f"{finding.rule_id}: {finding.path or 'unknown'}:{finding.line or '?'} {finding.summary}"
+                        for finding in secret_scan.findings
+                    ]
+                    store.append(LedgerEventType.task_worker_ran, result)
+                    record_secret_block(store, task.id, issues)
+                    if not auto_fix or attempt >= max_retries or retry_budget_blocked:
+                        raise typer.BadParameter("Secret scanner blocked commit: " + "; ".join(issues))
+                    extra_prompt = retry_prompt(attempt + 1, issues, worktree_git.diff_for_scan(), task.scope)
+                    continue
+                if worktree_git.has_changes():
+                    sha = worktree_git.commit_all(f"VOCR task {task.id}: {task.title}")
+                    result.committed = True
+                    result.commit_sha = sha
+                    store.append(LedgerEventType.task_committed, {"task_id": task.id, "commit_sha": sha})
+            break
     except (RuntimeError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
-    print_worker_result(result)
+    if final_result is None:
+        raise typer.BadParameter("Worker did not run.")
+    result = final_result
+    store.append(LedgerEventType.task_worker_ran, result)
+    console.print(f"[green]Worker finished[/green] exit={result.exit_code}")
+    if result.committed:
+        console.print(f"[green]Committed[/green] {result.commit_sha}")
+    if result.stdout:
+        console.print(safe_text(result.stdout[-2000:]))
+    if result.stderr:
+        console.print(f"[yellow]{safe_text(result.stderr[-2000:])}[/yellow]")
 
 
 app.command("work")(run_worker)
 
 
-@app.command("eval-golden")
-def eval_golden() -> None:
-    result = run_golden_eval()
-    table = Table(title="VOCR Golden Eval")
-    table.add_column("Step")
-    table.add_column("Result")
-    table.add_column("Detail")
-    for step in result.steps:
-        table.add_row(step.name, "PASS" if step.passed else "FAIL", safe_text(step.detail or "-"))
-    console.print(table)
-    if not result.passed:
-        raise typer.Exit(code=1)
+def ready_dispatched_tasks(store: MemoryLedger, limit: int) -> list[VocrTask]:
+    tasks: list[VocrTask] = []
+    for task in store.tasks():
+        if len(tasks) >= limit:
+            break
+        if task.status == TaskStatus.dispatched:
+            tasks.append(task)
+    return tasks
+
+
+def run_parallel_work_wave(
+    tasks: list[VocrTask],
+    *,
+    worker_count: int,
+    timeout_seconds: int,
+    auto_fix: bool,
+) -> int:
+    if not tasks:
+        return 0
+    store = ledger()
+    store.reconcile_stale_claims()
+    conflicts = store.acquire_claims(tasks, repo_root=Path.cwd())
+    blocked_ids = {conflict.task_id for conflict in conflicts}
+    runnable = [task for task in tasks if task.id not in blocked_ids]
+    for conflict in conflicts:
+        console.print(
+            f"[yellow][T-{safe_text(conflict.task_id)}] Waiting for claim held by "
+            f"{safe_text(conflict.conflicting_task_id)}[/yellow]"
+        )
+    if not runnable:
+        return 0
+
+    def submit_task(pool: concurrent.futures.ThreadPoolExecutor, task: VocrTask):
+        console.print(f"[cyan][T-{safe_text(task.id)}] Worker starting[/cyan]")
+        return pool.submit(
+            run_worker,
+            task.id,
+            timeout_seconds=timeout_seconds,
+            commit=True,
+            auto_fix=auto_fix,
+            max_retries=2,
+        )
+
+    worked = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as pool:
+        futures: dict[concurrent.futures.Future, str] = {}
+        first, rest = runnable[0], runnable[1:]
+        futures[submit_task(pool, first)] = first.id
+        if rest:
+            time.sleep(WARMUP_STAGGER_SECONDS)
+        for task in rest:
+            futures[submit_task(pool, task)] = task.id
+        for future in concurrent.futures.as_completed(futures):
+            task_id = futures[future]
+            try:
+                future.result()
+            except Exception as exc:  # noqa: BLE001 - keep sibling workers alive and report per task.
+                console.print(f"[red][T-{safe_text(task_id)}] Worker failed:[/red] {safe_text(str(exc))}")
+            else:
+                worked += 1
+                console.print(f"[green][T-{safe_text(task_id)}] Worker complete[/green]")
+    return worked
 
 
 @app.command("work-ready")
@@ -1236,112 +1006,28 @@ def work_ready(
     limit: int = typer.Option(3, "--limit", help="Maximum dispatched tasks to work."),
     timeout_seconds: int = typer.Option(3600, "--timeout", help="Worker timeout in seconds."),
     auto_fix: bool = typer.Option(False, "--fix", help="Retry bounded fixes until review_ready."),
-    parallel: int = typer.Option(2, "--parallel", min=1, max=8, help="Maximum parallel isolated workers."),
 ) -> None:
-    store = ledger()
-    tasks = ready_work_tasks(store.tasks(), limit=limit)
-    results = run_parallel(
-        [task.id for task in tasks],
-        parallel,
-        lambda task_id: execute_worker_task(
-            store,
-            task_id,
+    worker_count = parallel_worker_count()
+    if worker_count > 1:
+        tasks = ready_dispatched_tasks(ledger(), limit)
+        worked = run_parallel_work_wave(
+            tasks,
+            worker_count=worker_count,
             timeout_seconds=timeout_seconds,
-            commit=True,
             auto_fix=auto_fix,
-            max_retries=2,
-        ),
-    )
+        )
+        console.print(f"[green]Ready work complete[/green] worked={worked}")
+        return
+
     worked = 0
-    for task_id, result, error in results:
-        if error:
-            console.print(f"[yellow]Work skipped for {task_id}:[/yellow] {safe_text(error)}")
+    for task in ledger().tasks():
+        if worked >= limit:
+            break
+        if task.status != TaskStatus.dispatched:
             continue
-        print_worker_result(result)
+        run_worker(task.id, timeout_seconds=timeout_seconds, commit=True, auto_fix=auto_fix, max_retries=2)
         worked += 1
     console.print(f"[green]Ready work complete[/green] worked={worked}")
-
-
-@app.command("orchestrate")
-def orchestrate(
-    max_waves: int = typer.Option(10, "--max-waves", min=1, max=50, help="Maximum DAG waves to process."),
-    dispatch_limit: int = typer.Option(8, "--dispatch-limit", min=1, help="Maximum ready dispatches per wave."),
-    work_limit: int = typer.Option(4, "--work-limit", min=1, help="Maximum ready workers per wave."),
-    parallel_dispatch: int = typer.Option(4, "--parallel-dispatch", min=1, max=16, help="Parallel worktree dispatches."),
-    parallel_work: int = typer.Option(2, "--parallel-work", min=1, max=8, help="Parallel isolated workers."),
-    timeout_seconds: int = typer.Option(3600, "--timeout", help="Worker timeout in seconds."),
-    auto_fix: bool = typer.Option(True, "--fix/--no-fix", help="Run bounded fix retries until review_ready."),
-    workers: bool = typer.Option(True, "--workers/--no-workers", help="Run worker tasks after dispatch."),
-) -> None:
-    """Run supervised DAG waves until tasks are review-ready. Never promotes."""
-
-    store = ledger()
-    result = OrchestrationRunResult(promoted=0)
-    for wave_index in range(1, max_waves + 1):
-        wave = OrchestrationWave(index=wave_index)
-        dispatchable = ready_dispatch_tasks(store.tasks(), limit=dispatch_limit)
-        if dispatchable:
-            refresh_graph_for_wave()
-            wave.graph_refreshed = True
-            wave.dispatch_task_ids = [task.id for task in dispatchable]
-            for task_id, handoff, error in run_parallel(
-                wave.dispatch_task_ids,
-                parallel_dispatch,
-                lambda item: prepare_dispatch_handoff(store, item),
-            ):
-                if error:
-                    wave.steps.append(OrchestrationStep(task_id=task_id, action="dispatch", status="skipped", detail=error))
-                else:
-                    result.dispatched += 1
-                    wave.steps.append(
-                        OrchestrationStep(
-                            task_id=task_id,
-                            action="dispatch",
-                            status="ok",
-                            detail=f"worktree={handoff.worktree_path}",
-                        )
-                    )
-
-        workable = ready_work_tasks(store.tasks(), limit=work_limit) if workers else []
-        if workable:
-            wave.work_task_ids = [task.id for task in workable]
-            for task_id, worker_result, error in run_parallel(
-                wave.work_task_ids,
-                parallel_work,
-                lambda item: execute_worker_task(
-                    store,
-                    item,
-                    timeout_seconds=timeout_seconds,
-                    commit=True,
-                    auto_fix=auto_fix,
-                    max_retries=2,
-                ),
-            ):
-                if error:
-                    wave.steps.append(OrchestrationStep(task_id=task_id, action="work", status="skipped", detail=error))
-                else:
-                    result.worked += 1
-                    wave.steps.append(
-                        OrchestrationStep(
-                            task_id=task_id,
-                            action="work",
-                            status="ok" if worker_result.exit_code == 0 else "failed",
-                            detail=f"exit={worker_result.exit_code}",
-                        )
-                    )
-
-        if not wave.steps:
-            result.stopped_reason = "no ready dispatch or work tasks"
-            break
-        result.waves.append(wave)
-    else:
-        result.stopped_reason = f"max waves reached ({max_waves})"
-    if not result.stopped_reason:
-        result.stopped_reason = "wave loop complete"
-    print_orchestration_summary(result)
-
-
-app.command("afk")(orchestrate)
 
 
 @app.command()
@@ -1383,10 +1069,10 @@ def review(
     summary: str | None = typer.Option(None, "--summary", "-s", help="Short review summary."),
     codex_review: bool = typer.Option(False, "--codex-review", help="Run codex exec review when available."),
     base_ref: str | None = typer.Option(None, "--base", help="Base branch/ref for Codex review."),
+    note: list[str] = typer.Option([], "--note", help="Accepted-review project memory note as kind:text."),
     export_comments: Path | None = typer.Option(None, "--export-comments", help="Write review comments as Markdown."),
     save_artifact: bool = typer.Option(True, "--artifact/--no-artifact", help="Save review markdown under .vocr/artifacts."),
     post_pr_comments: bool = typer.Option(False, "--post-pr-comments", help="Post one PR comment with review markdown via gh."),
-    post_pr_review: bool = typer.Option(False, "--post-pr-review", help="Post a GitHub PR review via gh, with inline comments when safe line data exists."),
 ) -> None:
     result = review_task(
         ledger(),
@@ -1395,6 +1081,7 @@ def review(
         summary=summary,
         codex_review=codex_review,
         base_ref=base_ref,
+        memory_notes=[parse_memory_note(item) for item in note],
     )
     color = "green" if result.decision == ReviewDecision.accepted else "yellow"
     console.print(f"[{color}]Review: {result.decision.value}[/{color}]")
@@ -1425,8 +1112,6 @@ def review(
         console.print(f"[green]Review comments written[/green] {export_comments}")
     if post_pr_comments:
         post_review_comment(result)
-    if post_pr_review:
-        post_pull_request_review(result)
 
 
 app.command("check")(review)
@@ -1452,67 +1137,6 @@ def post_review_comment(result: ReviewResult) -> None:
     if completed.returncode != 0:
         raise typer.BadParameter(completed.stderr.strip() or completed.stdout.strip())
     console.print("[green]Posted PR review comment[/green]")
-
-
-def post_pull_request_review(result: ReviewResult) -> None:
-    if which("gh") is None:
-        raise typer.BadParameter("GitHub CLI `gh` is not available.")
-    body = render_review_markdown(result)
-    inline_comments = build_pr_review_comments(result)
-    if not inline_comments:
-        completed = subprocess.run(
-            ["gh", "pr", "review", "--comment", "--body", body],
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        if completed.returncode != 0:
-            raise typer.BadParameter(completed.stderr.strip() or completed.stdout.strip())
-        console.print("[green]Posted PR review[/green]")
-        return
-
-    repo = gh_stdout(["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
-    pr_number = gh_stdout(["gh", "pr", "view", "--json", "number", "-q", ".number"])
-    payload = {
-        "body": body,
-        "event": "COMMENT",
-        "comments": inline_comments,
-    }
-    completed = subprocess.run(
-        ["gh", "api", f"repos/{repo}/pulls/{pr_number}/reviews", "--method", "POST", "--input", "-"],
-        input=json.dumps(payload),
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if completed.returncode != 0:
-        raise typer.BadParameter(completed.stderr.strip() or completed.stdout.strip())
-    console.print(f"[green]Posted PR review[/green] with {len(inline_comments)} inline comments")
-
-
-def build_pr_review_comments(result: ReviewResult, limit: int = 30) -> list[dict[str, object]]:
-    comments: list[dict[str, object]] = []
-    for comment in result.comments:
-        if not comment.path or not comment.line:
-            continue
-        comments.append(
-            {
-                "path": comment.path,
-                "line": comment.line,
-                "side": "RIGHT",
-                "body": f"{comment.source}: {comment.body}"[:4000],
-            }
-        )
-        if len(comments) >= limit:
-            break
-    return comments
-
-
-def gh_stdout(command: list[str]) -> str:
-    completed = subprocess.run(command, text=True, capture_output=True, check=False)
-    if completed.returncode != 0:
-        raise typer.BadParameter(completed.stderr.strip() or completed.stdout.strip())
-    return completed.stdout.strip()
 
 
 @app.command()
@@ -1550,18 +1174,6 @@ def promote(
 
 
 app.command("ship")(promote)
-
-
-@app.command("revert")
-def revert(
-    task_id: str,
-    reason: str = typer.Option("Manual VOCR revert.", "--reason", "-r", help="Why this task commit is reverted."),
-) -> None:
-    try:
-        revert_sha = revert_task(ledger(), GitWorktreeManager(), task_id, reason=reason)
-    except (GitWorktreeError, ValueError) as exc:
-        raise typer.BadParameter(str(exc)) from exc
-    console.print(f"[green]Reverted[/green] {task_id} -> {revert_sha}")
 
 
 @app.command("log")
@@ -1612,48 +1224,6 @@ def show_diff(
             console.print(f"- {safe_text(path)}")
 
 
-@app.command("replay")
-def replay_slice(slice_id: str) -> None:
-    """Reconstruct a VisionSlice timeline: events, files touched, decisions, cost."""
-    try:
-        result = build_slice_replay(ledger(), slice_id)
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
-
-    console.print(f"[bold]VOCR Replay[/bold] slice={safe_text(result.slice_id)}: {safe_text(result.goal)}")
-
-    table = Table(title="Timeline")
-    table.add_column("Time")
-    table.add_column("Type")
-    table.add_column("Task")
-    table.add_column("Detail")
-    for event in result.events:
-        table.add_row(
-            event.created_at.isoformat(),
-            event.type,
-            safe_text(event.task_id or "-"),
-            safe_text(event.detail),
-        )
-    console.print(table)
-
-    console.print("[cyan]Files touched:[/cyan]")
-    if result.files_touched:
-        for path in result.files_touched:
-            console.print(f"- {safe_text(path)}")
-    else:
-        console.print("- none")
-
-    console.print("[cyan]Decisions:[/cyan]")
-    if result.decisions:
-        for task_id, decision in result.decisions.items():
-            console.print(f"- {safe_text(task_id)}: {safe_text(decision)}")
-    else:
-        console.print("- none")
-
-    sources = ", ".join(f"{source}={amount}" for source, amount in result.token_by_source.items()) or "-"
-    console.print(f"[cyan]Cost:[/cyan] total_tokens={result.token_total} ({sources})")
-
-
 @app.command("usage")
 def show_usage(
     task_id: str | None = typer.Option(None, "--task", help="Filter by task id."),
@@ -1671,14 +1241,15 @@ def show_usage(
     table.add_column("Model")
     table.add_column("Slice")
     table.add_column("Task")
-    table.add_column("Source")
-    table.add_column("Prompt")
-    table.add_column("Completion")
+    table.add_column("Prompt est.")
+    table.add_column("Completion est.")
     table.add_column("Total")
     total = 0
     for item in items:
         usage = item.token_usage
-        row_total = token_total(usage)
+        row_total = usage.total_tokens or (usage.prompt_tokens_estimate or 0) + (
+            usage.completion_tokens_estimate or 0
+        )
         total += row_total
         table.add_row(
             item.agent,
@@ -1686,13 +1257,12 @@ def show_usage(
             item.model or "-",
             item.slice_id or "-",
             item.task_id or "-",
-            usage.source,
             str(usage.prompt_tokens or usage.prompt_tokens_estimate or 0),
             str(usage.completion_tokens or usage.completion_tokens_estimate or 0),
             str(row_total),
         )
     console.print(table)
-    console.print(f"[cyan]Total tokens:[/cyan] {total}")
+    console.print(f"[cyan]Estimated total tokens:[/cyan] {total}")
 
 
 @app.command("learn")
@@ -1750,8 +1320,6 @@ def self_test() -> None:
 def clean_worktrees(
     artifacts: bool = typer.Option(False, "--artifacts", help="Also remove old .vocr/artifacts entries."),
     older_than_days: int = typer.Option(30, "--older-than-days", min=1, help="Artifact retention window."),
-    archives: bool = typer.Option(False, "--archives", help="Also remove old .vocr/archive ledger segments."),
-    archive_older_than_days: int = typer.Option(90, "--archive-older-than-days", min=1, help="Archive retention window."),
 ) -> None:
     try:
         message = GitWorktreeManager().prune_worktrees()
@@ -1761,9 +1329,6 @@ def clean_worktrees(
     if artifacts:
         removed = clean_artifacts(older_than_days=older_than_days)
         console.print(f"[green]Artifact clean complete[/green] removed={removed}")
-    if archives:
-        removed = clean_archives(older_than_days=archive_older_than_days)
-        console.print(f"[green]Archive clean complete[/green] removed={removed}")
 
 
 def clean_artifacts(*, older_than_days: int) -> int:
@@ -1788,21 +1353,6 @@ def clean_artifacts(*, older_than_days: int) -> int:
     return removed
 
 
-def clean_archives(*, older_than_days: int) -> int:
-    root = ledger().root / "archive"
-    if not root.exists():
-        return 0
-    cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
-    removed = 0
-    for path in root.glob("*.jsonl"):
-        modified = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
-        if modified >= cutoff:
-            continue
-        path.unlink()
-        removed += 1
-    return removed
-
-
 @app.command("abort")
 def abort_task(
     task_id: str,
@@ -1823,7 +1373,48 @@ def abort_task(
         LedgerEventType.task_aborted,
         {"task_id": task_id, "reason": reason, "worktree_removed": bool(remove_worktree and task.worktree_path)},
     )
+    store.release_claim(task_id)
     console.print(f"[yellow]Aborted[/yellow] {task_id}")
+
+
+@claims_app.command("list")
+def claims_list() -> None:
+    store = ledger()
+    released = store.reconcile_stale_claims()
+    table = Table(title="Active VOCR Claims")
+    table.add_column("Task")
+    table.add_column("Roots")
+    table.add_column("Paths")
+    for claim in store.active_claims():
+        table.add_row(claim.task_id, ", ".join(claim.roots) or "-", ", ".join(claim.expanded_paths[:5]) or "-")
+    console.print(table)
+    if released:
+        console.print(f"[yellow]Released stale claims:[/yellow] {', '.join(released)}")
+
+
+@claims_app.command("release")
+def claims_release(task_id: str) -> None:
+    ledger().release_claim(task_id)
+    console.print(f"[green]Released claim[/green] {task_id}")
+
+
+@memory_app.command("list")
+def memory_list() -> None:
+    table = Table(title="VOCR Project Memory")
+    table.add_column("ID")
+    table.add_column("Kind")
+    table.add_column("Task")
+    table.add_column("Text")
+    for entry in ProjectMemoryStore(ledger().root).entries():
+        table.add_row(entry.id, entry.note.kind.value, entry.task_id, safe_text(entry.note.text))
+    console.print(table)
+
+
+@memory_app.command("prune")
+def memory_prune(entry_id: str) -> None:
+    if not ProjectMemoryStore(ledger().root).prune(entry_id):
+        raise typer.BadParameter(f"Unknown memory entry id: {entry_id}")
+    console.print(f"[green]Pruned memory entry[/green] {entry_id}")
 
 
 @app.command()
@@ -1854,6 +1445,6 @@ def doctor() -> None:
     table.add_row("Worktree root", git_status["worktree_root"])
     table.add_row("Approve-all grants", str(len(store.permission_grants())))
     table.add_row("Codex CLI", "yes" if codex_available() else "missing")
-    table.add_row("Live model provider", provider_from_env(read_model_env(env_path())))
+    table.add_row("Live model provider", provider_from_env(read_env_file(env_path())))
     table.add_row("Codex MCP config", str(store.root / "codex-mcp.json"))
     console.print(table)

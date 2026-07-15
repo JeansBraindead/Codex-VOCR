@@ -8,7 +8,10 @@ from enum import Enum
 from pathlib import Path
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+TASK_CONTRACT_SCHEMA_VERSION = 1
 
 
 def utc_now() -> datetime:
@@ -36,6 +39,20 @@ class ReviewDecision(str, Enum):
     blocked = "blocked"
 
 
+class ReviewSeverity(str, Enum):
+    low = "low"
+    medium = "medium"
+    high = "high"
+
+
+class MemoryNoteKind(str, Enum):
+    decision = "decision"
+    convention = "convention"
+    term = "term"
+    check = "check"
+    rejected_path = "rejected_path"
+
+
 class PermissionMode(str, Enum):
     ask_each_time = "ask_each_time"
     approve_all = "approve_all"
@@ -58,13 +75,14 @@ class LedgerEventType(str, Enum):
     task_worker_ran = "task_worker_ran"
     task_committed = "task_committed"
     task_aborted = "task_aborted"
-    task_reverted = "task_reverted"
     review_recorded = "review_recorded"
     task_promoted = "task_promoted"
     telemetry_recorded = "telemetry_recorded"
     permission_granted = "permission_granted"
     tweak_recorded = "tweak_recorded"
     message = "message"
+    claim_acquired = "claim_acquired"
+    claim_released = "claim_released"
 
 
 class AcceptanceCriterion(BaseModel):
@@ -146,6 +164,41 @@ class VocrTask(BaseModel):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class BaselineCheck(BaseModel):
+    command: str
+    status: str
+    summary: str
+
+
+class TaskContract(BaseModel):
+    schema_version: int = TASK_CONTRACT_SCHEMA_VERSION
+    task_id: str
+    slice_id: str
+    title: str
+    summary: str
+    scope: list[str]
+    non_goals: list[str]
+    acceptance_criteria: list[AcceptanceCriterion]
+    tests: list[str]
+    dependencies: list[str]
+    baseline_checks: list[BaselineCheck] = Field(default_factory=list)
+
+    @classmethod
+    def from_task(cls, task: VocrTask, baseline_checks: list[BaselineCheck] | None = None) -> "TaskContract":
+        return cls(
+            task_id=task.id,
+            slice_id=task.slice_id,
+            title=task.title,
+            summary=task.summary,
+            scope=list(task.scope),
+            non_goals=list(task.non_goals),
+            acceptance_criteria=list(task.acceptance_criteria),
+            tests=list(task.tests),
+            dependencies=list(task.dependencies),
+            baseline_checks=baseline_checks or [],
+        )
+
+
 class TestRunResult(BaseModel):
     command: str
     status: str
@@ -158,6 +211,37 @@ class ReviewComment(BaseModel):
     body: str
     path: str | None = None
     line: int | None = None
+
+
+class CodexReviewFinding(BaseModel):
+    severity: ReviewSeverity
+    path: str | None = None
+    line: int | None = None
+    body: str
+
+
+class MemoryNote(BaseModel):
+    kind: MemoryNoteKind
+    text: str
+    refs: list[str] = Field(default_factory=list)
+
+    @field_validator("text")
+    @classmethod
+    def text_must_be_compact(cls, value: str) -> str:
+        text = value.strip()
+        if len(text) > 300:
+            raise ValueError("Memory note text must be 300 characters or fewer.")
+        if not text:
+            raise ValueError("Memory note text must not be empty.")
+        return text
+
+
+class CodexReviewReport(BaseModel):
+    schema_version: int = 1
+    decision: ReviewDecision
+    summary: str
+    findings: list[CodexReviewFinding] = Field(default_factory=list)
+    memory_notes: list[MemoryNote] = Field(default_factory=list)
 
 
 class SecretFinding(BaseModel):
@@ -189,6 +273,8 @@ class ReviewResult(BaseModel):
     git_status: str | None = None
     diff_summary: str | None = None
     diff_files: list[str] = Field(default_factory=list)
+    reviewed_ref: str | None = None
+    memory_notes: list[MemoryNote] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
 
 
@@ -209,31 +295,22 @@ class ScopePolicy(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+class ScopeClaim(BaseModel):
+    task_id: str
+    globs: list[str]
+    roots: list[str]
+    expanded_paths: list[str]
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class ClaimConflict(BaseModel):
+    task_id: str
+    conflicting_task_id: str
+    reason: str
+
+
 class TaskPlan(BaseModel):
     tasks: list[VocrTask] = Field(default_factory=list)
-
-
-class OrchestrationStep(BaseModel):
-    task_id: str
-    action: str
-    status: str
-    detail: str = ""
-
-
-class OrchestrationWave(BaseModel):
-    index: int
-    dispatch_task_ids: list[str] = Field(default_factory=list)
-    work_task_ids: list[str] = Field(default_factory=list)
-    graph_refreshed: bool = False
-    steps: list[OrchestrationStep] = Field(default_factory=list)
-
-
-class OrchestrationRunResult(BaseModel):
-    waves: list[OrchestrationWave] = Field(default_factory=list)
-    dispatched: int = 0
-    worked: int = 0
-    promoted: int = 0
-    stopped_reason: str = ""
 
 
 class CodexRunResult(BaseModel):
@@ -253,7 +330,6 @@ class TokenUsage(BaseModel):
     total_tokens: int | None = None
     prompt_tokens_estimate: int | None = None
     completion_tokens_estimate: int | None = None
-    source: str = "estimated"
 
 
 class RunTelemetry(BaseModel):
@@ -276,9 +352,6 @@ class LearningEntry(BaseModel):
     decisions: dict[str, int] = Field(default_factory=dict)
     risks: dict[str, int] = Field(default_factory=dict)
     estimated_tokens: int = 0
-    retry_count: int = 0
-    review_seconds_total: int = 0
-    accepted_review_seconds_total: int = 0
 
 
 class LearningSnapshot(BaseModel):
@@ -286,10 +359,6 @@ class LearningSnapshot(BaseModel):
     scopes: dict[str, LearningEntry] = Field(default_factory=dict)
     task_titles: dict[str, LearningEntry] = Field(default_factory=dict)
     files: dict[str, LearningEntry] = Field(default_factory=dict)
-    clarifications_requested: int = 0
-    clarifications_answered: int = 0
-    clarification_answer_rate_percent: int = 0
-    clarification_topics: dict[str, int] = Field(default_factory=dict)
     updated_at: datetime = Field(default_factory=utc_now)
 
 
@@ -299,34 +368,6 @@ class CompactResult(BaseModel):
     archived_events: int
     archive_path: str | None = None
     learning_path: str | None = None
-
-
-class GoldenEvalStep(BaseModel):
-    name: str
-    passed: bool
-    detail: str = ""
-
-
-class GoldenEvalResult(BaseModel):
-    passed: bool
-    steps: list[GoldenEvalStep] = Field(default_factory=list)
-
-
-class ReplayEvent(BaseModel):
-    created_at: datetime
-    type: str
-    task_id: str | None = None
-    detail: str
-
-
-class SliceReplay(BaseModel):
-    slice_id: str
-    goal: str = ""
-    events: list[ReplayEvent] = Field(default_factory=list)
-    files_touched: list[str] = Field(default_factory=list)
-    decisions: dict[str, str] = Field(default_factory=dict)
-    token_total: int = 0
-    token_by_source: dict[str, int] = Field(default_factory=dict)
 
 
 class LedgerEvent(BaseModel):
@@ -343,6 +384,12 @@ class BusMessage(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class SymbolSpan(BaseModel):
+    name: str
+    start: int
+    end: int
+
+
 class GraphNode(BaseModel):
     path: str
     kind: str
@@ -352,7 +399,7 @@ class GraphNode(BaseModel):
     summary: str
     imports: list[str] = Field(default_factory=list)
     symbols: list[str] = Field(default_factory=list)
-    search_tokens: list[str] = Field(default_factory=list)
+    symbol_spans: list[SymbolSpan] = Field(default_factory=list)
 
 
 class GraphEdge(BaseModel):
@@ -372,51 +419,35 @@ class RepoGraph(BaseModel):
         limit: int = 20,
         query: str | None = None,
         learning_boosts: dict[str, float] | None = None,
-        token_budget: int | None = None,
+        ranked_nodes: list[GraphNode] | None = None,
+        note: str | None = None,
     ) -> str:
         nodes = self.nodes
         ranked_paths: list[str] = []
-        if query:
+        if ranked_nodes is not None:
+            ranked_paths = [node.path for node in ranked_nodes]
+            nodes = self._expand_with_neighbors(ranked_nodes, limit=limit)
+        elif query:
             nodes = self._rank_nodes_bm25(query, learning_boosts=learning_boosts)
             ranked_paths = [node.path for node in nodes]
             nodes = self._expand_with_neighbors(nodes, limit=limit)
-        nodes = self._apply_context_budget(nodes, limit=limit, token_budget=token_budget)
 
         lines = ["VOCR repo graph brief:"]
         if query:
             lines.append(f"Query: {query}")
-        if token_budget is not None:
-            lines.append(f"Token budget: {token_budget}")
-        for node in nodes:
-            symbol_text = ", ".join(node.symbols[:6]) or "no symbols"
+        if note:
+            lines.append(f"Note: {note}")
+        for node in nodes[:limit]:
+            symbol_text = _symbol_text(node)
             marker = ""
             if query:
                 marker = " (seed)" if node.path in ranked_paths[:limit] else " (1-hop)"
             lines.append(f"- {node.path}{marker}: {node.summary} ({symbol_text})")
+        if len(nodes) > limit:
+            lines.append(f"- ... {len(nodes) - limit} more matching files omitted")
         if not nodes:
             lines.append("- no matching files")
         return "\n".join(lines)
-
-    def _apply_context_budget(
-        self,
-        nodes: list["GraphNode"],
-        *,
-        limit: int,
-        token_budget: int | None,
-    ) -> list["GraphNode"]:
-        if token_budget is None:
-            return nodes[:limit]
-        selected: list[GraphNode] = []
-        used = 0
-        for node in nodes:
-            cost = max(8, len(node.path + node.summary + " ".join(node.symbols[:6])) // 4)
-            if selected and used + cost > token_budget:
-                break
-            selected.append(node)
-            used += cost
-            if len(selected) >= limit:
-                break
-        return selected
 
     def _rank_nodes_bm25(
         self,
@@ -427,7 +458,7 @@ class RepoGraph(BaseModel):
         if not query_terms:
             return self.nodes
 
-        documents = [(node, node.search_tokens or _tokenize(_node_search_text(node))) for node in self.nodes]
+        documents = [(node, _tokenize(_node_search_text(node))) for node in self.nodes]
         if not documents:
             return []
         average_length = sum(len(tokens) for _, tokens in documents) / max(len(documents), 1)
@@ -449,7 +480,6 @@ class RepoGraph(BaseModel):
                 score += idf * ((frequencies[term] * 2.2) / denominator)
             if learning_boosts:
                 score += learning_boosts.get(node.path, 0.0)
-            score *= _path_weight(node.path)
             if score > 0:
                 scored.append((score, node))
         return [node for _, node in sorted(scored, key=lambda item: (-item[0], item[1].path))]
@@ -477,8 +507,7 @@ def _node_search_text(node: GraphNode) -> str:
     return " ".join([node.path, node.summary, " ".join(node.imports), " ".join(node.symbols)])
 
 
-def _path_weight(path: str) -> float:
-    lowered = path.lower()
-    if lowered.endswith(".md") or lowered.startswith("docs/"):
-        return 0.72
-    return 1.0
+def _symbol_text(node: GraphNode) -> str:
+    if node.symbol_spans:
+        return ", ".join(f"{span.name}@L{span.start}-{span.end}" for span in node.symbol_spans[:6])
+    return ", ".join(node.symbols[:6]) or "no symbols"

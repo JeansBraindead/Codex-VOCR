@@ -10,14 +10,7 @@ from vocr.graph.graphify import GraphStore
 from vocr.memory.ledger import MemoryLedger
 from vocr.models import ReviewDecision
 from vocr.orchestration.readiness import assess_request_readiness
-from vocr.orchestration.workflow import (
-    create_vision,
-    organize_slice,
-    promote_task,
-    render_review_markdown,
-    render_task_template,
-    review_task,
-)
+from vocr.orchestration.workflow import create_vision, organize_slice, render_review_markdown, render_task_template, review_task
 
 
 SERVER_INFO = {"name": "vocr", "version": "0.1.0"}
@@ -37,7 +30,6 @@ TOOLS = [
             "properties": {
                 "query": {"type": "string"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 50},
-                "budget": {"type": "integer", "minimum": 1, "description": "Approximate token budget for the brief."},
             },
             "additionalProperties": False,
         },
@@ -73,19 +65,6 @@ TOOLS = [
             "type": "object",
             "properties": {"task_id": {"type": "string"}},
             "required": ["task_id"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "vocr_promote",
-        "description": "Promote an accepted task only when confirm is true. Uses the same gated promote path as the CLI.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "task_id": {"type": "string"},
-                "confirm": {"type": "boolean"},
-            },
-            "required": ["task_id", "confirm"],
             "additionalProperties": False,
         },
     },
@@ -169,14 +148,12 @@ class VocrMcpServer:
         if name == "vocr_context":
             query = arguments.get("query")
             limit = int(arguments.get("limit", 20))
-            budget = arguments.get("budget")
-            token_budget = int(budget) if budget is not None else None
             store = GraphStore(self.vocr_home)
             if not store.exists():
                 graph = store.refresh(".")
-                context = graph.context_brief(query=query, limit=limit, token_budget=token_budget)
+                context = graph.context_brief(query=query, limit=limit)
             else:
-                context = store.context_pack(query=query, limit=limit, token_budget=token_budget)
+                context = store.context_pack(query=query, limit=limit)
             return self._text_result(context)
         if name == "vocr_plan":
             request = str(arguments.get("request", ""))
@@ -204,14 +181,6 @@ class VocrMcpServer:
             if not task.branch_name:
                 return self._text_result("Task has no branch to promote.")
             return self._text_result(GitWorktreeManager().merge_preview(task.branch_name))
-        if name == "vocr_promote":
-            task_id = str(arguments.get("task_id", ""))
-            if arguments.get("confirm") is not True:
-                return self._text_result(
-                    "Promotion not started. Call vocr_promote with confirm=true after an accepted review."
-                )
-            promote_task(MemoryLedger(self.vocr_home), GitWorktreeManager(), task_id)
-            return self._text_result(f"Task promoted: {task_id}")
         raise ValueError(f"Unknown VOCR tool: {name}")
 
     def _status_text(self) -> str:

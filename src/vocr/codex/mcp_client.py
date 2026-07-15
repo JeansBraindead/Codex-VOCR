@@ -3,13 +3,17 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
-from shutil import which
 from dataclasses import dataclass
 from pathlib import Path
 
 from vocr.codex.config import codex_available
-from vocr.models import CodexRunResult, PermissionGrant, PermissionMode, VocrTask
-from vocr.orchestration.workflow import render_task_template
+from vocr.models import BaselineCheck, CodexRunResult, PermissionGrant, PermissionMode, TaskContract, VocrTask
+from vocr.orchestration.workflow import (
+    normalize_check_command,
+    render_contract_task_prompt,
+    render_legacy_task_template,
+    render_task_template,
+)
 
 
 @dataclass(slots=True)
@@ -32,11 +36,18 @@ class CodexMcpClient:
         task: VocrTask,
         permission: PermissionGrant | None = None,
         extra_prompt: str | None = None,
-        include_context_pack: bool = True,
     ) -> CodexDispatchPayload:
+        """Build the worker prompt.
+
+        In contract mode the stable prefix is byte-identical across tasks; volatile
+        bounded-retry context is appended only at the end.
+        """
         if task.worktree_path is None:
             raise ValueError("Task must be dispatched to a worktree before Codex can run.")
-        prompt = render_task_template(task, include_context_pack=include_context_pack)
+        if os.getenv("VOCR_PROMPT_MODE", "legacy").lower() == "contract":
+            prompt = render_contract_task_prompt(include_context_pack=extra_prompt is None)
+        else:
+            prompt = render_task_template(task)
         if extra_prompt:
             prompt = f"{prompt}\n\n## Bounded retry context\n\n{extra_prompt}"
         return CodexDispatchPayload(
@@ -56,6 +67,15 @@ class CodexMcpClient:
         payload = self.build_payload(task, permission=permission)
         target = Path(payload.worktree_path) / filename
         target.parent.mkdir(parents=True, exist_ok=True)
+        baseline_checks = _collect_baseline_checks(task) if _baseline_checks_enabled() else []
+        contract_path = target.parent / "VOCR_TASK.json"
+        contract_path.write_text(
+            TaskContract.from_task(task, baseline_checks=baseline_checks).model_dump_json(indent=2),
+            encoding="utf-8",
+        )
+        if task.context_pack:
+            context_path = target.parent / "CONTEXT_PACK.txt"
+            context_path.write_text(task.context_pack, encoding="utf-8")
         target.write_text(
             "\n".join(
                 [
@@ -66,7 +86,7 @@ class CodexMcpClient:
                     "",
                     "## Prompt",
                     "",
-                    payload.prompt,
+                    render_legacy_task_template(task),
                 ]
             ),
             encoding="utf-8",
@@ -79,44 +99,23 @@ class CodexMcpClient:
         permission: PermissionGrant | None = None,
         timeout_seconds: int = 3600,
         extra_prompt: str | None = None,
-        include_context_pack: bool = True,
     ) -> CodexRunResult:
-        payload = self.build_payload(
-            task,
-            permission=permission,
-            extra_prompt=extra_prompt,
-            include_context_pack=include_context_pack,
-        )
+        payload = self.build_payload(task, permission=permission, extra_prompt=extra_prompt)
         command = self._resolve_command(payload, permission)
         if not command:
             raise RuntimeError(
                 "No Codex worker command available. Install Codex CLI or set VOCR_CODEX_COMMAND."
             )
 
-        try:
-            completed = subprocess.run(
-                command,
-                cwd=payload.worktree_path,
-                input=payload.prompt,
-                text=True,
-                capture_output=True,
-                timeout=timeout_seconds,
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            return CodexRunResult(
-                task_id=task.id,
-                command=command,
-                exit_code=124,
-                stderr=f"Codex worker timed out after {timeout_seconds}s.",
-            )
-        except OSError as exc:
-            return CodexRunResult(
-                task_id=task.id,
-                command=command,
-                exit_code=127,
-                stderr=f"Codex worker failed to start: {exc}",
-            )
+        completed = subprocess.run(
+            command,
+            cwd=payload.worktree_path,
+            input=payload.prompt,
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
         return CodexRunResult(
             task_id=task.id,
             command=command,
@@ -154,3 +153,51 @@ class CodexMcpClient:
         if profile == "unsandboxed" or os.getenv("VOCR_CODEX_UNSANDBOXED", "").lower() in {"1", "true", "yes"}:
             command.append("--dangerously-bypass-approvals-and-sandbox")
         return command
+
+
+def _baseline_checks_enabled() -> bool:
+    return os.getenv("VOCR_BASELINE_CHECKS", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _collect_baseline_checks(task: VocrTask) -> list[BaselineCheck]:
+    checks: list[BaselineCheck] = []
+    for check in task.tests:
+        command = normalize_check_command(check)
+        if command is None:
+            checks.append(
+                BaselineCheck(
+                    command=check,
+                    status="manual",
+                    summary="No safe automatic command mapped for this check.",
+                )
+            )
+            continue
+        command_text = " ".join(command)
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=task.worktree_path,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=300,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            checks.append(BaselineCheck(command=command_text, status="error", summary=_summarize_check_output(str(exc))))
+            continue
+        output = "\n".join(part for part in [completed.stdout.strip(), completed.stderr.strip()] if part)
+        checks.append(
+            BaselineCheck(
+                command=command_text,
+                status="passed" if completed.returncode == 0 else "failed",
+                summary=_summarize_check_output(output or f"exit_code={completed.returncode}"),
+            )
+        )
+    return checks
+
+
+def _summarize_check_output(text: str, max_chars: int = 200) -> str:
+    summary = " ".join(text.split())
+    if len(summary) <= max_chars:
+        return summary
+    return summary[: max_chars - 3].rstrip() + "..."

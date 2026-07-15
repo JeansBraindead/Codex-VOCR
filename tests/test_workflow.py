@@ -1,48 +1,20 @@
 from __future__ import annotations
 
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
-import subprocess
-import sys
+import json
 import tempfile
-import time
 import unittest
 import os
+import subprocess
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
-from agents import Model as _AgentModel
 from typer.testing import CliRunner
 
-from tests._ansi import strip_ansi
-from vocr.agents.hybrid import (
-    HybridDisabledError,
-    HybridRoutingError,
-    hybrid_create_task_plan,
-    hybrid_create_vision,
-    hybrid_enabled,
-)
 from vocr.agents.runtime import diagnose_live_agent_error
-from vocr.cli.app import (
-    app,
-    fetch_model_list,
-    fetch_model_catalog,
-    fetch_chat_completion,
-    chat_completion_endpoint,
-    model_list_endpoints,
-    build_pr_review_comments,
-    clean_archives,
-    clean_artifacts,
-    diff_delta,
-    _local_api_key,
-    latest_open_clarification,
-    record_worker_telemetry,
-    write_review_artifact,
-)
-from vocr.graph.graphify import GraphStore, RepoGraphBuilder
-from vocr.config.env_file import provider_from_env, read_env_file, read_model_env, redact_env, update_env_file
+from vocr.cli.app import app, clean_artifacts, latest_open_clarification, write_review_artifact
+from vocr.codex.mcp_client import CodexMcpClient
+from vocr.graph.graphify import EmbeddingUnavailable, GraphStore, RepoGraphBuilder
+from vocr.config.env_file import provider_from_env, read_env_file, redact_env, update_env_file
 from vocr.guardrails.scope_guard import ScopeGuard
 from vocr.guardrails.secrets import _gitleaks_command, scan_diff_for_secrets
 from vocr.memory.ledger import sanitize_payload
@@ -52,33 +24,20 @@ from vocr.mcp.server import VocrMcpServer
 from vocr.models import (
     AcceptanceCriterion,
     CodexRunResult,
+    GraphNode,
+    RepoGraph,
     LedgerEventType,
     LearningEntry,
     LearningSnapshot,
     ReviewDecision,
-    ReviewComment,
     ReviewResult,
     RunTelemetry,
-    TaskPlan,
     TaskStatus,
+    TaskContract,
     TokenUsage,
-    VisionSlice,
     VocrTask,
 )
-from vocr.orchestration.golden import run_golden_eval
-from vocr.orchestration.workflow import (
-    build_slice_replay,
-    create_vision,
-    dispatch_task,
-    normalize_check_command,
-    organize_slice,
-    ready_dispatch_tasks,
-    ready_work_tasks,
-    revert_task,
-    run_task_checks,
-    task_dag_waves,
-    validate_task_plan,
-)
+from vocr.orchestration.workflow import create_vision, distill_failure_output, infer_context_query, organize_slice, render_task_template, review_task
 
 GOOD_REQUEST = (
     "Ziel: Baue eine Healthcheck-API im Backend. "
@@ -88,21 +47,6 @@ GOOD_REQUEST = (
     "Nicht-Ziele: keine Auth; keine Deployment-Aenderungen. "
     "Ausfuehrung: mit go Worktree vorbereiten; Review vor Promote."
 )
-
-
-class _FakeHybridModel(_AgentModel):
-    """Minimal Model stand-in; Runner.run is always patched in these tests, so the
-    abstract methods below are never actually invoked."""
-
-    def __init__(self, label: str) -> None:
-        self.label = label
-
-    async def get_response(self, *args, **kwargs):
-        raise NotImplementedError
-
-    async def stream_response(self, *args, **kwargs):
-        raise NotImplementedError
-        yield  # pragma: no cover
 
 
 class WorkflowTests(unittest.TestCase):
@@ -121,7 +65,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("gueltigen LM-Studio-API-Token", diagnosis)
         self.assertIn("lokalen Fallback", diagnosis)
 
-    def test_live_agent_high_confidence_cli_skips_local_401_path(self) -> None:
+    def test_live_agent_local_401_cli_prints_auth_diagnosis_and_falls_back(self) -> None:
         class LocalAuthError(Exception):
             status_code = 401
 
@@ -142,25 +86,8 @@ class WorkflowTests(unittest.TestCase):
                 result = CliRunner().invoke(app, ["ask", GOOD_REQUEST, "--live-agent", "--plan-only"], env=env)
 
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("Deterministic confidence high", result.output)
-        self.assertIn("Created slice", result.output)
-
-    def test_live_agent_is_skipped_for_high_confidence_request(self) -> None:
-        async def should_not_run(_: str):
-            raise AssertionError("live agent should not run for high-confidence request")
-
-        with tempfile.TemporaryDirectory() as tmp, patch(
-            "vocr.cli.app.live_agents_available",
-            return_value=True,
-        ), patch("vocr.cli.app.create_live_vision", should_not_run):
-            result = CliRunner().invoke(
-                app,
-                ["ask", GOOD_REQUEST, "--live-agent", "--plan-only"],
-                env={"VOCR_HOME": str(Path(tmp) / ".vocr")},
-            )
-
-        self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("Deterministic confidence high", result.output)
+        self.assertIn("LM Studio hat die Anfrage wegen API-Key/Auth abgelehnt", result.output)
+        self.assertIn("lokaler Fallback aktiv", result.output)
         self.assertIn("Created slice", result.output)
 
     def test_vision_and_task_use_explicit_sections(self) -> None:
@@ -186,22 +113,6 @@ class WorkflowTests(unittest.TestCase):
             {"message": "key [redacted]", "api_key": "[redacted]"},
         )
 
-    def test_ledger_append_is_parallel_safe(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            ledger = MemoryLedger(Path(tmp) / ".vocr")
-
-            def append(index: int) -> str:
-                return ledger.append(LedgerEventType.message, {"index": index}).id
-
-            with ThreadPoolExecutor(max_workers=8) as pool:
-                ids = list(pool.map(append, range(80)))
-
-            events = list(ledger.events())
-
-        self.assertEqual(len(events), 80)
-        self.assertEqual(len(set(ids)), 80)
-        self.assertEqual(sorted(event.payload["index"] for event in events), list(range(80)))
-
     def test_scope_guard_blocks_files_outside_declared_scope(self) -> None:
         task = VocrTask(
             slice_id="slice-test",
@@ -216,57 +127,6 @@ class WorkflowTests(unittest.TestCase):
 
         self.assertEqual(guard.validate_changed_files(task, ["docs/guide.md"]), [])
         self.assertTrue(guard.validate_changed_files(task, ["src/vocr/main.py"]))
-
-    def test_worker_agents_file_points_to_single_scope_policy(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            task = VocrTask(
-                slice_id="slice-test",
-                title="Docs only",
-                summary="Update docs",
-                scope=["docs"],
-                acceptance_criteria=[AcceptanceCriterion(text="Docs updated")],
-                tests=["Syntax-Check"],
-                worktree_path=Path(tmp),
-            )
-            path = ScopeGuard().write_worker_agents_file(task)
-            text = path.read_text(encoding="utf-8")
-
-        self.assertIn(".vocr/VOCR_TASK.md", text)
-        self.assertIn(".vocr/scope.json", text)
-        self.assertNotIn("Allowed globs:", text)
-        self.assertNotIn("Non-goals:", text)
-
-    def test_retry_prompt_uses_incremental_diff_delta(self) -> None:
-        previous = "diff --git a/a.py b/a.py\n+old"
-        current = "diff --git a/a.py b/a.py\n+old\n+new"
-
-        self.assertEqual(diff_delta(previous, current), "+new")
-
-    def test_compile_check_targets_changed_python_files_only(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
-            subprocess.run(["git", "config", "user.email", "vocr@example.invalid"], cwd=root, check=True)
-            subprocess.run(["git", "config", "user.name", "VOCR Test"], cwd=root, check=True)
-            (root / "src").mkdir()
-            (root / "src" / "a.py").write_text("print('a')\n", encoding="utf-8")
-            subprocess.run(["git", "add", "."], cwd=root, check=True)
-            subprocess.run(["git", "commit", "-m", "initial"], cwd=root, check=True, capture_output=True)
-            (root / "src" / "a.py").write_text("print('changed')\n", encoding="utf-8")
-            task = VocrTask(
-                slice_id="slice-test",
-                title="Compile",
-                summary="Compile",
-                scope=["src"],
-                acceptance_criteria=[AcceptanceCriterion(text="Compiles")],
-                tests=["Syntax-Check"],
-                worktree_path=root,
-            )
-
-            command = normalize_check_command("Syntax-Check", task=task)
-
-        self.assertEqual(command[:3], [sys.executable, "-m", "py_compile"])
-        self.assertEqual(command[3:], ["src/a.py"])
 
     def test_graph_context_uses_bm25_and_import_neighbors(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -289,20 +149,180 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("src/sample/api.py (seed)", brief)
         self.assertIn("src/sample/service.py", brief)
 
-    def test_graph_context_uses_budget_and_downweights_docs(self) -> None:
+    def test_graph_builder_records_top_level_symbol_spans_and_brief_markers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "docs").mkdir()
-            (root / "docs" / "feature.md").write_text("# feature api ranking\n", encoding="utf-8")
-            (root / "src").mkdir()
-            (root / "src" / "feature.py").write_text("def feature_api():\n    return True\n", encoding="utf-8")
+            module = root / "sample.py"
+            module.write_text(
+                "\n".join(
+                    [
+                        "import os",
+                        "",
+                        "def alpha():",
+                        "    return os.name",
+                        "",
+                        "class Beta:",
+                        "    def method(self):",
+                        "        return True",
+                        "",
+                        "async def gamma():",
+                        "    return 1",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
 
             graph = RepoGraphBuilder(root).build()
-            brief = graph.context_brief(query="feature api", limit=5, token_budget=50)
+            node = graph.nodes[0]
+            brief = graph.context_brief(query="alpha beta gamma", limit=1)
 
-        self.assertIn("Token budget: 50", brief)
-        self.assertLess(brief.index("src/feature.py"), brief.index("docs/feature.md"))
-        self.assertTrue(all(node.search_tokens for node in graph.nodes))
+        self.assertEqual([span.name for span in node.symbol_spans], ["def alpha", "class Beta", "def gamma"])
+        self.assertEqual((node.symbol_spans[0].start, node.symbol_spans[0].end), (3, 4))
+        self.assertEqual((node.symbol_spans[1].start, node.symbol_spans[1].end), (6, 8))
+        self.assertIn("def alpha@L3-4", brief)
+        self.assertIn("class Beta@L6-8", brief)
+
+    def test_old_graph_json_without_symbol_spans_still_loads(self) -> None:
+        graph = RepoGraph.model_validate(
+            {
+                "root": "C:/tmp/repo",
+                "nodes": [
+                    {
+                        "path": "sample.py",
+                        "kind": "py",
+                        "size_bytes": 10,
+                        "line_count": 1,
+                        "content_hash": "hash",
+                        "summary": "Python module: def alpha",
+                        "imports": [],
+                        "symbols": ["def alpha"],
+                    }
+                ],
+                "edges": [],
+            }
+        )
+
+        self.assertEqual(graph.nodes[0].symbol_spans, [])
+        self.assertIn("def alpha", graph.context_brief())
+
+    def test_context_symbol_prints_exact_span_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            vocr_home = root / ".vocr"
+            module = root / "sample.py"
+            module.write_text(
+                "\n".join(
+                    [
+                        "def alpha():",
+                        "    return 1",
+                        "",
+                        "def beta():",
+                        "    value = 2",
+                        "    return value",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            GraphStore(vocr_home).save(RepoGraphBuilder(root).build())
+
+            result = CliRunner().invoke(
+                app,
+                ["context", "--symbol", "sample.py:beta"],
+                env={"VOCR_HOME": str(vocr_home)},
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(result.output.strip(), "def beta():\n    value = 2\n    return value")
+
+    def test_embedding_retrieval_flag_off_makes_no_embedding_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "README.md").write_text("# Docs\n", encoding="utf-8")
+            store = GraphStore(Path(tmp) / ".vocr")
+
+            with patch.dict(os.environ, {"VOCR_EMBED_RETRIEVAL": ""}), patch(
+                "vocr.graph.graphify._embed_text",
+                side_effect=AssertionError("embedding call should not happen"),
+            ):
+                store.refresh(root)
+                context = store.context_pack(query="docs", limit=1)
+
+        self.assertIn("README.md", context)
+
+    def test_embedding_retrieval_fuses_semantic_rank_with_bm25(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "payments.py").write_text("def checkout():\n    return True\n", encoding="utf-8")
+            (root / "notes.md").write_text("# unrelated banana\n", encoding="utf-8")
+            store = GraphStore(Path(tmp) / ".vocr")
+
+            def fake_embed(text: str) -> list[float]:
+                if "billing" in text:
+                    return [1.0, 0.0]
+                if "payments" in text or "checkout" in text:
+                    return [1.0, 0.0]
+                return [0.0, 1.0]
+
+            with patch.dict(
+                os.environ,
+                {
+                    "VOCR_EMBED_RETRIEVAL": "true",
+                    "VOCR_EMBED_BASE_URL": "http://example.test/v1",
+                    "VOCR_EMBED_MODEL": "mock-embed",
+                },
+            ), patch("vocr.graph.graphify._embed_text", side_effect=fake_embed):
+                store.refresh(root)
+                context = store.context_pack(query="billing", limit=1)
+
+        self.assertIn("payments.py", context)
+
+    def test_embedding_cache_skips_unchanged_node_embedding_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "README.md").write_text("# Docs\n", encoding="utf-8")
+            store = GraphStore(Path(tmp) / ".vocr")
+            calls: list[str] = []
+
+            def fake_embed(text: str) -> list[float]:
+                calls.append(text)
+                return [1.0, 0.0]
+
+            with patch.dict(
+                os.environ,
+                {
+                    "VOCR_EMBED_RETRIEVAL": "true",
+                    "VOCR_EMBED_BASE_URL": "http://example.test/v1",
+                    "VOCR_EMBED_MODEL": "mock-embed",
+                },
+            ), patch("vocr.graph.graphify._embed_text", side_effect=fake_embed):
+                store.refresh(root)
+                first_call_count = len(calls)
+                store.refresh(root)
+
+        self.assertEqual(first_call_count, 1)
+        self.assertEqual(len(calls), 1)
+
+    def test_embedding_retrieval_endpoint_error_falls_back_to_bm25_with_note(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "README.md").write_text("# Docs\n", encoding="utf-8")
+            store = GraphStore(Path(tmp) / ".vocr")
+            store.save(RepoGraphBuilder(root).build())
+
+            with patch.dict(
+                os.environ,
+                {
+                    "VOCR_EMBED_RETRIEVAL": "true",
+                    "VOCR_EMBED_BASE_URL": "http://example.test/v1",
+                    "VOCR_EMBED_MODEL": "mock-embed",
+                },
+            ), patch("vocr.graph.graphify._embed_text", side_effect=EmbeddingUnavailable("down")):
+                context = store.context_pack(query="docs", limit=1)
+
+        self.assertIn("README.md", context)
+        self.assertIn("embedding retrieval unavailable, lexical only", context)
 
     def test_secret_scanner_blocks_added_secret_values(self) -> None:
         diff = "\n".join(
@@ -363,415 +383,313 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(tasks[1].dependencies, [])
         self.assertEqual(set(tasks[2].dependencies), {tasks[0].id, tasks[1].id})
 
-    def test_task_dag_waves_group_parallel_tasks_then_dependents(self) -> None:
-        first = VocrTask(
-            id="task-first",
-            slice_id="slice-dag",
-            title="First",
-            summary="First",
-            scope=["docs"],
-            acceptance_criteria=[AcceptanceCriterion(text="First done")],
-            tests=["Syntax-Check"],
-        )
-        second = VocrTask(
-            id="task-second",
-            slice_id="slice-dag",
-            title="Second",
-            summary="Second",
-            scope=["docs"],
-            acceptance_criteria=[AcceptanceCriterion(text="Second done")],
-            tests=["Syntax-Check"],
-        )
-        third = VocrTask(
-            id="task-third",
-            slice_id="slice-dag",
-            title="Third",
-            summary="Third",
-            scope=["docs"],
-            acceptance_criteria=[AcceptanceCriterion(text="Third done")],
-            tests=["Syntax-Check"],
-            dependencies=[first.id, second.id],
-        )
+    def test_local_assist_flag_off_does_not_call_endpoint(self) -> None:
+        with patch.dict(os.environ, {"VOCR_LOCAL_ASSIST": ""}), patch(
+            "vocr.orchestration.workflow.urllib.request.urlopen",
+            side_effect=AssertionError("local endpoint should not be called"),
+        ):
+            query = infer_context_query("Payment API healthcheck")
 
-        waves = task_dag_waves([third, first, second])
+        self.assertEqual(query, "payment healthcheck")
 
-        self.assertEqual({task.id for task in waves[0]}, {first.id, second.id})
-        self.assertEqual([task.id for task in waves[1]], [third.id])
+    def test_local_assist_expands_context_query_with_deduped_terms(self) -> None:
+        class FakeResponse:
+            def __enter__(self) -> "FakeResponse":
+                return self
 
-    def test_ready_task_selectors_respect_review_gated_dependencies(self) -> None:
-        dependency = VocrTask(
-            id="task-dependency",
-            slice_id="slice-ready",
-            title="Dependency",
-            summary="Dependency",
-            scope=["docs"],
-            acceptance_criteria=[AcceptanceCriterion(text="Dependency done")],
-            tests=["Syntax-Check"],
-            status=TaskStatus.accepted,
-        )
-        blocked = VocrTask(
-            id="task-blocked",
-            slice_id="slice-ready",
-            title="Blocked",
-            summary="Blocked",
-            scope=["docs"],
-            acceptance_criteria=[AcceptanceCriterion(text="Blocked done")],
-            tests=["Syntax-Check"],
-            dependencies=[dependency.id],
-        )
-        independent = VocrTask(
-            id="task-independent",
-            slice_id="slice-ready",
-            title="Independent",
-            summary="Independent",
-            scope=["docs"],
-            acceptance_criteria=[AcceptanceCriterion(text="Independent done")],
-            tests=["Syntax-Check"],
-        )
-        dispatched = VocrTask(
-            id="task-dispatched",
-            slice_id="slice-ready",
-            title="Dispatched",
-            summary="Dispatched",
-            scope=["docs"],
-            acceptance_criteria=[AcceptanceCriterion(text="Dispatched done")],
-            tests=["Syntax-Check"],
-            status=TaskStatus.dispatched,
-        )
+            def __exit__(self, *_: object) -> None:
+                return None
 
-        self.assertEqual([task.id for task in ready_dispatch_tasks([dependency, blocked, independent, dispatched])], [independent.id])
-        self.assertEqual([task.id for task in ready_work_tasks([dependency, blocked, independent, dispatched])], [dispatched.id])
+            def read(self) -> bytes:
+                return json.dumps(
+                    {"choices": [{"message": {"content": json.dumps(["billing", "payment", "checkout", "invoice", "ledger", "extra"])}}]}
+                ).encode("utf-8")
 
-    def test_dispatch_ready_refreshes_graph_once_for_parallel_wave(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "VOCR_LOCAL_ASSIST": "true",
+                "VOCR_LOCAL_BASE_URL": "http://localhost:1234/v1",
+                "VOCR_LOCAL_MODEL": "local-model",
+            },
+        ), patch("vocr.orchestration.workflow.urllib.request.urlopen", return_value=FakeResponse()):
+            query = infer_context_query("Payment API healthcheck")
+
+        self.assertEqual(query, "payment healthcheck billing checkout invoice ledger")
+
+    def test_local_assist_failure_returns_original_query(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "VOCR_LOCAL_ASSIST": "true",
+                "VOCR_LOCAL_BASE_URL": "http://localhost:1234/v1",
+                "VOCR_LOCAL_MODEL": "local-model",
+            },
+        ), patch("vocr.orchestration.workflow.urllib.request.urlopen", side_effect=OSError("down")):
+            query = infer_context_query("Payment API healthcheck")
+
+        self.assertEqual(query, "payment healthcheck")
+
+    def test_local_assist_payload_contains_only_goal_title_text(self) -> None:
+        class FakeResponse:
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *_: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps({"choices": [{"message": {"content": "[]"}}]}).encode("utf-8")
+
+        captured: dict[str, str] = {}
+
+        def fake_urlopen(request: object, timeout: int) -> FakeResponse:
+            captured["payload"] = request.data.decode("utf-8")  # type: ignore[attr-defined]
+            captured["timeout"] = str(timeout)
+            return FakeResponse()
+
+        with patch.dict(
+            os.environ,
+            {
+                "VOCR_LOCAL_ASSIST": "true",
+                "VOCR_LOCAL_BASE_URL": "http://localhost:1234/v1",
+                "VOCR_LOCAL_MODEL": "local-model",
+            },
+        ), patch("vocr.orchestration.workflow.urllib.request.urlopen", side_effect=fake_urlopen):
+            infer_context_query("Trusted Goal Title")
+
+        payload = json.loads(captured["payload"])
+        sent_text = "\n".join(message["content"] for message in payload["messages"])
+        self.assertIn("Trusted Goal Title", sent_text)
+        self.assertNotIn("CONTEXT_PACK", sent_text)
+        self.assertNotIn("diff --git", sent_text)
+        self.assertNotIn("repo context", sent_text.lower())
+
+    def test_organize_slice_builds_per_task_context_queries_and_packs(self) -> None:
+        request = (
+            "Ziel: Improve project surfaces. "
+            "Arbeitsbereich: src; docs. "
+            "Akzeptanz: Changes are focused. "
+            "Verifikation: Syntax-Check. "
+            "Tasks: Payment API; Install Docs."
+        )
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / ".vocr"
-            ledger = MemoryLedger(root)
-            for task_id in ["task-wave-a", "task-wave-b"]:
-                ledger.append(
-                    LedgerEventType.task_created,
-                    VocrTask(
-                        id=task_id,
-                        slice_id="slice-wave",
-                        title=task_id,
-                        summary=task_id,
-                        scope=["docs"],
-                        acceptance_criteria=[AcceptanceCriterion(text=f"{task_id} done")],
-                        tests=["Syntax-Check"],
-                    ),
+            vocr_home = Path(tmp) / ".vocr"
+            GraphStore(vocr_home).save(
+                RepoGraph(
+                    root=tmp,
+                    nodes=[
+                        GraphNode(
+                            path="src/payments/api.py",
+                            kind="py",
+                            size_bytes=10,
+                            line_count=1,
+                            content_hash="api",
+                            summary="payment api charge refund endpoint",
+                            symbols=["def charge"],
+                        ),
+                        GraphNode(
+                            path="docs/install.md",
+                            kind="md",
+                            size_bytes=10,
+                            line_count=1,
+                            content_hash="docs",
+                            summary="install docs setup guide",
+                        ),
+                    ],
                 )
-            refresh_count = 0
+            )
 
-            def fake_refresh() -> None:
-                nonlocal refresh_count
-                refresh_count += 1
+            tasks = organize_slice(create_vision(request), vocr_home=str(vocr_home))
 
-            def fake_prepare(store: MemoryLedger, task_id: str) -> SimpleNamespace:
-                return SimpleNamespace(
-                    task_id=task_id,
-                    worktree_path=f"C:/tmp/{task_id}",
-                    manifest_path=f"C:/tmp/{task_id}/.vocr/VOCR_TASK.md",
-                    scope_path=f"C:/tmp/{task_id}/.vocr/scope.json",
-                    agents_path=f"C:/tmp/{task_id}/.vocr/AGENTS.md",
-                    permission_mode="ask_each_time",
-                    permission_scope="none",
+        self.assertEqual(len(tasks), 2)
+        self.assertNotEqual(tasks[0].context_query, tasks[1].context_query)
+        self.assertNotEqual(tasks[0].context_pack, tasks[1].context_pack)
+        self.assertIn("payment", tasks[0].context_query or "")
+        self.assertIn("install", tasks[1].context_query or "")
+        self.assertIn("src/payments/api.py", tasks[0].context_pack or "")
+        self.assertIn("docs/install.md", tasks[1].context_pack or "")
+
+    def test_organize_slice_single_task_keeps_goal_context_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vocr_home = Path(tmp) / ".vocr"
+            GraphStore(vocr_home).save(
+                RepoGraph(
+                    root=tmp,
+                    nodes=[
+                        GraphNode(
+                            path="src/slice.py",
+                            kind="py",
+                            size_bytes=10,
+                            line_count=1,
+                            content_hash="health",
+                            summary="implement first scoped slice healthcheck endpoint",
+                            symbols=["def implement_slice"],
+                        )
+                    ],
                 )
+            )
 
-            with patch("vocr.cli.app.refresh_graph_for_wave", fake_refresh), patch(
-                "vocr.cli.app.prepare_dispatch_handoff",
-                fake_prepare,
+            tasks = organize_slice(create_vision(GOOD_REQUEST), vocr_home=str(vocr_home))
+
+        self.assertEqual(len(tasks), 1)
+        self.assertIn("implement first scoped slice", tasks[0].context_query or "")
+        self.assertIn("src/slice.py", tasks[0].context_pack or "")
+
+    def test_codex_manifest_writes_contract_and_separate_context_pack(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp)
+            task = VocrTask(
+                id="task-contract",
+                slice_id="slice-contract",
+                title="Update handoff",
+                summary="Write the contract handoff files.",
+                scope=["src/vocr/codex/mcp_client.py"],
+                non_goals=["Do not change promotion."],
+                acceptance_criteria=[AcceptanceCriterion(text="Contract JSON exists")],
+                tests=["python -m compileall src"],
+                dependencies=["task-parent"],
+                context_pack="UNTRUSTED_MARKER: repo context only",
+                worktree_path=worktree,
+            )
+
+            manifest_path = CodexMcpClient(command="codex").write_manifest(task)
+            contract_path = worktree / ".vocr" / "VOCR_TASK.json"
+            context_path = worktree / ".vocr" / "CONTEXT_PACK.txt"
+            contract_text = contract_path.read_text(encoding="utf-8")
+            context_text = context_path.read_text(encoding="utf-8")
+            contract = TaskContract.model_validate_json(contract_text)
+
+        self.assertEqual(manifest_path.name, "VOCR_TASK.md")
+        self.assertEqual(contract.task_id, task.id)
+        self.assertEqual(contract.dependencies, ["task-parent"])
+        self.assertEqual(context_text, "UNTRUSTED_MARKER: repo context only")
+        self.assertNotIn("UNTRUSTED_MARKER", contract_text)
+
+    def test_contract_prompt_mode_is_byte_identical_and_excludes_task_content(self) -> None:
+        task_one = VocrTask(
+            id="task-one",
+            slice_id="slice-contract",
+            title="First volatile title",
+            summary="First summary",
+            scope=["src/one.py"],
+            acceptance_criteria=[AcceptanceCriterion(text="First unique criterion")],
+            tests=["python -m compileall src"],
+        )
+        task_two = VocrTask(
+            id="task-two",
+            slice_id="slice-contract",
+            title="Second volatile title",
+            summary="Second summary",
+            scope=["src/two.py"],
+            acceptance_criteria=[AcceptanceCriterion(text="Second unique criterion")],
+            tests=["python -m unittest discover -s tests"],
+        )
+
+        with patch.dict(os.environ, {"VOCR_PROMPT_MODE": "contract"}):
+            prompt_one = render_task_template(task_one)
+            prompt_two = render_task_template(task_two)
+
+        self.assertEqual(prompt_one, prompt_two)
+        self.assertIn(".vocr/VOCR_TASK.json", prompt_one)
+        self.assertIn(".vocr/scope.json", prompt_one)
+        self.assertIn(".vocr/CONTEXT_PACK.txt", prompt_one)
+        self.assertIn("baseline_checks", prompt_one)
+        self.assertNotIn(task_one.title, prompt_one)
+        self.assertNotIn("First unique criterion", prompt_one)
+        self.assertNotIn(task_two.title, prompt_two)
+        self.assertNotIn("Second unique criterion", prompt_two)
+
+    def test_baseline_checks_flag_off_does_not_run_subprocess_and_leaves_contract_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp)
+            task = VocrTask(
+                id="task-baseline-off",
+                slice_id="slice-baseline",
+                title="No baseline by default",
+                summary="Do not run checks unless the flag is on.",
+                scope=["src"],
+                acceptance_criteria=[AcceptanceCriterion(text="Contract exists")],
+                tests=["Syntax-Check"],
+                worktree_path=worktree,
+            )
+
+            with patch.dict(os.environ, {"VOCR_BASELINE_CHECKS": ""}, clear=False), patch(
+                "vocr.codex.mcp_client.subprocess.run",
+                side_effect=AssertionError("baseline subprocess should not run"),
             ):
-                result = CliRunner().invoke(
-                    app,
-                    ["dispatch-ready", "--limit", "2", "--parallel", "2"],
-                    env={"VOCR_HOME": str(root)},
-                )
-
-        self.assertEqual(result.exit_code, 0, result.output)
-        self.assertEqual(refresh_count, 1)
-        self.assertIn("dispatched=2", strip_ansi(result.output))
-
-    def test_plan_invariants_block_dependency_cycles_before_dispatch(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / ".vocr"
-            ledger = MemoryLedger(root)
-            first = VocrTask(
-                id="task-a",
-                slice_id="slice-plan",
-                title="A",
-                summary="A",
-                scope=["docs"],
-                acceptance_criteria=[AcceptanceCriterion(text="A done")],
-                tests=["Syntax-Check"],
-                dependencies=["task-b"],
+                CodexMcpClient(command="codex").write_manifest(task)
+            contract = TaskContract.model_validate_json(
+                (worktree / ".vocr" / "VOCR_TASK.json").read_text(encoding="utf-8")
             )
-            second = VocrTask(
-                id="task-b",
-                slice_id="slice-plan",
-                title="B",
-                summary="B",
-                scope=["docs"],
-                acceptance_criteria=[AcceptanceCriterion(text="B done")],
-                tests=["Syntax-Check"],
-                dependencies=["task-a"],
-            )
-            ledger.append(LedgerEventType.task_created, first)
-            ledger.append(LedgerEventType.task_created, second)
 
-            class NoCreateManager:
-                def create_for_task(self, task_id: str):
-                    raise AssertionError("worktree must not be created for invalid plan")
+        self.assertEqual(contract.baseline_checks, [])
 
-            issues = validate_task_plan(ledger.tasks(), target_task_id=first.id)
-            with self.assertRaisesRegex(ValueError, "dependency cycle"):
-                dispatch_task(ledger, NoCreateManager(), first.id)  # type: ignore[arg-type]
-
-        self.assertTrue(any("dependency cycle" in issue for issue in issues))
-
-    def test_plan_invariants_require_scope_and_coverage(self) -> None:
-        task = VocrTask(
-            id="task-invalid-plan",
-            slice_id="slice-plan",
-            title="Invalid",
-            summary="Invalid",
-            scope=[],
-            acceptance_criteria=[AcceptanceCriterion(text="Visible result")],
-            tests=[],
-        )
-
-        issues = validate_task_plan([task])
-
-        self.assertTrue(any("Task has no scope" in issue for issue in issues))
-        self.assertTrue(any("no executable check or verification mapping" in issue for issue in issues))
-
-    def test_acceptance_criterion_can_run_executable_check(self) -> None:
-        task = VocrTask(
-            id="task-check",
-            slice_id="slice-check",
-            title="Criterion check",
-            summary="Criterion check",
-            scope=["src"],
-            acceptance_criteria=[
-                AcceptanceCriterion(text="Source compiles", check_command="Syntax-Check"),
-            ],
-            tests=[],
-        )
-
-        issues = validate_task_plan([task])
-        results = run_task_checks(task)
-
-        self.assertEqual(issues, [])
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0].status, "passed")
-
-    def test_revert_task_uses_recorded_commit_and_logs_event(self) -> None:
+    def test_baseline_checks_flag_on_records_failed_and_manual_checks_without_blocking(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            ledger = MemoryLedger(Path(tmp) / ".vocr")
+            worktree = Path(tmp)
             task = VocrTask(
-                id="task-revert",
-                slice_id="slice-revert",
-                title="Revert",
-                summary="Revert",
-                scope=["docs"],
-                acceptance_criteria=[AcceptanceCriterion(text="Docs updated")],
-                tests=["Syntax-Check"],
+                id="task-baseline-on",
+                slice_id="slice-baseline",
+                title="Collect baseline",
+                summary="Record baseline checks in the contract.",
+                scope=["src"],
+                acceptance_criteria=[AcceptanceCriterion(text="Contract has baseline")],
+                tests=["Syntax-Check", "manual smoke"],
+                worktree_path=worktree,
             )
-            ledger.append(LedgerEventType.task_created, task)
-            ledger.append(LedgerEventType.task_committed, {"task_id": task.id, "commit_sha": "abc123"})
 
-            class FakeManager:
-                def __init__(self) -> None:
-                    self.reverted: list[str] = []
+            def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+                return subprocess.CompletedProcess(command, 1, stdout="line one\n" + ("x" * 250), stderr="")
 
-                def revert_commit(self, commit_sha: str) -> str:
-                    self.reverted.append(commit_sha)
-                    return "def456"
-
-            manager = FakeManager()
-
-            revert_sha = revert_task(ledger, manager, task.id, reason="test revert")  # type: ignore[arg-type]
-            current = ledger.get_task(task.id)
-
-        self.assertEqual(manager.reverted, ["abc123"])
-        self.assertEqual(revert_sha, "def456")
-        self.assertIsNotNone(current)
-        self.assertEqual(current.status, TaskStatus.needs_changes)
-        self.assertIsNone(ledger.latest_task_commit(task.id))
-
-    def test_build_slice_replay_reconstructs_timeline_files_decisions_and_cost(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            ledger = MemoryLedger(Path(tmp) / ".vocr")
-            slice_item = VisionSlice(
-                id="slice-replay",
-                request=GOOD_REQUEST,
-                goal="Healthcheck-API bauen",
-                acceptance_criteria=[AcceptanceCriterion(text="GET /health liefert 200")],
+            with patch.dict(os.environ, {"VOCR_BASELINE_CHECKS": "true"}), patch(
+                "vocr.codex.mcp_client.subprocess.run",
+                side_effect=fake_run,
+            ):
+                manifest_path = CodexMcpClient(command="codex").write_manifest(task)
+            contract = TaskContract.model_validate_json(
+                (worktree / ".vocr" / "VOCR_TASK.json").read_text(encoding="utf-8")
             )
-            ledger.append(LedgerEventType.vision_created, slice_item)
-            task = VocrTask(
-                id="task-replay",
-                slice_id=slice_item.id,
-                title="Healthcheck-Endpoint",
-                summary="Implement healthcheck",
-                scope=["backend"],
-                acceptance_criteria=[AcceptanceCriterion(text="GET /health liefert 200")],
-                tests=["Syntax-Check"],
-            )
-            ledger.append(LedgerEventType.task_created, task)
-            ledger.append(
-                LedgerEventType.task_dispatched,
-                {"task_id": task.id, "branch_name": "vocr/task-replay", "worktree_path": str(Path(tmp) / "wt")},
-            )
-            ledger.append(LedgerEventType.task_committed, {"task_id": task.id, "commit_sha": "abc123"})
-            ledger.append(
-                LedgerEventType.telemetry_recorded,
-                RunTelemetry(
-                    provider="codex-cli",
-                    slice_id=slice_item.id,
-                    task_id=task.id,
-                    agent="codex-worker",
-                    token_usage=TokenUsage(total_tokens=120, source="actual"),
-                ),
-            )
-            review = ReviewResult(
-                task_id=task.id,
-                decision=ReviewDecision.accepted,
-                summary="Looks good",
-                diff_files=["src/vocr/backend/health.py"],
-            )
-            ledger.append(LedgerEventType.review_recorded, review)
-            ledger.append(LedgerEventType.task_promoted, {"task_id": task.id, "branch_name": "vocr/task-replay"})
 
-            result = build_slice_replay(ledger, slice_item.id)
+        self.assertEqual(manifest_path.name, "VOCR_TASK.md")
+        self.assertEqual([item.status for item in contract.baseline_checks], ["failed", "manual"])
+        self.assertLessEqual(len(contract.baseline_checks[0].summary), 200)
+        self.assertEqual(contract.baseline_checks[1].command, "manual smoke")
 
-        self.assertEqual(result.slice_id, slice_item.id)
-        self.assertEqual(result.goal, "Healthcheck-API bauen")
-        event_types = [event.type for event in result.events]
-        self.assertEqual(
-            event_types,
+    def test_distill_failure_output_keeps_repo_traceback_and_exception_without_site_packages(self) -> None:
+        text = "\n".join(
             [
-                "vision_created",
-                "task_created",
-                "task_dispatched",
-                "task_committed",
-                "review_recorded",
-                "task_promoted",
-            ],
-        )
-        self.assertEqual(result.files_touched, ["src/vocr/backend/health.py"])
-        self.assertEqual(result.decisions, {task.id: "accepted"})
-        self.assertEqual(result.token_total, 120)
-        self.assertEqual(result.token_by_source, {"actual": 120})
-
-    def test_build_slice_replay_rejects_unknown_slice(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            ledger = MemoryLedger(Path(tmp) / ".vocr")
-            with self.assertRaises(ValueError):
-                build_slice_replay(ledger, "missing-slice")
-
-    def test_replay_cli_reports_unknown_slice(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            result = CliRunner().invoke(
-                app,
-                ["replay", "missing-slice"],
-                env={"VOCR_HOME": str(Path(tmp) / ".vocr")},
-            )
-
-        self.assertNotEqual(result.exit_code, 0)
-        self.assertIn("Slice not found", result.output)
-
-    def test_hybrid_disabled_by_default(self) -> None:
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("VOCR_HYBRID_ENABLED", None)
-            self.assertFalse(hybrid_enabled())
-            with self.assertRaises(HybridDisabledError):
-                asyncio.run(hybrid_create_vision(GOOD_REQUEST))
-
-    def test_hybrid_vision_is_cloud_only(self) -> None:
-        cloud_model = _FakeHybridModel("cloud")
-        calls: list[str] = []
-
-        async def fake_run(agent, prompt, *, max_turns=None, **kwargs):
-            calls.append(agent.model.label)
-            return SimpleNamespace(
-                final_output=VisionSlice(request=prompt, goal="Aus der Cloud geplant").model_dump()
-            )
-
-        with patch("vocr.agents.hybrid._cloud_model", return_value=cloud_model), patch(
-            "vocr.agents.hybrid.Runner.run", side_effect=fake_run
-        ), patch.dict(os.environ, {"VOCR_HYBRID_ENABLED": "true"}, clear=False):
-            result = asyncio.run(hybrid_create_vision(GOOD_REQUEST))
-
-        self.assertEqual(calls, ["cloud"])
-        self.assertEqual(result.route, "cloud")
-        self.assertEqual(result.output.goal, "Aus der Cloud geplant")
-
-    def test_hybrid_vision_refuses_without_cloud_key(self) -> None:
-        with patch("vocr.agents.hybrid._cloud_model", return_value=None), patch.dict(
-            os.environ, {"VOCR_HYBRID_ENABLED": "true"}, clear=False
-        ):
-            with self.assertRaises(HybridRoutingError):
-                asyncio.run(hybrid_create_vision(GOOD_REQUEST))
-
-    def test_hybrid_task_plan_never_routes_untrusted_context_to_local(self) -> None:
-        cloud_model = _FakeHybridModel("cloud")
-        calls: list[str] = []
-
-        async def fake_run(agent, prompt, *, max_turns=None, **kwargs):
-            calls.append(agent.model.label)
-            return SimpleNamespace(final_output=TaskPlan(tasks=[]).model_dump())
-
-        slice_item = VisionSlice(
-            request=GOOD_REQUEST,
-            goal="Healthcheck-API bauen",
-            acceptance_criteria=[AcceptanceCriterion(text="GET /health liefert 200")],
+                "noise before",
+                "Traceback (most recent call last):",
+                '  File "C:\\Users\\jeenz\\Desktop\\Agent\\.venv\\Lib\\site-packages\\pkg\\runner.py", line 10, in run',
+                "    call()",
+                '  File "C:\\Users\\jeenz\\Desktop\\Agent\\src\\vocr\\cli\\app.py", line 802, in run_worker',
+                "    raise ValueError('boom')",
+                "ValueError: boom",
+            ]
         )
 
-        with patch("vocr.agents.hybrid._cloud_model", return_value=cloud_model), patch(
-            "vocr.agents.hybrid.Runner.run", side_effect=fake_run
-        ), patch.dict(os.environ, {"VOCR_HYBRID_ENABLED": "true"}, clear=False):
-            result = asyncio.run(hybrid_create_task_plan(slice_item, "<repo context from untrusted files>"))
+        distilled = distill_failure_output(text, max_chars=1200)
 
-        self.assertEqual(calls, ["cloud"])
-        self.assertEqual(result.route, "cloud")
+        self.assertIn("Traceback (most recent call last):", distilled)
+        self.assertIn("src\\vocr\\cli\\app.py", distilled)
+        self.assertIn("ValueError: boom", distilled)
+        self.assertNotIn("site-packages", distilled)
 
-    def test_hybrid_task_plan_refuses_without_cloud_key(self) -> None:
-        slice_item = VisionSlice(
-            request=GOOD_REQUEST,
-            goal="Healthcheck-API bauen",
-            acceptance_criteria=[AcceptanceCriterion(text="GET /health liefert 200")],
-        )
-        with patch("vocr.agents.hybrid._cloud_model", return_value=None), patch.dict(
-            os.environ, {"VOCR_HYBRID_ENABLED": "true"}, clear=False
-        ):
-            with self.assertRaises(HybridRoutingError):
-                asyncio.run(hybrid_create_task_plan(slice_item, "<repo context>"))
+    def test_distill_failure_output_uses_error_window_without_traceback(self) -> None:
+        text = "\n".join(["line 1", "line 2", "FAILED: build target", "line 4", "line 5", "line 6"])
 
-    def test_hybrid_vision_cli_refuses_without_opt_in_and_touches_nothing(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp) / ".vocr"
-            with patch(
-                "vocr.cli.app.hybrid_create_vision",
-                side_effect=AssertionError("must not be called while disabled"),
-            ):
-                result = CliRunner().invoke(app, ["hybrid-vision", GOOD_REQUEST], env={"VOCR_HOME": str(home)})
+        distilled = distill_failure_output(text, max_chars=1200)
 
-        self.assertNotEqual(result.exit_code, 0)
-        self.assertIn("default-off", result.output)
-        self.assertFalse(home.exists())
+        self.assertIn("line 1", distilled)
+        self.assertIn("FAILED: build target", distilled)
+        self.assertIn("line 5", distilled)
+        self.assertNotIn("line 6", distilled)
 
-    def test_standard_vision_pipeline_never_calls_hybrid_path(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch(
-                "vocr.cli.app.hybrid_create_vision",
-                side_effect=AssertionError("standard vision must never call hybrid routing"),
-            ):
-                result = CliRunner().invoke(
-                    app,
-                    ["ask", GOOD_REQUEST, "--plan-only"],
-                    env={"VOCR_HOME": str(Path(tmp) / ".vocr")},
-                )
+    def test_distill_failure_output_falls_back_to_exact_tail_slice(self) -> None:
+        text = "abcdefghijklmnopqrstuvwxyz"
 
-        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(distill_failure_output(text, max_chars=10), text[-10:])
 
     def test_mcp_server_lists_vocr_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -784,84 +702,6 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("vocr_plan", tool_names)
         self.assertIn("vocr_review", tool_names)
         self.assertIn("vocr_promote_preview", tool_names)
-        self.assertIn("vocr_promote", tool_names)
-
-    def test_mcp_context_tool_honors_token_budget(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "docs").mkdir()
-            (root / "docs" / "feature.md").write_text("# feature api ranking\n", encoding="utf-8")
-            (root / "src").mkdir()
-            (root / "src" / "feature.py").write_text("def feature_api():\n    return True\n", encoding="utf-8")
-            vocr_home = root / ".vocr"
-            GraphStore(vocr_home).save(RepoGraphBuilder(root).build())
-
-            server = VocrMcpServer(vocr_home)
-            response = server.handle(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {"name": "vocr_context", "arguments": {"query": "feature api", "budget": 50}},
-                }
-            )
-
-        self.assertIn("Token budget: 50", response["result"]["content"][0]["text"])
-
-    def test_mcp_promote_requires_confirm_and_uses_gate(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / ".vocr"
-            ledger = MemoryLedger(root)
-            task = VocrTask(
-                id="task-promote",
-                slice_id="slice-promote",
-                title="Promote me",
-                summary="Ready to promote",
-                scope=["docs"],
-                acceptance_criteria=[AcceptanceCriterion(text="Docs updated")],
-                tests=["Syntax-Check"],
-                status=TaskStatus.accepted,
-                branch_name="vocr/task-promote",
-            )
-            ledger.append(LedgerEventType.task_created, task)
-            server = VocrMcpServer(root)
-
-            blocked = server.handle(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {"name": "vocr_promote", "arguments": {"task_id": task.id, "confirm": False}},
-                }
-            )
-            with patch("vocr.mcp.server.promote_task") as promote:
-                promoted = server.handle(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 2,
-                        "method": "tools/call",
-                        "params": {"name": "vocr_promote", "arguments": {"task_id": task.id, "confirm": True}},
-                    }
-                )
-
-        self.assertIn("Promotion not started", blocked["result"]["content"][0]["text"])
-        promote.assert_called_once()
-        self.assertIn("Task promoted", promoted["result"]["content"][0]["text"])
-
-    def test_golden_eval_checks_stub_worker_and_promote_gate(self) -> None:
-        result = run_golden_eval()
-
-        self.assertTrue(result.passed)
-        self.assertEqual(
-            [step.name for step in result.steps],
-            [
-                "dispatch",
-                "actual-token-metering",
-                "promote-before-review-blocked",
-                "accepted-review",
-                "promote-after-review-allowed",
-            ],
-        )
 
     def test_env_file_helpers_configure_local_model_without_printing_secret(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -880,219 +720,239 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(values["OPENAI_MODEL"], "local-model")
         self.assertEqual(redact_env(values)["OPENAI_API_KEY"], "[set]")
 
-    def test_model_env_includes_process_values(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, patch.dict(
-            os.environ,
-            {"OPENAI_API_KEY": "process-token", "OPENAI_MODEL": "process-model"},
-            clear=False,
-        ):
-            env_path = Path(tmp) / ".env"
-            update_env_file({"OPENAI_MODEL": "file-model"}, env_path)
-
-            values = read_model_env(env_path)
-
-        self.assertEqual(values["OPENAI_API_KEY"], "process-token")
-        self.assertEqual(values["OPENAI_MODEL"], "process-model")
-
-    def test_model_status_shows_process_key_redacted(self) -> None:
-        result = CliRunner().invoke(app, ["model", "status"], env={"OPENAI_API_KEY": "process-token"})
-
-        self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("openai", result.output)
-        self.assertIn("[set]", result.output)
-        self.assertNotIn("process-token", result.output)
-
-    def test_worker_telemetry_uses_actual_usage_when_worker_reports_it(self) -> None:
+    def test_require_checks_off_keeps_generic_tests_escape_hatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / ".vocr"
-            ledger = MemoryLedger(root)
+            ledger = MemoryLedger(Path(tmp) / ".vocr")
             task = VocrTask(
-                id="task-usage",
-                slice_id="slice-usage",
-                title="Usage",
-                summary="Usage",
+                id="task-check-off",
+                slice_id="slice-checks",
+                title="Manualish criterion",
+                summary="Keep old behavior when the ratchet is off.",
                 scope=["docs"],
-                acceptance_criteria=[AcceptanceCriterion(text="Usage recorded")],
-                tests=[],
+                acceptance_criteria=[AcceptanceCriterion(text="Docs explain setup", verified_by="vocr review")],
+                tests=["manual review"],
+                status=TaskStatus.dispatched,
             )
             ledger.append(LedgerEventType.task_created, task)
-            result = CodexRunResult(
-                task_id=task.id,
-                command=["stub"],
-                exit_code=0,
-                stdout='{"usage":{"prompt_tokens":11,"completion_tokens":3,"total_tokens":14}}',
-            )
 
-            record_worker_telemetry(ledger, task.id, result, "prompt text")
-            telemetry = ledger.telemetry()[0]
+            with patch.dict(os.environ, {"VOCR_REQUIRE_CHECKS": "off"}):
+                review = review_task(ledger, task.id, decision=ReviewDecision.accepted)
 
-        self.assertEqual(telemetry.token_usage.source, "actual")
-        self.assertEqual(telemetry.token_usage.prompt_tokens, 11)
-        self.assertEqual(telemetry.token_usage.completion_tokens, 3)
-        self.assertEqual(telemetry.token_usage.total_tokens, 14)
+        self.assertEqual(review.decision, ReviewDecision.accepted)
+        self.assertEqual(review.required_changes, [])
 
-    def test_usage_command_shows_actual_token_source(self) -> None:
+    def test_require_checks_warn_adds_risk_without_blocking_promotion_gate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / ".vocr"
-            ledger = MemoryLedger(root)
+            ledger = MemoryLedger(Path(tmp) / ".vocr")
+            task = VocrTask(
+                id="task-check-warn",
+                slice_id="slice-checks",
+                title="Warn missing checks",
+                summary="Warn for criteria that have no executable check.",
+                scope=["docs"],
+                acceptance_criteria=[AcceptanceCriterion(text="Docs explain setup", verified_by="vocr review")],
+                tests=["manual review"],
+                status=TaskStatus.dispatched,
+            )
+            ledger.append(LedgerEventType.task_created, task)
+
+            with patch.dict(os.environ, {"VOCR_REQUIRE_CHECKS": "warn"}):
+                review = review_task(ledger, task.id, decision=ReviewDecision.accepted)
+
+        self.assertEqual(review.decision, ReviewDecision.accepted)
+        self.assertEqual(review.required_changes, [])
+        self.assertTrue(any("Kriterium ohne ausfuehrbaren Check" in risk for risk in review.risks))
+
+    def test_require_checks_block_downgrades_text_criterion_even_with_generic_tests(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = MemoryLedger(Path(tmp) / ".vocr")
+            task = VocrTask(
+                id="task-check-block",
+                slice_id="slice-checks",
+                title="Block missing checks",
+                summary="Block criteria that have no executable check.",
+                scope=["docs"],
+                acceptance_criteria=[AcceptanceCriterion(text="Docs explain setup", verified_by="vocr review")],
+                tests=["manual review"],
+                status=TaskStatus.dispatched,
+            )
+            ledger.append(LedgerEventType.task_created, task)
+
+            with patch.dict(os.environ, {"VOCR_REQUIRE_CHECKS": "block"}):
+                review = review_task(ledger, task.id, decision=ReviewDecision.accepted)
+
+        self.assertEqual(review.decision, ReviewDecision.needs_changes)
+        self.assertTrue(any("Kriterium ohne ausfuehrbaren Check" in item for item in review.required_changes))
+
+    def test_require_checks_block_accepts_executable_or_manual_mapped_criteria(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = MemoryLedger(Path(tmp) / ".vocr")
+            task = VocrTask(
+                id="task-check-ok",
+                slice_id="slice-checks",
+                title="Executable criteria",
+                summary="Executable or explicit manual coverage is allowed.",
+                scope=["docs"],
+                acceptance_criteria=[
+                    AcceptanceCriterion(
+                        text="Compile succeeds",
+                        verified_by="automation",
+                        check_command="python -m compileall src",
+                    ),
+                    AcceptanceCriterion(text="Copy reviewed", verified_by="manual"),
+                ],
+                tests=["manual review"],
+                status=TaskStatus.dispatched,
+            )
+            ledger.append(LedgerEventType.task_created, task)
+
+            with patch.dict(os.environ, {"VOCR_REQUIRE_CHECKS": "block"}):
+                review = review_task(ledger, task.id, decision=ReviewDecision.accepted)
+
+        self.assertEqual(review.decision, ReviewDecision.accepted)
+        self.assertEqual(review.required_changes, [])
+
+    def test_incremental_review_passes_previous_review_ref_only_to_codex_review(self) -> None:
+        class FakeGit:
+            instances: list["FakeGit"] = []
+
+            def __init__(self, *_: object, **__: object) -> None:
+                self.repo_root = Path(".")
+                self.diff_for_scan_base_refs: list[str | None] = []
+                self.branch_diff_files_base_refs: list[str | None] = []
+                FakeGit.instances.append(self)
+
+            def head_sha(self) -> str:
+                return "new-review-sha"
+
+            def status_porcelain(self) -> str:
+                return "clean"
+
+            def diff_stat(self) -> str:
+                return "no uncommitted diff"
+
+            def branch_diff_stat(self, base_ref: str | None = None) -> str:
+                return "full committed diff"
+
+            def diff_for_scan(self, base_ref: str | None = None) -> str:
+                self.diff_for_scan_base_refs.append(base_ref)
+                return "no diff"
+
+            def changed_files(self) -> list[str]:
+                return []
+
+            def branch_diff_files(self, base_ref: str | None = None) -> list[str]:
+                self.branch_diff_files_base_refs.append(base_ref)
+                return []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = MemoryLedger(Path(tmp) / ".vocr")
+            task = VocrTask(
+                id="tb-incremental",
+                slice_id="slice-review",
+                title="Incremental review",
+                summary="Use last review ref for Codex only.",
+                scope=["docs"],
+                acceptance_criteria=[AcceptanceCriterion(text="Review is incremental")],
+                tests=["manual review"],
+                status=TaskStatus.needs_changes,
+                worktree_path=Path(tmp),
+            )
+            ledger.append(LedgerEventType.task_created, task)
             ledger.append(
-                LedgerEventType.telemetry_recorded,
-                RunTelemetry(
-                    provider="stub-worker",
-                    model="none",
-                    slice_id="slice-usage",
-                    task_id="task-usage",
-                    agent="stub-worker",
-                    token_usage=TokenUsage(prompt_tokens=5, completion_tokens=2, total_tokens=7, source="actual"),
+                LedgerEventType.review_recorded,
+                ReviewResult(
+                    task_id=task.id,
+                    decision=ReviewDecision.needs_changes,
+                    summary="Previous review",
+                    reviewed_ref="previous-review-sha",
                 ),
             )
+            captured: dict[str, str | None] = {}
 
-            result = CliRunner().invoke(app, ["usage"], env={"VOCR_HOME": str(root)})
+            def fake_codex_review(_: VocrTask, base_ref: str | None = None) -> tuple[list, list]:
+                captured["base_ref"] = base_ref
+                return [], []
 
-        self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("actual", result.output)
-        self.assertIn("Total tokens", result.output)
-        self.assertIn("7", result.output)
+            with patch.dict(os.environ, {"VOCR_INCREMENTAL_REVIEW": "true"}), patch(
+                "vocr.orchestration.workflow.GitWorktreeManager",
+                FakeGit,
+            ), patch("vocr.orchestration.workflow.run_codex_review_with_notes", side_effect=fake_codex_review):
+                review = review_task(ledger, task.id, codex_review=True)
 
-    def test_model_check_accepts_one_shot_api_key_without_printing_it(self) -> None:
-        with patch(
-            "vocr.cli.app.fetch_model_catalog",
-            return_value=({"data": [{"id": "local-model"}]}, "http://localhost:1234/api/v1/models"),
-        ) as fetch:
-            result = CliRunner().invoke(app, ["model", "check", "--api-key", "local-token"])
+        self.assertEqual(captured["base_ref"], "previous-review-sha")
+        self.assertEqual(review.reviewed_ref, "new-review-sha")
+        self.assertEqual(FakeGit.instances[0].diff_for_scan_base_refs, [None])
+        self.assertEqual(FakeGit.instances[0].branch_diff_files_base_refs, [None])
 
-        self.assertEqual(result.exit_code, 0, result.output)
-        fetch.assert_called_once_with("http://localhost:1234/v1", api_key="local-token")
-        self.assertIn("Models visible: 1", strip_ansi(result.output))
-        self.assertNotIn("local-token", result.output)
+    def test_incremental_review_flag_off_keeps_codex_full_diff(self) -> None:
+        class FakeGit:
+            def __init__(self, *_: object, **__: object) -> None:
+                self.repo_root = Path(".")
 
-    def test_model_check_uses_chat_completion_when_model_is_given(self) -> None:
-        with patch("vocr.cli.app.fetch_chat_completion", return_value={"choices": []}) as chat:
-            result = CliRunner().invoke(
-                app,
-                ["model", "check", "--model", "local-model", "--api-key", "local-token"],
+            def head_sha(self) -> str:
+                return "new-review-sha"
+
+            def status_porcelain(self) -> str:
+                return "clean"
+
+            def diff_stat(self) -> str:
+                return "no uncommitted diff"
+
+            def branch_diff_stat(self, base_ref: str | None = None) -> str:
+                return "full committed diff"
+
+            def diff_for_scan(self, base_ref: str | None = None) -> str:
+                return "no diff"
+
+            def changed_files(self) -> list[str]:
+                return []
+
+            def branch_diff_files(self, base_ref: str | None = None) -> list[str]:
+                return []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = MemoryLedger(Path(tmp) / ".vocr")
+            task = VocrTask(
+                id="tb-full-review",
+                slice_id="slice-review",
+                title="Full review",
+                summary="Keep full review by default.",
+                scope=["docs"],
+                acceptance_criteria=[AcceptanceCriterion(text="Review remains full")],
+                tests=["manual review"],
+                status=TaskStatus.needs_changes,
+                worktree_path=Path(tmp),
             )
+            ledger.append(LedgerEventType.task_created, task)
+            ledger.append(
+                LedgerEventType.review_recorded,
+                ReviewResult(
+                    task_id=task.id,
+                    decision=ReviewDecision.needs_changes,
+                    summary="Previous review",
+                    reviewed_ref="previous-review-sha",
+                ),
+            )
+            captured: dict[str, str | None] = {}
 
-        self.assertEqual(result.exit_code, 0, result.output)
-        chat.assert_called_once_with("http://localhost:1234/v1", model="local-model", api_key="local-token")
-        self.assertIn("Local chat endpoint reachable", result.output)
-        self.assertIn("local-model", result.output)
-        self.assertNotIn("local-token", result.output)
+            def fake_codex_review(_: VocrTask, base_ref: str | None = None) -> tuple[list, list]:
+                captured["base_ref"] = base_ref
+                return [], []
 
-    def test_fetch_model_list_sends_bearer_token_when_configured(self) -> None:
-        class FakeResponse:
-            def __enter__(self):
-                return self
+            with patch.dict(os.environ, {"VOCR_INCREMENTAL_REVIEW": ""}), patch(
+                "vocr.orchestration.workflow.GitWorktreeManager",
+                FakeGit,
+            ), patch("vocr.orchestration.workflow.run_codex_review_with_notes", side_effect=fake_codex_review):
+                review = review_task(ledger, task.id, codex_review=True)
 
-            def __exit__(self, *_):
-                return False
-
-            def read(self) -> bytes:
-                return b'{"data":[{"id":"local-model"}]}'
-
-        captured = {}
-
-        def fake_urlopen(request, timeout):
-            captured["authorization"] = request.get_header("Authorization")
-            captured["timeout"] = timeout
-            return FakeResponse()
-
-        with patch("urllib.request.urlopen", fake_urlopen):
-            payload = fetch_model_list("http://localhost:1234/v1/models", api_key="lm-token")
-
-        self.assertEqual(payload["data"][0]["id"], "local-model")
-        self.assertEqual(captured["authorization"], "Bearer lm-token")
-        self.assertEqual(captured["timeout"], 5)
-
-    def test_fetch_chat_completion_sends_bearer_token_to_chat_endpoint(self) -> None:
-        class FakeResponse:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_):
-                return False
-
-            def read(self) -> bytes:
-                return b'{"choices":[{"message":{"content":"ok"}}]}'
-
-        captured = {}
-
-        def fake_urlopen(request, timeout):
-            captured["url"] = request.full_url
-            captured["authorization"] = request.get_header("Authorization")
-            captured["timeout"] = timeout
-            return FakeResponse()
-
-        with patch("urllib.request.urlopen", fake_urlopen):
-            payload = fetch_chat_completion("http://localhost:1234/v1", model="local-model", api_key="lm-token")
-
-        self.assertEqual(payload["choices"][0]["message"]["content"], "ok")
-        self.assertEqual(captured["url"], "http://localhost:1234/v1/chat/completions")
-        self.assertEqual(captured["authorization"], "Bearer lm-token")
-        self.assertEqual(captured["timeout"], 20)
-
-    def test_chat_completion_endpoint_normalizes_root_and_v1_base_urls(self) -> None:
-        self.assertEqual(chat_completion_endpoint("http://localhost:1234"), "http://localhost:1234/v1/chat/completions")
-        self.assertEqual(
-            chat_completion_endpoint("http://localhost:1234/v1"),
-            "http://localhost:1234/v1/chat/completions",
-        )
-
-    def test_model_catalog_falls_back_to_lmstudio_native_models_endpoint(self) -> None:
-        class FakeResponse:
-            def __init__(self, body: bytes):
-                self.body = body
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_):
-                return False
-
-            def read(self) -> bytes:
-                return self.body
-
-        seen = []
-
-        def fake_urlopen(request, timeout):
-            seen.append(request.full_url)
-            if request.full_url == "http://localhost:1234/v1/models":
-                return FakeResponse(b"Unexpected endpoint or method. Returning 200 anyway")
-            return FakeResponse(b'{"data":[{"id":"lmstudio-model"}]}')
-
-        with patch("urllib.request.urlopen", fake_urlopen):
-            payload, endpoint = fetch_model_catalog("http://localhost:1234/v1")
-
-        self.assertEqual(payload["data"][0]["id"], "lmstudio-model")
-        self.assertEqual(endpoint, "http://localhost:1234/api/v1/models")
-        self.assertEqual(
-            seen,
-            ["http://localhost:1234/v1/models", "http://localhost:1234/api/v1/models"],
-        )
-
-    def test_model_list_endpoints_include_openai_and_lmstudio_native_paths(self) -> None:
-        self.assertEqual(
-            model_list_endpoints("http://localhost:1234/v1"),
-            [
-                "http://localhost:1234/v1/models",
-                "http://localhost:1234/api/v1/models",
-                "http://localhost:1234/api/v0/models",
-            ],
-        )
-
-    def test_local_model_check_does_not_send_cloud_key_to_default_localhost(self) -> None:
-        self.assertIsNone(_local_api_key({"OPENAI_API_KEY": "cloud-key"}, None))
-        self.assertEqual(
-            _local_api_key({"OPENAI_BASE_URL": "http://localhost:1234/v1", "OPENAI_API_KEY": "lm-token"}, None),
-            "lm-token",
-        )
-        self.assertEqual(_local_api_key({"OPENAI_API_KEY": "lm-token"}, "http://localhost:1234/v1"), "lm-token")
+        self.assertIsNone(captured["base_ref"])
+        self.assertEqual(review.reviewed_ref, "new-review-sha")
 
     def test_learning_store_aggregates_reviews_without_raw_diff(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / ".vocr"
             ledger = MemoryLedger(root)
-            created_at = datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)
             task = VocrTask(
                 id="task-learn",
                 slice_id="slice-learn",
@@ -1101,7 +961,6 @@ class WorkflowTests(unittest.TestCase):
                 scope=["docs"],
                 acceptance_criteria=[AcceptanceCriterion(text="Docs updated")],
                 tests=["Syntax-Check"],
-                created_at=created_at,
             )
             ledger.append(LedgerEventType.task_created, task)
             ledger.append(
@@ -1115,49 +974,14 @@ class WorkflowTests(unittest.TestCase):
                 ),
             )
             ledger.append(
-                LedgerEventType.telemetry_recorded,
-                RunTelemetry(
-                    provider="codex-cli",
-                    task_id=task.id,
-                    slice_id=task.slice_id,
-                    agent="codex-worker",
-                    token_usage=TokenUsage(total_tokens=8),
-                ),
-            )
-            ledger.append(
-                LedgerEventType.clarification_requested,
-                {
-                    "id": "clarify-learning",
-                    "request": "needs detail",
-                    "report": {
-                        "ready": False,
-                        "confidence": 0.5,
-                        "questions": [
-                            {
-                                "topic": "scope",
-                                "question": "Which files are in scope?",
-                                "why_needed": "Scope controls worker writes.",
-                            }
-                        ],
-                        "missing_topics": ["verification"],
-                        "notes": [],
-                    },
-                    "answers": [],
-                },
-            )
-            ledger.append(
-                LedgerEventType.clarification_answered,
-                {"session_id": "clarify-learning", "answer": "details"},
-            )
-            ledger.append(
                 LedgerEventType.review_recorded,
                 ReviewResult(
                     task_id=task.id,
-                    decision=ReviewDecision.accepted,
-                    summary="Docs fix accepted",
+                    decision=ReviewDecision.needs_changes,
+                    summary="Needs docs fix",
+                    required_changes=["Clarify setup"],
                     tests_reviewed=["Syntax-Check"],
                     diff_files=["README.md"],
-                    created_at=created_at + timedelta(seconds=90),
                 ),
             )
             learning = LearningStore(root)
@@ -1165,14 +989,134 @@ class WorkflowTests(unittest.TestCase):
 
         self.assertIn("scope:docs", snapshot.scopes)
         self.assertEqual(snapshot.scopes["scope:docs"].files["README.md"], 1)
-        self.assertEqual(snapshot.scopes["scope:docs"].estimated_tokens, 50)
-        self.assertEqual(snapshot.scopes["scope:docs"].retry_count, 1)
-        self.assertEqual(snapshot.scopes["scope:docs"].review_seconds_total, 90)
-        self.assertEqual(snapshot.scopes["scope:docs"].accepted_review_seconds_total, 90)
-        self.assertEqual(snapshot.clarifications_requested, 1)
-        self.assertEqual(snapshot.clarifications_answered, 1)
-        self.assertEqual(snapshot.clarification_answer_rate_percent, 100)
-        self.assertEqual(snapshot.clarification_topics, {"scope": 1, "verification": 1})
+        self.assertEqual(snapshot.scopes["scope:docs"].estimated_tokens, 42)
+
+    def test_learning_store_predicts_task_tokens_from_matching_terms(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / ".vocr"
+            LearningStore(root).save(
+                LearningSnapshot(
+                    scopes={
+                        "scope:docs": LearningEntry(key="scope:docs", count=2, estimated_tokens=80),
+                        "scope:api": LearningEntry(key="scope:api", count=1, estimated_tokens=200),
+                    },
+                    task_titles={
+                        "task:budget retry": LearningEntry(key="task:budget retry", count=1, estimated_tokens=20)
+                    },
+                )
+            )
+            task = VocrTask(
+                id="tb-budget",
+                slice_id="slice-budget",
+                title="Budget Retry",
+                summary="Exercise token budget prediction.",
+                scope=["docs"],
+                acceptance_criteria=[AcceptanceCriterion(text="Budget checked")],
+                tests=["manual review"],
+            )
+
+            prediction = LearningStore(root).predict_task_tokens(task)
+
+        self.assertEqual(prediction, 30)
+
+    def test_token_budget_warn_records_message_but_keeps_auto_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vocr_home = Path(tmp) / ".vocr"
+            worktree = Path(tmp) / "worktree"
+            worktree.mkdir()
+            ledger = MemoryLedger(vocr_home)
+            task = VocrTask(
+                id="tb-budget-warn",
+                slice_id="slice-budget",
+                title="Budget Retry",
+                summary="Warn but keep retrying.",
+                scope=["docs"],
+                acceptance_criteria=[AcceptanceCriterion(text="Budget warning recorded")],
+                tests=["manual review"],
+                status=TaskStatus.dispatched,
+                worktree_path=worktree,
+            )
+            ledger.append(LedgerEventType.task_created, task)
+            LearningStore(vocr_home).save(
+                LearningSnapshot(task_titles={"task:budget retry": LearningEntry(key="task:budget retry", count=1, estimated_tokens=1)})
+            )
+            calls: list[str | None] = []
+
+            def fake_run(*_: object, **kwargs: object) -> CodexRunResult:
+                calls.append(kwargs.get("extra_prompt"))
+                return CodexRunResult(task_id=task.id, command=["codex"], exit_code=1, stderr="x" * 200)
+
+            with patch.dict(
+                os.environ,
+                {"VOCR_HOME": str(vocr_home), "VOCR_TOKEN_BUDGET_MODE": "warn", "VOCR_TOKEN_BUDGET_FACTOR": "1.0"},
+            ), patch("vocr.cli.app.CodexMcpClient.run_task", side_effect=fake_run), patch(
+                "vocr.cli.app.GitWorktreeManager.diff",
+                return_value="",
+            ):
+                result = CliRunner().invoke(
+                    app,
+                    ["run", task.id, "--fix", "--max-retries", "1", "--no-commit"],
+                    env={
+                        "VOCR_HOME": str(vocr_home),
+                        "VOCR_TOKEN_BUDGET_MODE": "warn",
+                        "VOCR_TOKEN_BUDGET_FACTOR": "1.0",
+                    },
+                )
+            messages = [event.payload.get("message", "") for event in MemoryLedger(vocr_home).events() if event.type == LedgerEventType.message]
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(len(calls), 2)
+        self.assertIsNotNone(calls[1])
+        self.assertTrue(any("token budget exceeded" in message for message in messages))
+
+    def test_token_budget_block_stops_auto_retry_after_exceeded_attempt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vocr_home = Path(tmp) / ".vocr"
+            worktree = Path(tmp) / "worktree"
+            worktree.mkdir()
+            ledger = MemoryLedger(vocr_home)
+            task = VocrTask(
+                id="tb-budget-block",
+                slice_id="slice-budget",
+                title="Budget Retry",
+                summary="Block further retries.",
+                scope=["docs"],
+                acceptance_criteria=[AcceptanceCriterion(text="Budget block recorded")],
+                tests=["manual review"],
+                status=TaskStatus.dispatched,
+                worktree_path=worktree,
+            )
+            ledger.append(LedgerEventType.task_created, task)
+            LearningStore(vocr_home).save(
+                LearningSnapshot(task_titles={"task:budget retry": LearningEntry(key="task:budget retry", count=1, estimated_tokens=1)})
+            )
+            calls: list[str | None] = []
+
+            def fake_run(*_: object, **kwargs: object) -> CodexRunResult:
+                calls.append(kwargs.get("extra_prompt"))
+                return CodexRunResult(task_id=task.id, command=["codex"], exit_code=1, stderr="x" * 200)
+
+            with patch.dict(
+                os.environ,
+                {"VOCR_HOME": str(vocr_home), "VOCR_TOKEN_BUDGET_MODE": "block", "VOCR_TOKEN_BUDGET_FACTOR": "1.0"},
+            ), patch("vocr.cli.app.CodexMcpClient.run_task", side_effect=fake_run), patch(
+                "vocr.cli.app.GitWorktreeManager.diff",
+                side_effect=AssertionError("block mode should not build retry diff"),
+            ):
+                result = CliRunner().invoke(
+                    app,
+                    ["run", task.id, "--fix", "--max-retries", "2", "--no-commit"],
+                    env={
+                        "VOCR_HOME": str(vocr_home),
+                        "VOCR_TOKEN_BUDGET_MODE": "block",
+                        "VOCR_TOKEN_BUDGET_FACTOR": "1.0",
+                    },
+                )
+            messages = [event.payload.get("message", "") for event in MemoryLedger(vocr_home).events() if event.type == LedgerEventType.message]
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(any("token budget exceeded" in message for message in messages))
 
     def test_ledger_compact_archives_old_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1186,37 +1130,6 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(result.archived_events, 10)
         self.assertEqual(len(remaining), 20)
         self.assertIsNotNone(result.archive_path)
-
-    def test_clean_archives_removes_only_old_jsonl_segments(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            old_home = os.environ.get("VOCR_HOME")
-            os.environ["VOCR_HOME"] = str(Path(tmp) / ".vocr")
-            try:
-                archive_root = Path(tmp) / ".vocr" / "archive"
-                archive_root.mkdir(parents=True)
-                old_archive = archive_root / "old.jsonl"
-                new_archive = archive_root / "new.jsonl"
-                ignored = archive_root / "notes.txt"
-                old_archive.write_text("old\n", encoding="utf-8")
-                new_archive.write_text("new\n", encoding="utf-8")
-                ignored.write_text("keep\n", encoding="utf-8")
-                old_time = time.time() - 10 * 24 * 60 * 60
-                os.utime(old_archive, (old_time, old_time))
-
-                removed = clean_archives(older_than_days=5)
-                old_exists = old_archive.exists()
-                new_exists = new_archive.exists()
-                ignored_exists = ignored.exists()
-            finally:
-                if old_home is None:
-                    os.environ.pop("VOCR_HOME", None)
-                else:
-                    os.environ["VOCR_HOME"] = old_home
-
-        self.assertEqual(removed, 1)
-        self.assertFalse(old_exists)
-        self.assertTrue(new_exists)
-        self.assertTrue(ignored_exists)
 
     def test_learning_boosts_graph_context_ranking(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1292,31 +1205,6 @@ class WorkflowTests(unittest.TestCase):
 
         self.assertTrue(exists)
         self.assertEqual(removed, 0)
-
-    def test_pr_review_payload_uses_only_safe_inline_comments(self) -> None:
-        review = ReviewResult(
-            task_id="task-review",
-            decision=ReviewDecision.needs_changes,
-            summary="Needs changes",
-            comments=[
-                ReviewComment(source="vocr-diff-review", path="src/app.py", line=12, body="Check this line."),
-                ReviewComment(source="vocr-review", path="README.md", body="File-level note."),
-            ],
-        )
-
-        comments = build_pr_review_comments(review)
-
-        self.assertEqual(
-            comments,
-            [
-                {
-                    "path": "src/app.py",
-                    "line": 12,
-                    "side": "RIGHT",
-                    "body": "vocr-diff-review: Check this line.",
-                }
-            ],
-        )
 
 
 if __name__ == "__main__":

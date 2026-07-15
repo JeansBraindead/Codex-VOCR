@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 import json
 import os
 import re
 import time
+from contextlib import contextmanager
 from pathlib import Path
-import threading
 from typing import Iterable
 
 from pydantic import BaseModel
@@ -18,12 +17,15 @@ from vocr.models import (
     LedgerEventType,
     PermissionGrant,
     PermissionMode,
+    ClaimConflict,
     ReviewResult,
     RunTelemetry,
+    ScopeClaim,
     TaskStatus,
     VisionSlice,
     VocrTask,
 )
+from vocr.guardrails.claims import build_scope_claim, claim_conflicts
 
 
 SECRET_KEYWORDS = {"api_key", "apikey", "secret", "token", "password", "credential"}
@@ -39,13 +41,6 @@ SAFE_KEYWORDS = {
 SECRET_PATTERNS = [
     re.compile(r"sk-[A-Za-z0-9_-]{12,}"),
 ]
-_THREAD_LOCKS: dict[Path, threading.RLock] = {}
-_THREAD_LOCKS_GUARD = threading.Lock()
-
-if os.name == "nt":
-    import msvcrt
-else:
-    import fcntl
 
 
 def sanitize_payload(value: object) -> object:
@@ -74,44 +69,33 @@ class MemoryLedger:
     def __init__(self, root: Path | str = ".vocr") -> None:
         self.root = Path(root)
         self.path = self.root / "ledger.jsonl"
-        self.lock_path = self.root / "ledger.lock"
-        self._events_cache: list[LedgerEvent] | None = None
-        self._events_cache_stat: tuple[int, int] | None = None
+        self.lock_path = self.root / "ledger.jsonl.lock"
 
     def init(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         self.path.touch(exist_ok=True)
 
     def append(self, event_type: LedgerEventType, payload: BaseModel | dict) -> LedgerEvent:
+        with self._ledger_lock():
+            return self._append_unlocked(event_type, payload)
+
+    def _append_unlocked(self, event_type: LedgerEventType, payload: BaseModel | dict) -> LedgerEvent:
+        self.init()
         data = payload.model_dump(mode="json") if isinstance(payload, BaseModel) else payload
         data = sanitize_payload(data)
         event = LedgerEvent(type=event_type, payload=data)
-        with self._locked():
-            self.path.touch(exist_ok=True)
-            with self.path.open("a", encoding="utf-8") as handle:
-                handle.write(event.model_dump_json() + "\n")
-            self._events_cache = None
-            self._events_cache_stat = None
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(event.model_dump_json() + "\n")
         return event
 
     def events(self) -> Iterable[LedgerEvent]:
-        with self._locked():
-            return self._read_events_unlocked()
-
-    def _read_events_unlocked(self) -> list[LedgerEvent]:
         if not self.path.exists():
             return []
-        stat = self.path.stat()
-        cache_stat = (stat.st_mtime_ns, stat.st_size)
-        if self._events_cache is not None and self._events_cache_stat == cache_stat:
-            return list(self._events_cache)
         items: list[LedgerEvent] = []
         with self.path.open("r", encoding="utf-8") as handle:
             for line in handle:
                 if line.strip():
                     items.append(LedgerEvent.model_validate_json(line))
-        self._events_cache = items
-        self._events_cache_stat = cache_stat
         return items
 
     def slices(self) -> list[VisionSlice]:
@@ -155,10 +139,6 @@ class MemoryLedger:
                 task_id = event.payload["task_id"]
                 if task_id in task_map:
                     task_map[task_id].status = TaskStatus.aborted
-            elif event.type == LedgerEventType.task_reverted:
-                task_id = event.payload["task_id"]
-                if task_id in task_map:
-                    task_map[task_id].status = TaskStatus.needs_changes
         return list(task_map.values())
 
     def reviews(self) -> list[ReviewResult]:
@@ -167,6 +147,10 @@ class MemoryLedger:
             for event in self.events()
             if event.type == LedgerEventType.review_recorded
         ]
+
+    def last_review(self, task_id: str) -> ReviewResult | None:
+        matches = [review for review in self.reviews() if review.task_id == task_id]
+        return matches[-1] if matches else None
 
     def telemetry(self) -> list[RunTelemetry]:
         return [
@@ -207,33 +191,85 @@ class MemoryLedger:
         ]
         return candidates[-1] if candidates else None
 
+    def active_claims(self) -> list[ScopeClaim]:
+        claims: dict[str, ScopeClaim] = {}
+        released: set[str] = set()
+        for event in self.events():
+            if event.type == LedgerEventType.claim_acquired:
+                claim = ScopeClaim.model_validate(event.payload)
+                claims[claim.task_id] = claim
+                released.discard(claim.task_id)
+            elif event.type == LedgerEventType.claim_released:
+                task_id = str(event.payload.get("task_id", ""))
+                released.add(task_id)
+        return [claim for task_id, claim in claims.items() if task_id not in released]
+
+    def acquire_claims(self, tasks: list[VocrTask], repo_root: Path | str = ".") -> list[ClaimConflict]:
+        conflicts: list[ClaimConflict] = []
+        with self._ledger_lock():
+            active = self.active_claims()
+            for task in tasks:
+                claim = build_scope_claim(task, repo_root)
+                task_conflicts = claim_conflicts(claim, active)
+                if task_conflicts:
+                    conflicts.extend(task_conflicts)
+                    continue
+                self._append_unlocked(LedgerEventType.claim_acquired, claim)
+                active.append(claim)
+        return conflicts
+
+    def release_claim(self, task_id: str) -> None:
+        self.append(LedgerEventType.claim_released, {"task_id": task_id})
+
+    def reconcile_stale_claims(self) -> list[str]:
+        terminal = {
+            TaskStatus.accepted,
+            TaskStatus.blocked,
+            TaskStatus.aborted,
+            TaskStatus.promoted,
+        }
+        tasks = {task.id: task for task in self.tasks()}
+        released: list[str] = []
+        for claim in self.active_claims():
+            task = tasks.get(claim.task_id)
+            if task is not None and task.status in terminal:
+                self.release_claim(claim.task_id)
+                released.append(claim.task_id)
+        return released
+
     def get_slice(self, slice_id: str) -> VisionSlice | None:
         return next((item for item in self.slices() if item.id == slice_id), None)
 
     def get_task(self, task_id: str) -> VocrTask | None:
         return next((item for item in self.tasks() if item.id == task_id), None)
 
-    def latest_task_commit(self, task_id: str) -> str | None:
-        commit_sha: str | None = None
-        for event in self.events():
-            if event.type == LedgerEventType.task_committed and event.payload.get("task_id") == task_id:
-                value = event.payload.get("commit_sha")
-                if value:
-                    commit_sha = str(value)
-            elif event.type == LedgerEventType.task_reverted and event.payload.get("task_id") == task_id:
-                commit_sha = None
-        return commit_sha
+    @contextmanager
+    def _ledger_lock(self, timeout_seconds: float = 5.0):
+        self.root.mkdir(parents=True, exist_ok=True)
+        deadline = time.monotonic() + timeout_seconds
+        fd: int | None = None
+        while fd is None:
+            try:
+                fd = os.open(str(self.lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"Timed out waiting for ledger lock: {self.lock_path}")
+                time.sleep(0.02)
+        try:
+            yield
+        finally:
+            os.close(fd)
+            try:
+                self.lock_path.unlink()
+            except FileNotFoundError:
+                pass
 
     def dump_json(self) -> str:
         return json.dumps([event.model_dump(mode="json") for event in self.events()], indent=2)
 
     def compact(self, *, keep_last: int = 200) -> CompactResult:
-        with self._locked():
-            self.path.touch(exist_ok=True)
-            return self._compact_unlocked(keep_last=keep_last)
-
-    def _compact_unlocked(self, *, keep_last: int) -> CompactResult:
-        events = self._read_events_unlocked()
+        self.init()
+        events = list(self.events())
         if len(events) <= keep_last:
             return CompactResult(
                 original_events=len(events),
@@ -252,74 +288,9 @@ class MemoryLedger:
         with self.path.open("w", encoding="utf-8") as handle:
             for event in kept:
                 handle.write(event.model_dump_json() + "\n")
-        self._events_cache = None
-        self._events_cache_stat = None
         return CompactResult(
             original_events=len(events),
             kept_events=len(kept),
             archived_events=len(archived),
             archive_path=str(archive_path),
         )
-
-    @contextmanager
-    def _locked(self):
-        self.root.mkdir(parents=True, exist_ok=True)
-        lock_path = self.lock_path.resolve()
-        with _thread_lock(lock_path):
-            with lock_path.open("a+b") as handle:
-                if handle.tell() == 0 and lock_path.stat().st_size == 0:
-                    handle.write(b"\0")
-                    handle.flush()
-                handle.seek(0)
-                _lock_file(handle)
-                try:
-                    yield
-                finally:
-                    _unlock_file(handle)
-
-
-@contextmanager
-def _thread_lock(path: Path):
-    with _THREAD_LOCKS_GUARD:
-        lock = _THREAD_LOCKS.setdefault(path, threading.RLock())
-    with lock:
-        yield
-
-
-_LOCK_MAX_ATTEMPTS = 6
-_LOCK_RETRY_BASE_SECONDS = 0.25
-
-
-def _lock_file(handle) -> None:
-    """Acquire the exclusive ledger lock, retrying with backoff on contention.
-
-    Windows `msvcrt.locking(LK_LOCK, ...)` already retries internally for a
-    few seconds before raising `OSError`; under heavy parallel orchestration
-    that single internal retry ceiling is not enough headroom, so this wraps
-    both platform primitives in a bounded outer retry instead of surfacing a
-    crash on transient contention.
-    """
-    last_error: OSError | None = None
-    for attempt in range(_LOCK_MAX_ATTEMPTS):
-        try:
-            if os.name == "nt":
-                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-            else:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            return
-        except OSError as exc:
-            last_error = exc
-            if attempt < _LOCK_MAX_ATTEMPTS - 1:
-                time.sleep(_LOCK_RETRY_BASE_SECONDS * (attempt + 1))
-    raise TimeoutError(
-        f"Could not acquire VOCR ledger lock after {_LOCK_MAX_ATTEMPTS} attempts "
-        "(sustained contention). Retry the command."
-    ) from last_error
-
-
-def _unlock_file(handle) -> None:
-    if os.name == "nt":
-        handle.seek(0)
-        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-    else:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)

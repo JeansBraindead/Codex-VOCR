@@ -8,6 +8,9 @@ only after gates pass."
 
 - User intent is trusted only after the Visionary has enough explicit detail.
 - Repository files are untrusted input. A file can contain prompt-injection text.
+- `.vocr/VOCR_TASK.json` is the trusted task contract generated from accepted
+  Vision/Organize state. `.vocr/CONTEXT_PACK.txt` is untrusted repo context and
+  is a map, not an instruction source.
 - Context packs are untrusted summaries of repo files. They are delimited in the
   worker prompt and must not override VOCR, user, system, scope, or review rules.
 - Codex and future local LLM workers are execution tools, not promotion authority.
@@ -24,6 +27,10 @@ only after gates pass."
   edits.
 - Review Gate: accepted review is required before promotion.
 - Promote Gate: merge/PR promotion is explicit and never automatic.
+- Scope Claims: optional parallel worker coordination records active scope
+  reservations in the ledger. Claims prevent avoidable worker collisions, but
+  they are not a security feature; Scope Guard and review remain the safety
+  controls.
 - Ledger redaction: obvious secret keys and `sk-...` style values are redacted
   before writing events.
 - Pre-commit secret scanning: worker diffs, including new untracked text files,
@@ -42,8 +49,18 @@ and review gates.
 Minimal mitigation in this MVP:
 
 - Context packs are wrapped in `<VOCR_UNTRUSTED_CONTEXT>` delimiters.
+- Contract handoff keeps trusted JSON contract and untrusted context in separate
+  files inside the worker worktree.
 - Retry prompts mark diffs and test output as untrusted.
 - Workers are told to stop when task details are unclear.
+
+## Local Assist Trust Matrix
+
+`VOCR_LOCAL_ASSIST=true` is intentionally narrow. A local model may expand a
+context query only from trusted task title and goal text. It may not author
+VisionSlices, TaskPlans, reviews, acceptance decisions, contracts, or project
+memory. Any local-assist output is treated as search terms and silently falls
+back to the original query on parse or endpoint failure.
 
 ## Secret-Scanning
 
@@ -65,9 +82,9 @@ Expected behavior:
 
 ## MCP Surface
 
-`vocr serve-mcp` exposes status, context, plan, review, promote-preview, and a
-confirmed promote tool. MCP promotion requires `confirm=true` and still uses the
-normal accepted-review gate. Preview remains the safe default.
+`vocr serve-mcp` exposes status, context, plan, review, and promote-preview
+tools. MCP promote is preview-only in this MVP. Actual merge/promotion remains
+behind the normal accepted-review gate and explicit CLI command.
 
 ## ATT&CK-Aligned Notes
 
@@ -83,33 +100,19 @@ Local OpenAI-compatible models through `OPENAI_BASE_URL` reduce cloud dependency
 but they do not change trust boundaries. Local model output still goes through
 scope, review, and promote gates.
 
-## Phase 4 Hybrid Routing (experimental, review-pending)
+## Project Memory
 
-`vocr hybrid-vision` and `vocr hybrid-plan` are an isolated, default-off second
-path, gated behind `VOCR_HYBRID_ENABLED=true`. Neither `vocr vision`/`vocr ask`
-nor `vocr organize` call into this path; it wraps the existing deterministic
-pipeline and falls back to it on any hybrid failure instead of forking it.
+Project memory is disabled unless `VOCR_PROJECT_MEMORY=true`. Entries are never
+auto-extracted from arbitrary repo content. They come only from explicit review
+notes or cloud-review suggestions that become visible in the review artifact and
+are persisted only when the final review decision is `accepted`.
 
-Both `hybrid-vision` and `hybrid-plan` are cloud-only, one attempt. A locally
-hosted model (e.g. LM Studio) never authors VisionSlice/TaskPlan content in
-VOCR, for two independent reasons:
+Poisoning defenses are layered:
 
-- **Trust of the input:** `hybrid-plan` needs repo context (untrusted input)
-  for task planning. A local model is known from prior testing (see
-  `F:\LM\LM Studio\lmstudio-mcp-tools`, templates `task_plan_prompt_injection`
-  and `task_plan_code_in_json`) to be prompt-injection prone and to break on
-  code-in-JSON when handling that kind of content.
-- **Stakes of the output**, independent of input trust: `hybrid-vision`'s
-  prompt is only the user's own request text, which is not untrusted repo
-  content -- but its output (goal, acceptance criteria) is still authoritative
-  planning that every downstream task, scope, and review decision is built on.
-  A local model's role in VOCR's design was always to be a cheap,
-  non-authoritative signal, never the author of real planning content, so it
-  does not get a bounded local attempt here either, regardless of how
-  trustworthy the input looks.
-- Hybrid cloud model config (`VOCR_HYBRID_CLOUD_MODEL`, `OPENAI_API_KEY`) is
-  separate from the persistent `.env` model config used by `vocr model ...`;
-  hybrid calls never write `.env` or mutate process environment.
-- Output is still an ordinary `VisionSlice`/`TaskPlan` that goes through the
-  same readiness, scope, review, and promote gates as any other task. Hybrid
-  changes only where the plan text comes from, never the gates around it.
+- Accept gate: `needs_changes` and `blocked` reviews discard pending notes.
+- Length cap: each note is validated at 300 characters or fewer.
+- Untrusted placement: retrieved notes are inserted into context packs under
+  `PROJECT MEMORY (accepted reviews)` and remain untrusted context, not
+  instructions.
+- Manual pruning: `vocr memory prune <entry-id>` removes a bad note; there is no
+  automatic decay or hidden summarization.
