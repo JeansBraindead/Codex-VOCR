@@ -1417,7 +1417,6 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
         refresh_model_status()
         summary = model_auth_status(controller.repo_root)
         append("System", "LM-Studio-Key gespeichert. Lokale Modellfunktionen nutzen jetzt die konfigurierte Base URL.")
-        log_activity(summary)
         check_lmstudio_health()
         messagebox.showinfo("VOCR Optionen", f"LM-Studio-Key gespeichert.\n\n{summary}")
 
