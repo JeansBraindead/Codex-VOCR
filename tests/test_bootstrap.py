@@ -101,6 +101,23 @@ class BootstrapTests(unittest.TestCase):
             self.assertTrue((result.repo_root / "install-vocr.ps1").exists())
             self.assertTrue((result.repo_root / "start-vocr.ps1").exists())
             self.assertTrue((result.repo_root / "Start-VOCR.bat").exists())
+            self.assertIn("Pause-OnInteractiveError", (result.repo_root / "start-vocr.ps1").read_text(encoding="utf-8"))
+            self.assertIn("pause", (result.repo_root / "Start-VOCR.bat").read_text(encoding="utf-8").lower())
+
+    def test_bootstrap_does_not_overwrite_existing_windows_installer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_repo(root)
+            installer = root / "install-vocr.ps1"
+            installer.write_text("# existing winget-aware installer\n", encoding="utf-8")
+
+            Bootstrapper(root, runner=FakeRunner(importable=True), which=lambda _: "git").bootstrap(
+                write_scripts=True,
+            )
+
+            self.assertEqual(installer.read_text(encoding="utf-8"), "# existing winget-aware installer\n")
+            self.assertTrue((root / "start-vocr.ps1").exists())
+            self.assertTrue((root / "Start-VOCR.bat").exists())
 
     def test_bootstrap_does_not_overwrite_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

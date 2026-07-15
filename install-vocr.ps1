@@ -12,6 +12,12 @@ function Write-Step($Message) {
     Write-Host "[VOCR] $Message" -ForegroundColor Cyan
 }
 
+function Pause-OnInteractiveError {
+    if ($Host.Name -eq "ConsoleHost" -and [Environment]::UserInteractive -and -not $env:CI -and -not $env:VOCR_NO_PAUSE_ON_ERROR) {
+        try { Read-Host "Druecke Enter zum Schliessen" | Out-Null } catch {}
+    }
+}
+
 function Invoke-Checked($Exe, $Arguments, $FailureMessage) {
     & $Exe @Arguments
     if ($LASTEXITCODE -ne 0) { throw $FailureMessage }
@@ -155,5 +161,6 @@ try {
     Write-Host "2. Pruefe Python 3.11+: python --version"
     Write-Host "3. Pruefe Git: git --version"
     Write-Host "4. Wenn PowerShell blockiert, nutze Start-VOCR.bat."
+    Pause-OnInteractiveError
     exit 1
 }
