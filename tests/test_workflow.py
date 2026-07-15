@@ -711,6 +711,7 @@ class WorkflowTests(unittest.TestCase):
                     "OPENAI_BASE_URL": "http://localhost:1234/v1",
                     "OPENAI_MODEL": "local-model",
                     "OPENAI_API_KEY": "lm-studio",
+                    "LMSTUDIO_API_KEY": "lm-studio",
                 },
                 env_path,
             )
@@ -719,6 +720,73 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(provider_from_env(values), "local-openai-compatible")
         self.assertEqual(values["OPENAI_MODEL"], "local-model")
         self.assertEqual(redact_env(values)["OPENAI_API_KEY"], "[set]")
+        self.assertEqual(redact_env(values)["LMSTUDIO_API_KEY"], "[set]")
+
+    def test_auth_commands_save_codex_and_lmstudio_keys(self) -> None:
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path.cwd()
+            try:
+                os.chdir(tmp)
+                codex_result = runner.invoke(app, ["auth", "codex-key", "--api-key", "sk-codex-test"])
+                lm_result = runner.invoke(
+                    app,
+                    [
+                        "auth",
+                        "lmstudio-key",
+                        "--api-key",
+                        "lm-key",
+                        "--base-url",
+                        "http://localhost:1234/v1/",
+                        "--model",
+                        "local-model",
+                    ],
+                )
+                status = runner.invoke(app, ["auth", "status"])
+                values = read_env_file(".env")
+            finally:
+                os.chdir(cwd)
+
+        self.assertEqual(codex_result.exit_code, 0, codex_result.output)
+        self.assertEqual(lm_result.exit_code, 0, lm_result.output)
+        self.assertEqual(values["OPENAI_API_KEY"], "lm-key")
+        self.assertEqual(values["LMSTUDIO_API_KEY"], "lm-key")
+        self.assertEqual(values["OPENAI_BASE_URL"], "http://localhost:1234/v1")
+        self.assertEqual(values["OPENAI_MODEL"], "local-model")
+        self.assertIn("[set]", status.output)
+        self.assertNotIn("lm-key", status.output)
+
+    def test_model_list_sends_saved_api_key(self) -> None:
+        runner = CliRunner()
+        captured_headers: dict[str, str] = {}
+
+        class FakeResponse:
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *_: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return b'{"data":[{"id":"local-model"}]}'
+
+        def fake_urlopen(request: object, timeout: int = 0) -> FakeResponse:
+            captured_headers.update(dict(getattr(request, "headers", {})))
+            return FakeResponse()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path.cwd()
+            try:
+                os.chdir(tmp)
+                update_env_file({"OPENAI_BASE_URL": "http://localhost:1234/v1", "OPENAI_API_KEY": "lm-key"}, ".env")
+                with patch("vocr.cli.app.urllib.request.urlopen", side_effect=fake_urlopen):
+                    result = runner.invoke(app, ["model", "list"])
+            finally:
+                os.chdir(cwd)
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(captured_headers.get("Authorization"), "Bearer lm-key")
+        self.assertIn("local-model", result.output)
 
     def test_require_checks_off_keeps_generic_tests_escape_hatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -70,12 +70,14 @@ app = typer.Typer(help="VOCR: Vision / Organize / Code / Review")
 model_app = typer.Typer(help="Configure local or cloud LLMs without editing files.")
 secrets_app = typer.Typer(help="Scan diffs for secrets without printing secret values.")
 worker_app = typer.Typer(help="Configure and diagnose Codex worker execution.")
+auth_app = typer.Typer(help="Configure optional API-key authentication for expert users.")
 claims_app = typer.Typer(help="Inspect and release VOCR scope claims.")
 memory_app = typer.Typer(help="Inspect and prune accepted-review project memory.")
 beta_app = typer.Typer(help="Run deterministic VOCR beta harness scenarios.")
 app.add_typer(model_app, name="model")
 app.add_typer(secrets_app, name="secrets")
 app.add_typer(worker_app, name="worker")
+app.add_typer(auth_app, name="auth")
 app.add_typer(claims_app, name="claims")
 app.add_typer(memory_app, name="memory")
 app.add_typer(beta_app, name="beta")
@@ -505,6 +507,49 @@ def codex_config() -> None:
     console.print("Worker default: codex exec - --cd <worktree> --sandbox workspace-write")
 
 
+@auth_app.command("status")
+def auth_status() -> None:
+    values = read_env_file(env_path())
+    redacted = redact_env(values)
+    table = Table(title="VOCR Auth Config")
+    table.add_column("Setting")
+    table.add_column("Value")
+    table.add_row("Codex/OpenAI API key", safe_text(redacted.get("OPENAI_API_KEY", "-") or "-"))
+    table.add_row("LM Studio API key", safe_text(redacted.get("LMSTUDIO_API_KEY", "-") or "-"))
+    table.add_row("OpenAI-compatible base URL", safe_text(redacted.get("OPENAI_BASE_URL", "-") or "-"))
+    console.print(table)
+
+
+@auth_app.command("codex-key")
+def auth_codex_key(
+    api_key: str = typer.Option(..., "--api-key", prompt=True, hide_input=True, help="API key for Codex/OpenAI-compatible auth."),
+) -> None:
+    update_env_file({"OPENAI_API_KEY": api_key}, env_path())
+    console.print("[green]Codex/OpenAI API key saved[/green]")
+    console.print("Normal path remains `codex login`; this key is optional for expert/API-key setups.")
+
+
+@auth_app.command("lmstudio-key")
+def auth_lmstudio_key(
+    api_key: str = typer.Option(..., "--api-key", prompt=True, hide_input=True, help="LM Studio API key."),
+    base_url: str = typer.Option("http://localhost:1234/v1", "--base-url", help="LM Studio OpenAI-compatible base URL."),
+    model: str | None = typer.Option(None, "--model", "-m", help="Optional model id loaded in LM Studio."),
+) -> None:
+    updates: dict[str, str | None] = {
+        "OPENAI_BASE_URL": base_url.rstrip("/"),
+        "OPENAI_API_KEY": api_key,
+        "LMSTUDIO_API_KEY": api_key,
+    }
+    if model:
+        updates["OPENAI_MODEL"] = model
+    update_env_file(updates, env_path())
+    console.print("[green]LM Studio API key saved[/green]")
+    console.print(f"Base URL: {safe_text(base_url.rstrip('/'))}")
+    if model:
+        console.print(f"Model: {safe_text(model)}")
+    console.print("API key: [set]")
+
+
 @model_app.command("status")
 def model_status() -> None:
     values = read_env_file(env_path())
@@ -512,10 +557,11 @@ def model_status() -> None:
     table = Table(title="VOCR Model Config")
     table.add_column("Setting")
     table.add_column("Value")
-    table.add_row("Provider", provider_from_env(values))
-    table.add_row("OPENAI_BASE_URL", redacted.get("OPENAI_BASE_URL", "-") or "-")
-    table.add_row("OPENAI_MODEL", redacted.get("OPENAI_MODEL", "-") or "-")
-    table.add_row("OPENAI_API_KEY", redacted.get("OPENAI_API_KEY", "-") or "-")
+    table.add_row("Provider", safe_text(provider_from_env(values)))
+    table.add_row("OPENAI_BASE_URL", safe_text(redacted.get("OPENAI_BASE_URL", "-") or "-"))
+    table.add_row("OPENAI_MODEL", safe_text(redacted.get("OPENAI_MODEL", "-") or "-"))
+    table.add_row("OPENAI_API_KEY", safe_text(redacted.get("OPENAI_API_KEY", "-") or "-"))
+    table.add_row("LMSTUDIO_API_KEY", safe_text(redacted.get("LMSTUDIO_API_KEY", "-") or "-"))
     console.print(table)
 
 
@@ -590,8 +636,13 @@ def model_list(
 ) -> None:
     values = read_env_file(env_path())
     url = (base_url or values.get("OPENAI_BASE_URL") or "http://localhost:1234/v1").rstrip("/")
+    headers = {}
+    api_key = values.get("OPENAI_API_KEY") or values.get("LMSTUDIO_API_KEY")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    request = urllib.request.Request(f"{url}/models", headers=headers)
     try:
-        with urllib.request.urlopen(f"{url}/models", timeout=5) as response:
+        with urllib.request.urlopen(request, timeout=5) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         if exc.code == 401:

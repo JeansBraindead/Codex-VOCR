@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 
-MODEL_KEYS = {"OPENAI_BASE_URL", "OPENAI_MODEL", "OPENAI_API_KEY"}
+MODEL_KEYS = {"OPENAI_BASE_URL", "OPENAI_MODEL", "OPENAI_API_KEY", "LMSTUDIO_API_KEY"}
 WORKER_KEYS = {"VOCR_CODEX_PROFILE", "VOCR_CODEX_COMMAND", "VOCR_CODEX_UNSANDBOXED"}
 
 
@@ -53,6 +53,8 @@ def redact_env(values: dict[str, str]) -> dict[str, str]:
     redacted = dict(values)
     if redacted.get("OPENAI_API_KEY"):
         redacted["OPENAI_API_KEY"] = "[set]"
+    if redacted.get("LMSTUDIO_API_KEY"):
+        redacted["LMSTUDIO_API_KEY"] = "[set]"
     return redacted
 
 

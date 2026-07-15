@@ -199,6 +199,8 @@ Erwartung:
 - Unten ist das Textfeld fuer freie Eingaben.
 - Rechts steht der kompakte Projektstatus.
 - Der Expertmodus ist ueber den Menuepunkt `Expertmodus` erreichbar.
+- Ueber `Optionen` kannst du optional einen Codex/OpenAI-API-Key oder einen
+  LM-Studio-Key speichern.
 - Der Visionaer schlaegt den naechsten sinnvollen Schritt vor und fragt fehlende Informationen ab.
 - Der User bestaetigt oder korrigiert natuerlichsprachlich.
 - Pro Fenster oder Console-Session gibt es genau einen aktiven Intake-Zustand.
@@ -333,6 +335,24 @@ vocr model status
 
 VOCR kann ohne Codex CLI planen, graphifizieren, lernen, reviewen und testen.
 Fuer echte Worker-Ausfuehrung wird Codex CLI empfohlen.
+
+Standard-Login:
+
+```powershell
+codex login
+```
+
+Optionaler API-Key statt Login fuer Expert-Setups:
+
+```powershell
+vocr auth codex-key
+```
+
+LM-Studio-Key fuer lokale/MCP-Setups mit aktivierter LM-Studio-Auth:
+
+```powershell
+vocr auth lmstudio-key --model "dein-lm-studio-modell"
+```
 
 Worker-Status:
 

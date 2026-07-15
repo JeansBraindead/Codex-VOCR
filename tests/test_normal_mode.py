@@ -355,6 +355,7 @@ class NormalModeTests(unittest.TestCase):
             ["ship", "--help"],
             ["doctor", "--help"],
             ["model", "--help"],
+            ["auth", "--help"],
             ["worker", "--help"],
             ["secrets", "--help"],
             ["clean", "--help"],

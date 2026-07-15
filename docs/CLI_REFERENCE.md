@@ -19,6 +19,21 @@ vocr ask "Ziel: ... Arbeitsbereich: ... Akzeptanz: ... Verifikation: ... Nicht-Z
 - For one planned slice only, `vocr ask ... --go` still grants slice-scoped
   approve-all without making it global.
 
+## Auth
+
+```powershell
+vocr auth status
+vocr auth codex-key
+vocr auth lmstudio-key --model "dein-lm-studio-modell"
+```
+
+- Der Standardpfad bleibt `codex login`.
+- `auth codex-key` speichert optional einen Codex/OpenAI-API-Key in `.env`, wenn
+  du Expert-Setups ohne Login nutzen willst.
+- `auth lmstudio-key` speichert den LM-Studio-Key als `OPENAI_API_KEY` und
+  `LMSTUDIO_API_KEY` und setzt standardmaessig `http://localhost:1234/v1`.
+- Statusausgaben zeigen Keys nur als `[set]`.
+
 ## Context
 
 ```powershell

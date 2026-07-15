@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from vocr.codex.mcp_client import CodexMcpClient
+from vocr.config.env_file import update_env_file
 from vocr.git.worktrees import GitWorktreeError, GitWorktreeManager
 from vocr.graph.graphify import GraphStore
 from vocr.guardrails.scope_guard import ScopeGuard
@@ -882,7 +883,7 @@ def open_expert_shell(repo_root: str | Path = ".") -> None:
 def launch_normal_mode(repo_root: str | Path = ".", session_permission: PermissionGrant | None = None) -> None:
     try:
         import tkinter as tk
-        from tkinter import scrolledtext, ttk
+        from tkinter import messagebox, scrolledtext, simpledialog, ttk
     except Exception as exc:  # pragma: no cover - depends on local Python build
         raise NormalModeUiError(str(exc)) from exc
 
@@ -899,19 +900,6 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
         style.configure("TLabel", font=("Segoe UI", 10))
     except tk.TclError:
         pass
-
-    menu = tk.Menu(root)
-    expert_menu = tk.Menu(menu, tearoff=0)
-    expert_menu.add_command(label="Expertmodus oeffnen", command=lambda: open_expert_shell(controller.repo_root))
-    expert_menu.add_command(
-        label="Expert-Hilfe anzeigen",
-        command=lambda: append(
-            "System",
-            "Expertmodus: Nutze vocr --help, vocr doctor, vocr worker doctor oder vocr beta --help in der Shell.",
-        ),
-    )
-    menu.add_cascade(label="Expertmodus", menu=expert_menu)
-    root.config(menu=menu)
 
     root.columnconfigure(0, weight=3)
     root.columnconfigure(1, weight=1)
@@ -942,6 +930,55 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
         transcript.insert(tk.END, f"{sender}: {message}\n\n")
         transcript.see(tk.END)
         transcript.configure(state=tk.DISABLED)
+
+    def save_codex_api_key() -> None:
+        api_key = simpledialog.askstring("Codex API-Key", "API-Key fuer Codex/OpenAI eingeben:", show="*", parent=root)
+        if not api_key:
+            return
+        update_env_file({"OPENAI_API_KEY": api_key.strip()}, controller.repo_root / ".env")
+        append("System", "Codex/OpenAI API-Key gespeichert. Standard bleibt codex login; der Key ist optional fuer Expert-Setups.")
+        messagebox.showinfo("VOCR Optionen", "Codex/OpenAI API-Key gespeichert.")
+
+    def save_lmstudio_api_key() -> None:
+        api_key = simpledialog.askstring("LM Studio API-Key", "LM-Studio-Key eingeben:", show="*", parent=root)
+        if not api_key:
+            return
+        base_url = simpledialog.askstring(
+            "LM Studio Base URL",
+            "OpenAI-kompatible Base URL:",
+            initialvalue="http://localhost:1234/v1",
+            parent=root,
+        )
+        if not base_url:
+            return
+        model = simpledialog.askstring("LM Studio Modell", "Optionaler Modellname:", parent=root)
+        updates: dict[str, str | None] = {
+            "OPENAI_BASE_URL": base_url.rstrip("/"),
+            "OPENAI_API_KEY": api_key.strip(),
+            "LMSTUDIO_API_KEY": api_key.strip(),
+        }
+        if model and model.strip():
+            updates["OPENAI_MODEL"] = model.strip()
+        update_env_file(updates, controller.repo_root / ".env")
+        append("System", "LM-Studio-Key gespeichert. Lokale Modellfunktionen nutzen jetzt die konfigurierte Base URL.")
+        messagebox.showinfo("VOCR Optionen", "LM-Studio-Key gespeichert.")
+
+    menu = tk.Menu(root)
+    options_menu = tk.Menu(menu, tearoff=0)
+    options_menu.add_command(label="Codex API-Key setzen", command=save_codex_api_key)
+    options_menu.add_command(label="LM Studio API-Key setzen", command=save_lmstudio_api_key)
+    menu.add_cascade(label="Optionen", menu=options_menu)
+    expert_menu = tk.Menu(menu, tearoff=0)
+    expert_menu.add_command(label="Expertmodus oeffnen", command=lambda: open_expert_shell(controller.repo_root))
+    expert_menu.add_command(
+        label="Expert-Hilfe anzeigen",
+        command=lambda: append(
+            "System",
+            "Expertmodus: Nutze vocr --help, vocr doctor, vocr worker doctor oder vocr beta --help in der Shell.",
+        ),
+    )
+    menu.add_cascade(label="Expertmodus", menu=expert_menu)
+    root.config(menu=menu)
 
     def render_status(status: NormalModeStatus) -> None:
         lines = [

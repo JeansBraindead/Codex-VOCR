@@ -69,8 +69,10 @@ vocr start
 ```
 
 `vocr start` oeffnet im MVP eine lokale Tkinter-Oberflaeche. Der Expertmodus ist
-ueber den Menuepunkt `Expertmodus` erreichbar. Falls kein Fenster verfuegbar ist
-oder du im Terminal bleiben willst:
+ueber den Menuepunkt `Expertmodus` erreichbar. Ueber `Optionen` kannst du
+optional einen Codex/OpenAI-API-Key oder einen LM-Studio-Key setzen, wenn du
+nicht mit `codex login` bzw. ohne LM-Studio-Auth arbeiten willst. Falls kein
+Fenster verfuegbar ist oder du im Terminal bleiben willst:
 
 ```powershell
 vocr start --console
@@ -247,6 +249,8 @@ vocr context "git worktree review" --limit 10
 vocr context --symbol src/vocr/cli/app.py:review
 vocr ask "Ziel: ... Arbeitsbereich: ... Akzeptanz: ... Verifikation: ... Nicht-Ziele: ... Ausfuehrung: ..." --go
 vocr ask "Ziel: ... Arbeitsbereich: ... Akzeptanz: ... Verifikation: ... Nicht-Ziele: ... Ausfuehrung: ..." --dangerously-skip-permissions --go
+vocr auth codex-key
+vocr auth lmstudio-key --model "dein-lm-studio-modell"
 vocr organize <slice-id>
 vocr dispatch-ready
 vocr work-ready --fix
