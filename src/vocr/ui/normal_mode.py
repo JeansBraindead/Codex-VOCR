@@ -94,8 +94,65 @@ class IntakeProposal:
     intake: ProjectIntake
 
 
+@dataclass(frozen=True)
+class BetaTestChainStep:
+    title: str
+    purpose: str
+    tier: str
+    only: tuple[str, ...]
+    tag: str
+    allow_cloud: bool = False
+    max_cloud_tasks: int = 3
+
+
 class NormalModeUiError(RuntimeError):
     """Raised when the local dialog window cannot be opened."""
+
+
+def beta_next_test_chain(*, include_cloud: bool = False) -> tuple[BetaTestChainStep, ...]:
+    steps = [
+        BetaTestChainStep(
+            title="1. Smoke: Installation und Grundpfad",
+            purpose="Schnell pruefen, ob der Beta-Harness, Fixture-Repos, Gates und Reports grundsaetzlich laufen.",
+            tier="core",
+            only=("S00", "S01", "S04"),
+            tag="chain-01-smoke",
+        ),
+        BetaTestChainStep(
+            title="2. Safety: Prompt-, Scope-, Secrets- und Ledger-Schutz",
+            purpose="Die wichtigsten Schutzgitter gezielt stressen, bevor laengere Laeufe Vertrauen bekommen.",
+            tier="core",
+            only=("S02", "S03", "S07", "S15", "S16"),
+            tag="chain-02-safety",
+        ),
+        BetaTestChainStep(
+            title="3. Workflow: Review, Kontext, Budget, Parallelitaet und Memory",
+            purpose="Pruefen, ob VOCR Arbeit vorbereitet, koordiniert, parallelisiert und Projektnotizen sauber persistiert.",
+            tier="core",
+            only=("S05", "S06", "S08", "S09", "S10", "S11", "S14", "S18", "S19", "S20"),
+            tag="chain-03-workflow",
+        ),
+        BetaTestChainStep(
+            title="4. Local-Assist-Mocks: Embeddings und lokale Assistenz-Matrix",
+            purpose="Aktuelle Mock-Pfade fuer lokale Assistenz pruefen; noch kein Live-Test gegen ein echtes LM-Studio-Modell.",
+            tier="core",
+            only=("S12", "S13"),
+            tag="chain-04-local-mocks",
+        ),
+    ]
+    if include_cloud:
+        steps.append(
+            BetaTestChainStep(
+                title="5. Cloud-Smoke: opt-in Codex-Cloud-Pfad",
+                purpose="Minimaler Cloud-Abschluss. Laeuft nur bewusst mit Cloud-Freigabe und bleibt auf wenige Tasks begrenzt.",
+                tier="cloud",
+                only=("S17",),
+                tag="chain-05-cloud",
+                allow_cloud=True,
+                max_cloud_tasks=3,
+            )
+        )
+    return tuple(steps)
 
 
 class NormalModeController:
@@ -1084,7 +1141,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
 
     beta_tab = ttk.Frame(notebook, padding=(12, 12))
     beta_tab.columnconfigure(0, weight=1)
-    beta_tab.rowconfigure(6, weight=1)
+    beta_tab.rowconfigure(7, weight=1)
     notebook.add(beta_tab, text="Beta-Test")
 
     transcript = scrolledtext.ScrolledText(dialog_tab, wrap=tk.WORD, padx=12, pady=12, state=tk.DISABLED)
@@ -1154,8 +1211,28 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     beta_recommended_button = ttk.Button(beta_recommended, text="Empfohlenen Standardtest starten")
     beta_recommended_button.grid(row=2, column=0, sticky="w")
 
+    beta_chain = ttk.Frame(beta_tab, padding=(10, 10))
+    beta_chain.grid(row=3, column=0, sticky="ew", pady=(0, 10))
+    beta_chain.columnconfigure(0, weight=1)
+    ttk.Label(beta_chain, text="Naechste Testkette", font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w")
+    ttk.Label(
+        beta_chain,
+        text=(
+            "Mehrstufiger Ablauf fuer die naechste Beta-Runde: Smoke, Safety, Workflow/Parallelitaet/Memory "
+            "und Local-Assist-Mocks. Mit Cloud-Checkbox kommt als letzter Schritt ein kleiner Cloud-Smoke dazu."
+        ),
+        wraplength=620,
+    ).grid(row=1, column=0, sticky="ew", pady=(4, 8))
+    beta_chain_lines = [
+        f"{step.title}: {', '.join(step.only)}"
+        for step in beta_next_test_chain(include_cloud=False)
+    ]
+    ttk.Label(beta_chain, text="\n".join(beta_chain_lines), wraplength=620).grid(row=2, column=0, sticky="ew", pady=(0, 8))
+    beta_chain_button = ttk.Button(beta_chain, text="Naechste Testkette starten")
+    beta_chain_button.grid(row=3, column=0, sticky="w")
+
     beta_controls = ttk.Frame(beta_tab)
-    beta_controls.grid(row=3, column=0, sticky="ew")
+    beta_controls.grid(row=4, column=0, sticky="ew")
     beta_controls.columnconfigure(1, weight=1)
     ttk.Label(beta_controls, text="Tier").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
     ttk.Combobox(beta_controls, textvariable=beta_tier, values=("core", "local", "cloud", "all"), state="readonly", width=12).grid(row=0, column=1, sticky="w", pady=4)
@@ -1170,20 +1247,20 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     ttk.Spinbox(beta_controls, from_=1, to=20, textvariable=beta_max_cloud_tasks, width=6).grid(row=4, column=1, sticky="w", pady=4)
 
     beta_checks = ttk.Frame(beta_tab)
-    beta_checks.grid(row=4, column=0, sticky="ew", pady=(8, 0))
+    beta_checks.grid(row=5, column=0, sticky="ew", pady=(8, 0))
     ttk.Checkbutton(beta_checks, text="Cloud-Szenarien erlauben (kann Kontingent kosten)", variable=beta_allow_cloud).grid(row=0, column=0, sticky="w")
     ttk.Checkbutton(beta_checks, text="Nur JSON-Report schreiben", variable=beta_json_only).grid(row=1, column=0, sticky="w")
     ttk.Checkbutton(beta_checks, text="Debug-Details anzeigen", variable=beta_debug).grid(row=2, column=0, sticky="w")
 
     beta_buttons = ttk.Frame(beta_tab)
-    beta_buttons.grid(row=5, column=0, sticky="ew", pady=(10, 8))
+    beta_buttons.grid(row=6, column=0, sticky="ew", pady=(10, 8))
     beta_start_button = ttk.Button(beta_buttons, text="Erweiterten Beta-Test starten")
     beta_start_button.grid(row=0, column=0, sticky="w")
     beta_list_button = ttk.Button(beta_buttons, text="Szenarien anzeigen")
     beta_list_button.grid(row=0, column=1, sticky="w", padx=(8, 0))
 
     beta_result = scrolledtext.ScrolledText(beta_tab, wrap=tk.WORD, height=14, padx=8, pady=8, state=tk.DISABLED)
-    beta_result.grid(row=6, column=0, sticky="nsew", pady=(8, 0))
+    beta_result.grid(row=7, column=0, sticky="nsew", pady=(8, 0))
 
     def append(sender: str, message: str) -> None:
         transcript.configure(state=tk.NORMAL)
@@ -1295,6 +1372,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
             return
         beta_start_button.configure(state=tk.DISABLED)
         beta_recommended_button.configure(state=tk.DISABLED)
+        beta_chain_button.configure(state=tk.DISABLED)
         set_activity("Beta-Test startet", busy=True)
         log_activity("Beta-Test gestartet.")
         beta_append(
@@ -1380,6 +1458,121 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
             root.after(0, lambda: log_activity("Beta-Test abgeschlossen."))
             root.after(0, lambda: beta_start_button.configure(state=tk.NORMAL))
             root.after(0, lambda: beta_recommended_button.configure(state=tk.NORMAL))
+            root.after(0, lambda: beta_chain_button.configure(state=tk.NORMAL))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def start_beta_chain() -> None:
+        include_cloud = beta_allow_cloud.get()
+        steps = beta_next_test_chain(include_cloud=include_cloud)
+        beta_start_button.configure(state=tk.DISABLED)
+        beta_recommended_button.configure(state=tk.DISABLED)
+        beta_chain_button.configure(state=tk.DISABLED)
+        set_activity("Beta-Testkette startet", busy=True)
+        log_activity("Beta-Testkette gestartet.")
+        beta_append(
+            "\n".join(
+                [
+                    "Naechste Beta-Testkette laeuft...",
+                    "Diese Kette trennt Smoke, Safety, Workflow/Parallelitaet/Memory und Local-Assist-Mocks.",
+                    "Cloud-Smoke ist nur enthalten, wenn die Cloud-Checkbox aktiv ist.",
+                    "",
+                    f"Schritte: {len(steps)}",
+                    f"Cloud enthalten: {'ja' if include_cloud else 'nein'}",
+                    "",
+                    *[f"- {step.title}: {', '.join(step.only)}" for step in steps],
+                    "",
+                ]
+            ),
+            replace=True,
+        )
+        notebook.select(beta_tab)
+
+        def worker() -> None:
+            all_lines: list[str] = []
+            overall_exit_code = 0
+            try:
+                from vocr.beta.scenarios import SCENARIOS
+                from vocr.beta.runner import run_beta
+
+                for index, step in enumerate(steps, start=1):
+                    root.after(0, lambda step=step: set_activity(f"Beta-Kette: {step.title}", busy=True))
+                    root.after(0, lambda step=step: beta_append(f"== {step.title} =="))
+                    root.after(0, lambda step=step: beta_append(step.purpose))
+                    root.after(0, lambda step=step: log_activity(f"Beta-Kettenschritt gestartet: {step.title}."))
+
+                    def progress(event: str, payload: object) -> None:
+                        if event == "selected":
+                            scenarios = list(payload)  # type: ignore[arg-type]
+                            root.after(0, lambda scenarios=scenarios: beta_append(f"{len(scenarios)} Szenarien ausgewaehlt."))
+                        elif event == "start":
+                            scenario = payload
+                            label = f"{scenario.id} {scenario.title}"  # type: ignore[attr-defined]
+                            root.after(0, lambda label=label: set_activity(f"Beta laeuft: {label}", busy=True))
+                            root.after(0, lambda label=label: beta_append(f"Starte {label} ..."))
+                            root.after(0, lambda label=label: log_activity(f"Starte Szenario {label}."))
+                        elif event == "finish":
+                            item = payload
+                            label = f"{item.id} {item.title}: {item.status} ({item.duration_s}s)"  # type: ignore[attr-defined]
+                            root.after(0, lambda label=label: beta_append(f"Fertig {label}"))
+                            root.after(0, lambda label=label: log_activity(f"Szenario fertig: {label}."))
+                        elif event == "report":
+                            root.after(0, lambda step=step: log_activity(f"Beta-Kettenreport wird geschrieben: {step.tag}."))
+
+                    run = run_beta(
+                        SCENARIOS.values(),
+                        tier=step.tier,
+                        only=list(step.only),
+                        report_dir=controller.repo_root / (beta_report_dir.get().strip() or "beta_reports"),
+                        allow_cloud=step.allow_cloud,
+                        max_cloud_tasks=step.max_cloud_tasks,
+                        json_only=beta_json_only.get(),
+                        tag=step.tag,
+                        on_progress=progress,
+                    )
+                    overall_exit_code = max(overall_exit_code, run.exit_code)
+                    all_lines.extend(
+                        [
+                            f"{index}. {step.title}",
+                            f"   Zweck: {step.purpose}",
+                            f"   Verdikt: {run.status.upper()} / Exit-Code {run.exit_code}",
+                            f"   Szenarien: {', '.join(f'{item.id}:{item.status}' for item in run.results)}",
+                        ]
+                    )
+                    if run.report_json:
+                        all_lines.append(f"   JSON-Report: {run.report_json}")
+                    if run.report_markdown:
+                        all_lines.append(f"   Markdown-Report: {run.report_markdown}")
+                    all_lines.append("")
+                    root.after(0, lambda step=step, run=run: beta_append(f"Schritt abgeschlossen: {step.title} -> {run.status.upper()}"))
+                    root.after(0, lambda step=step, run=run: log_activity(f"Beta-Kettenschritt fertig: {step.title}: {run.status}."))
+                    if run.exit_code == 2:
+                        all_lines.append("Kette gestoppt: harter Fehler im vorherigen Schritt.")
+                        break
+
+                verdict = "passed" if overall_exit_code == 0 else "needs-review" if overall_exit_code == 1 else "failed"
+                lines = [
+                    f"Testketten-Verdikt: {verdict.upper()}",
+                    f"Hoechster Exit-Code: {overall_exit_code}",
+                    "",
+                    "Naechste Entscheidung:",
+                    "- Gruen: Core-Beta ist in dieser Kette belastbar; naechster sinnvoller Test ist manuelle UI-Nutzung oder optionaler Cloud-Smoke.",
+                    "- Gelb: Soft-Hinweise im Report pruefen, aber kein harter Blocker.",
+                    "- Rot: Beim ersten roten Kettenschritt anfangen und nur die betroffenen Szenarien wiederholen.",
+                    "",
+                    "Kettenprotokoll:",
+                    "",
+                    *all_lines,
+                ]
+            except Exception as exc:  # noqa: BLE001 - UI should surface failures.
+                lines = ["Beta-Testkette konnte nicht abgeschlossen werden:", str(exc)]
+                root.after(0, lambda exc=exc: log_activity(f"Beta-Testkette fehlgeschlagen: {exc}"))
+            root.after(0, lambda: beta_append("\n".join(lines), replace=True))
+            root.after(0, lambda: set_activity("Beta-Testkette abgeschlossen", busy=False))
+            root.after(0, lambda: log_activity("Beta-Testkette abgeschlossen."))
+            root.after(0, lambda: beta_start_button.configure(state=tk.NORMAL))
+            root.after(0, lambda: beta_recommended_button.configure(state=tk.NORMAL))
+            root.after(0, lambda: beta_chain_button.configure(state=tk.NORMAL))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1485,6 +1678,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     user_input.bind("<Control-Return>", send)
     beta_recommended_button.configure(command=lambda: start_beta_run(recommended=True))
     beta_start_button.configure(command=start_beta_run)
+    beta_chain_button.configure(command=start_beta_chain)
     beta_list_button.configure(command=show_beta_scenarios)
 
     opening = controller.opening_message()
@@ -1495,6 +1689,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     beta_append(
         "Bereit fuer einen Beta-Test.\n"
         "Normalfall: Empfohlenen Standardtest starten.\n"
+        "Naechster gruendlicher Ablauf: Naechste Testkette starten.\n"
         "Das ist Tier core, keine Cloud, alle Core-Szenarien, Report nach beta_reports.\n"
         "Erweiterte Optionen brauchst du nur fuer gezielte Szenarien oder bewusste Cloud-/Local-Pruefungen.",
         replace=True,
@@ -1509,9 +1704,11 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
 
 __all__ = [
     "NORMAL_MODE_SURFACE",
+    "BetaTestChainStep",
     "NormalModeController",
     "NormalModeResponse",
     "NormalModeUiError",
+    "beta_next_test_chain",
     "launch_console_mode",
     "launch_normal_mode",
     "open_codex_login_shell",

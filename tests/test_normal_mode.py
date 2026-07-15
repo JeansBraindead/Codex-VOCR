@@ -13,11 +13,13 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from vocr.cli.app import app
+from vocr.beta.scenarios import SCENARIOS
 from vocr.memory.ledger import MemoryLedger
 from vocr.models import AcceptanceCriterion, LedgerEventType, NormalModePhase, PermissionGrant, PermissionMode, VocrTask
 from vocr.orchestration.worker_advisor import WorkerParallelismAdvisor
 from vocr.ui.normal_mode import (
     NormalModeController,
+    beta_next_test_chain,
     codex_login_status,
     launch_console_mode,
     launch_normal_mode,
@@ -297,6 +299,32 @@ class NormalModeTests(unittest.TestCase):
 
         self.assertIn("gelb", status)
         self.assertIn("expected-model", status)
+
+    def test_beta_next_test_chain_is_deterministic_and_core_by_default(self) -> None:
+        chain = beta_next_test_chain()
+        scenario_ids = [scenario_id for step in chain for scenario_id in step.only]
+        core_ids = [scenario.id for scenario in SCENARIOS.values() if scenario.tier == "core"]
+
+        self.assertEqual(
+            [step.tag for step in chain],
+            ["chain-01-smoke", "chain-02-safety", "chain-03-workflow", "chain-04-local-mocks"],
+        )
+        self.assertEqual(set(scenario_ids), set(core_ids))
+        self.assertEqual(len(scenario_ids), len(set(scenario_ids)))
+        self.assertIn("S18", scenario_ids)
+        self.assertIn("S20", scenario_ids)
+        self.assertNotIn("S17", scenario_ids)
+        self.assertTrue(all(step.tier == "core" for step in chain))
+        self.assertFalse(any(step.allow_cloud for step in chain))
+
+    def test_beta_next_test_chain_adds_cloud_only_when_requested(self) -> None:
+        chain = beta_next_test_chain(include_cloud=True)
+        cloud_step = chain[-1]
+
+        self.assertEqual(cloud_step.only, ("S17",))
+        self.assertEqual(cloud_step.tier, "cloud")
+        self.assertTrue(cloud_step.allow_cloud)
+        self.assertEqual(cloud_step.max_cloud_tasks, 3)
 
     def test_gui_activity_bridge_lives_in_gui_launcher(self) -> None:
         gui_source = inspect.getsource(launch_normal_mode)
