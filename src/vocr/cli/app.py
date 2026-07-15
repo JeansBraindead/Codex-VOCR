@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import os
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -71,6 +73,7 @@ app.add_typer(secrets_app, name="secrets")
 app.add_typer(worker_app, name="worker")
 app.add_typer(claims_app, name="claims")
 console = Console()
+WARMUP_STAGGER_SECONDS = 20.0
 
 
 def safe_text(value: str) -> str:
@@ -91,6 +94,14 @@ def graph_store() -> GraphStore:
 def learning_store() -> LearningStore:
     load_dotenv()
     return LearningStore(Path(os.getenv("VOCR_HOME", ".vocr")))
+
+
+def parallel_worker_count() -> int:
+    try:
+        count = int(os.getenv("VOCR_PARALLEL_WORKERS", "1"))
+    except ValueError:
+        return 1
+    return max(1, count)
 
 
 def refresh_graph() -> None:
@@ -911,12 +922,88 @@ def run_worker(
 app.command("work")(run_worker)
 
 
+def ready_dispatched_tasks(store: MemoryLedger, limit: int) -> list[VocrTask]:
+    tasks: list[VocrTask] = []
+    for task in store.tasks():
+        if len(tasks) >= limit:
+            break
+        if task.status == TaskStatus.dispatched:
+            tasks.append(task)
+    return tasks
+
+
+def run_parallel_work_wave(
+    tasks: list[VocrTask],
+    *,
+    worker_count: int,
+    timeout_seconds: int,
+    auto_fix: bool,
+) -> int:
+    if not tasks:
+        return 0
+    store = ledger()
+    store.reconcile_stale_claims()
+    conflicts = store.acquire_claims(tasks, repo_root=Path.cwd())
+    blocked_ids = {conflict.task_id for conflict in conflicts}
+    runnable = [task for task in tasks if task.id not in blocked_ids]
+    for conflict in conflicts:
+        console.print(
+            f"[yellow][T-{safe_text(conflict.task_id)}] Waiting for claim held by "
+            f"{safe_text(conflict.conflicting_task_id)}[/yellow]"
+        )
+    if not runnable:
+        return 0
+
+    def submit_task(pool: concurrent.futures.ThreadPoolExecutor, task: VocrTask):
+        console.print(f"[cyan][T-{safe_text(task.id)}] Worker starting[/cyan]")
+        return pool.submit(
+            run_worker,
+            task.id,
+            timeout_seconds=timeout_seconds,
+            commit=True,
+            auto_fix=auto_fix,
+            max_retries=2,
+        )
+
+    worked = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as pool:
+        futures: dict[concurrent.futures.Future, str] = {}
+        first, rest = runnable[0], runnable[1:]
+        futures[submit_task(pool, first)] = first.id
+        if rest:
+            time.sleep(WARMUP_STAGGER_SECONDS)
+        for task in rest:
+            futures[submit_task(pool, task)] = task.id
+        for future in concurrent.futures.as_completed(futures):
+            task_id = futures[future]
+            try:
+                future.result()
+            except Exception as exc:  # noqa: BLE001 - keep sibling workers alive and report per task.
+                console.print(f"[red][T-{safe_text(task_id)}] Worker failed:[/red] {safe_text(str(exc))}")
+            else:
+                worked += 1
+                console.print(f"[green][T-{safe_text(task_id)}] Worker complete[/green]")
+    return worked
+
+
 @app.command("work-ready")
 def work_ready(
     limit: int = typer.Option(3, "--limit", help="Maximum dispatched tasks to work."),
     timeout_seconds: int = typer.Option(3600, "--timeout", help="Worker timeout in seconds."),
     auto_fix: bool = typer.Option(False, "--fix", help="Retry bounded fixes until review_ready."),
 ) -> None:
+    worker_count = parallel_worker_count()
+    if worker_count > 1:
+        tasks = ready_dispatched_tasks(ledger(), limit)
+        worked = run_parallel_work_wave(
+            tasks,
+            worker_count=worker_count,
+            timeout_seconds=timeout_seconds,
+            auto_fix=auto_fix,
+        )
+        console.print(f"[green]Ready work complete[/green] worked={worked}")
+        return
+
     worked = 0
     for task in ledger().tasks():
         if worked >= limit:

@@ -76,6 +76,10 @@ class MemoryLedger:
         self.path.touch(exist_ok=True)
 
     def append(self, event_type: LedgerEventType, payload: BaseModel | dict) -> LedgerEvent:
+        with self._ledger_lock():
+            return self._append_unlocked(event_type, payload)
+
+    def _append_unlocked(self, event_type: LedgerEventType, payload: BaseModel | dict) -> LedgerEvent:
         self.init()
         data = payload.model_dump(mode="json") if isinstance(payload, BaseModel) else payload
         data = sanitize_payload(data)
@@ -210,7 +214,7 @@ class MemoryLedger:
                 if task_conflicts:
                     conflicts.extend(task_conflicts)
                     continue
-                self.append(LedgerEventType.claim_acquired, claim)
+                self._append_unlocked(LedgerEventType.claim_acquired, claim)
                 active.append(claim)
         return conflicts
 
