@@ -7,6 +7,12 @@ testet — Gates, Guards, alle FINAL/v3-Flags, Token-Ökonomie, Parallelisierung
 Projektgedächtnis — und danach eine **Auswertung** schreibt (Markdown + JSON),
 inklusive Trend gegen den letzten Lauf.
 
+**Stand der Basis:** Der Prüfstand startet auf `main` nach Abschluss von FINAL/v3 und
+dem Scope-Claim-Fix `fix(claims): precise claim roots`. Die Beta-Sequenz behandelt
+`claim_root()` damit als präzise Koordinationssemantik: exakte Dateipfade bleiben
+eigene Roots, Wildcards an Segmentgrenzen behalten den Verzeichnisroot, und Wildcards
+mitten im Segment fallen konservativ auf den Parent zurück.
+
 **Grundsatz:** Der Prüfstand baut auf Vorhandenem auf statt es zu duplizieren:
 Aktuelle Schnittstellen sind `run_worker()`/`work_ready()` (`src/vocr/cli/app.py`),
 `CodexMcpClient.run_task()`, `dispatch_task()`/`review_task()`/`promote_task()`,
@@ -19,8 +25,8 @@ dürfen nicht als Voraussetzung verwendet werden.
 
 ## Globale Regeln (gelten in jeder Phase)
 
-1. **Branch:** `feat/beta-harness` (basierend auf `feat/contract-handoff` bzw. dessen
-   finalem Stand). Ein Commit pro Phase:
+1. **Branch:** `feat/beta-harness` (basierend auf aktuellem `main`, also FINAL/v3 plus
+   präzise Scope-Claim-Roots). Ein Commit pro Phase:
    `feat(beta): phase BN — <kurztitel>`.
 2. **Der Prüfstand ist strikt nicht-destruktiv:** Er arbeitet ausschließlich in
    `tempfile.TemporaryDirectory()`-Fixtures (eigenes Git-Repo, eigenes `.vocr`-Home pro
@@ -63,6 +69,12 @@ src/vocr/beta/
   report.py        # Auswertung: Markdown + JSON + Trendvergleich
 ```
 
+Tests liegen in kleinen, fokussierten Dateien unter `tests/`:
+`tests/test_beta_runner.py`, `tests/test_beta_workers.py`,
+`tests/test_beta_fixtures.py`, `tests/test_beta_scenarios.py` und
+`tests/test_beta_report.py`. Keine Monsterdatei: Szenario-Tests dürfen gemeinsame
+Fixture-Helfer nutzen, aber keine echten LLMs, kein Netz und kein echtes VOCR-Home.
+
 - **Scenario-Vertrag** (Pydantic): `id` (z. B. „S03"), `title`, `tier`
   (`core` | `local` | `cloud`), `hard: bool` (harte vs. weiche Kriterien),
   `run(ctx) -> ScenarioResult` mit `steps: list[BetaStep]`,
@@ -84,6 +96,21 @@ src/vocr/beta/
   `--max-cloud-tasks` (Default 3), `--json-only`.
 - **Exit-Codes:** 0 = alles grün; 1 = mindestens ein **hartes** Szenario rot;
   2 = nur weiche Szenarien rot; 3 = Harness-interner Fehler. CI-tauglich.
+- **Aktuelle Code-Anker (main):**
+  - Worker: `vocr.cli.app.run_worker()`, `work_ready()`,
+    `run_parallel_work_wave()`, `record_worker_telemetry()`,
+    `retry_blocked_by_token_budget()`, `WARMUP_STAGGER_SECONDS`.
+  - Codex-Adapter: `vocr.codex.mcp_client.CodexMcpClient.build_payload()`,
+    `write_manifest()`, `run_task()`.
+  - Workflow: `vocr.orchestration.workflow.dispatch_task()`, `review_task()`,
+    `promote_task()`, `build_context_pack()`, `infer_context_query()`,
+    `render_task_template()`.
+  - Review-Adapter: `vocr.orchestration.codex_review.run_codex_review_with_notes()`.
+  - Claims/Memory: `vocr.guardrails.claims.claim_root()`,
+    `claims_conflict()`, `MemoryLedger.active_claims()/acquire_claims()`,
+    `ProjectMemoryStore`.
+  Verschiebt sich einer dieser Anker beim Implementieren: anhalten, konkrete
+  Abweichung nennen, keine stillen Ersatzpfade erfinden.
 
 ---
 
@@ -92,12 +119,17 @@ src/vocr/beta/
 Branch anlegen, Gates ausführen, Baseline notieren (Testanzahl, Dauer). Verifiziere,
 dass der FINAL/v3-Stand vorliegt: `VOCR_PROMPT_MODE`, `TaskContract`,
 `CodexReviewReport.memory_notes`, `VOCR_REQUIRE_CHECKS`, `VOCR_PARALLEL_WORKERS`,
-`ProjectMemoryStore` und `vocr memory`/`vocr claims` existieren — falls nicht:
-**anhalten und melden** (falscher Basis-Branch). **STOP.**
+`ProjectMemoryStore` und `vocr memory`/`vocr claims` existieren. Zusätzlich die
+präzise Scope-Claim-Basis prüfen:
+`claim_root("src/api/**") == "src/api"`,
+`claim_root("src/vocr/models.py") == "src/vocr/models.py"`,
+`claims_conflict(src/api/**, src/cli/**) == False` und
+`claims_conflict(a/x.py, a/**) == True`. Falls eine dieser Prüfungen fehlschlägt:
+**anhalten und melden** (falscher Basis-Branch oder fehlender Claim-Fix). **STOP.**
 
 ---
 
-## Phase B1 — Gerüst + S01
+## Phase B1 — Gerüst + S00/S01
 
 **Änderungen:**
 1. Modulstruktur wie oben; Runner mit Env-Kontextmanager
@@ -227,6 +259,11 @@ Gates grün. **STOP.**
    in derselben `work-ready`-Welle; ein konfligierender Task startet nicht in derselben
    Welle. Assertions: Default `=1` erzeugt keine Claim-Events, `>1` erzeugt Claims,
    Geschwisterfehler bricht den anderen Worker nicht ab, Warmup-Stagger ist patchbar.
+   Die Szenario-Fixture muss die Claim-Root-Präzision explizit beweisen:
+   `src/api/**` und `src/cli/**` sind disjunkt und dürfen parallel laufen;
+   `a/x.py` und `a/y.py` sind disjunkt; `a/x.py` und `a/**` konfligieren;
+   identische exakte Dateipfade konfligieren. Damit wird verhindert, dass Phase 13
+   durch zu grobe Roots wieder versehentlich serialisiert.
 7. **S19 project-memory** (hard): `VOCR_PROJECT_MEMORY=true`, accepted Review mit
    `--note` oder `CodexReviewReport.memory_notes` persistiert in
    `.vocr/project_memory.jsonl`; identischer Lauf mit `needs_changes` persistiert nichts.
@@ -260,7 +297,7 @@ Identifier Englisch:
 6. **Verdikt:** „BESTANDEN", wenn alle harten Szenarien grün — **einschließlich S00**
    (fällt S00, ist der Referenzzustand verletzt → immer „DURCHGEFALLEN", unabhängig vom
    Rest). Weiche Fails erscheinen als „Beobachtungen". Exit-Codes wie definiert.
-6. `--json-only` unterdrückt Markdown (CI).
+7. `--json-only` unterdrückt Markdown (CI).
 
 **Akzeptanz:** Voller `vocr beta`-Lauf (tier core) erzeugt beide Dateien; zweiter Lauf
 erzeugt Trend-Abschnitt; ein absichtlich invertiertes hartes Szenario (Testmodus)
@@ -327,9 +364,9 @@ liefert Exit 1 und Verdikt „DURCHGEFALLEN". Gates grün. **STOP.**
 | S14 | incremental-review       | base_ref-Durchreichung, Voll-Diff-Guards         | ja   | core  |
 | S15 | ledger-integrity         | Telemetrie-Summen, Compaction, Idempotenz        | ja   | core  |
 | S16 | robustness-inputs        | Umlaute/CRLF/leer — kein Crash                   | ja   | core  |
-| S18 | parallel-claims          | VOCR_PARALLEL_WORKERS, Claim-Konflikte, Fehler-Isolation | ja | core |
-| S19 | project-memory           | Accepted-only Memory, Context-Kappung, Prune     | ja   | core  |
 | S17 | e2e-codex-cloud          | Reale Tokens/Retries/Review, A/B                 | nein | cloud |
+| S18 | parallel-claims          | VOCR_PARALLEL_WORKERS, präzise Claim-Roots, Konflikte, Fehler-Isolation | ja | core |
+| S19 | project-memory           | Accepted-only Memory, Context-Kappung, Prune     | ja   | core  |
 
 ---
 
