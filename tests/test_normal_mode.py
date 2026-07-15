@@ -70,7 +70,8 @@ class NormalModeTests(unittest.TestCase):
         self.assertIn("local GUI Visionary conversation", result.output)
         self.assertIn("console", result.output)
         self.assertIn("terminal fallback", result.output)
-        self.assertIn("dangerously-skip-permissions", result.output)
+        self.assertIn("DANGEROUS", result.output)
+        self.assertIn("approve-all", result.output)
 
         with tempfile.TemporaryDirectory() as tmp:
             with patch("vocr.cli.app.prepare_start_or_exit", return_value=SimpleNamespace(repo_root=Path(tmp))):
