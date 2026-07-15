@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+from vocr.cli.app import estimate_tokens
 from vocr.beta.fixtures import INJECTION_MARKER, make_repo
 from vocr.beta.runner import BetaContext, BetaStep, Scenario, result, step
 from vocr.beta.workers import ScriptedAttempt, ScriptedWorker
@@ -259,14 +260,58 @@ def _s10(scenario: Scenario, ctx: BetaContext):
 
 
 def _s11(scenario: Scenario, ctx: BetaContext):
-    left = _task("task-s11a")
-    right = _task("task-s11b")
+    context_pack = "\n".join(
+        [
+            "VOCR repo graph brief:",
+            "- src/vocr/cli/app.py: work-ready, run_worker, beta CLI, telemetry wiring (@L850-1035)",
+            "- src/vocr/orchestration/workflow.py: task contract rendering, review gates, context packs (@L186-270)",
+            "- src/vocr/guardrails/claims.py: precise claim roots for parallel safety (@L1-80)",
+            "- docs/CLI_REFERENCE.md: user-facing beta command reference",
+        ]
+    )
+    left = _task("task-s11a").model_copy(
+        update={
+            "title": "Implement deterministic beta report KPI extraction for prompt-token savings",
+            "summary": "Measure legacy prompt size against contract-mode prompt size without contacting any model endpoint.",
+            "acceptance_criteria": [
+                AcceptanceCriterion(text="Report JSON contains prompt_tokens_legacy for the two measured tasks."),
+                AcceptanceCriterion(text="Report JSON contains prompt_tokens_contract for the same measured tasks."),
+                AcceptanceCriterion(text="Report JSON contains prompt_tokens_saved_pct rounded to one decimal place."),
+            ],
+            "tests": ["python -m unittest tests.test_beta_scenarios"],
+            "context_pack": context_pack,
+        }
+    )
+    right = _task("task-s11b").model_copy(
+        update={
+            "title": "Verify contract prompt prefix remains byte-identical across beta worker tasks",
+            "summary": "Create a second task with different trusted task data to prove contract mode keeps volatile data out of the prompt.",
+            "acceptance_criteria": [
+                AcceptanceCriterion(text="Two contract prompts generated for different tasks are byte-identical."),
+                AcceptanceCriterion(text="Task titles and acceptance criteria are absent from the contract prompt prefix."),
+                AcceptanceCriterion(text="Legacy prompts still include trusted task details for backwards compatibility."),
+            ],
+            "tests": ["python -m unittest tests.test_beta_scenarios"],
+            "context_pack": context_pack,
+        }
+    )
+    with ctx.env({"VOCR_PROMPT_MODE": "legacy"}):
+        legacy_left = render_task_template(left)
+        legacy_right = render_task_template(right)
     with ctx.env({"VOCR_PROMPT_MODE": "contract"}):
         prompt_left = render_task_template(left)
         prompt_right = render_task_template(right)
+    legacy_tokens = estimate_tokens(legacy_left) + estimate_tokens(legacy_right)
+    contract_tokens = estimate_tokens(prompt_left) + estimate_tokens(prompt_right)
+    saved_pct = round(((legacy_tokens - contract_tokens) / legacy_tokens) * 100, 1) if legacy_tokens else 0.0
     return _scenario_result(
         scenario,
         [step("contract prompts identical", prompt_left == prompt_right), step("title omitted", left.title not in prompt_left)],
+        metrics={
+            "prompt_tokens_legacy": float(legacy_tokens),
+            "prompt_tokens_contract": float(contract_tokens),
+            "prompt_tokens_saved_pct": float(saved_pct),
+        },
     )
 
 

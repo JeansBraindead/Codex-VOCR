@@ -19,6 +19,19 @@ class BetaScenarioTests(unittest.TestCase):
         self.assertEqual(run.exit_code, 0)
         self.assertEqual([item.status for item in run.results], ["passed", "passed", "passed"])
 
+    def test_s11_reports_prompt_token_savings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = run_beta(SCENARIOS.values(), only=["S11"], report_dir=Path(tmp), json_only=True)
+
+        self.assertEqual(run.exit_code, 0)
+        result = run.results[0]
+        self.assertFalse(result.hard)
+        self.assertEqual(result.status, "passed")
+        self.assertIn("prompt_tokens_legacy", result.metrics)
+        self.assertIn("prompt_tokens_contract", result.metrics)
+        self.assertIn("prompt_tokens_saved_pct", result.metrics)
+        self.assertGreater(result.metrics["prompt_tokens_saved_pct"], 0)
+
     def test_cli_lists_scenarios(self) -> None:
         result = CliRunner().invoke(app, ["beta", "--list"])
 
