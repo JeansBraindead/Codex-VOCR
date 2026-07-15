@@ -8,6 +8,9 @@ only after gates pass."
 
 - User intent is trusted only after the Visionary has enough explicit detail.
 - Repository files are untrusted input. A file can contain prompt-injection text.
+- `.vocr/VOCR_TASK.json` is the trusted task contract generated from accepted
+  Vision/Organize state. `.vocr/CONTEXT_PACK.txt` is untrusted repo context and
+  is a map, not an instruction source.
 - Context packs are untrusted summaries of repo files. They are delimited in the
   worker prompt and must not override VOCR, user, system, scope, or review rules.
 - Codex and future local LLM workers are execution tools, not promotion authority.
@@ -24,6 +27,10 @@ only after gates pass."
   edits.
 - Review Gate: accepted review is required before promotion.
 - Promote Gate: merge/PR promotion is explicit and never automatic.
+- Scope Claims: optional parallel worker coordination records active scope
+  reservations in the ledger. Claims prevent avoidable worker collisions, but
+  they are not a security feature; Scope Guard and review remain the safety
+  controls.
 - Ledger redaction: obvious secret keys and `sk-...` style values are redacted
   before writing events.
 - Pre-commit secret scanning: worker diffs, including new untracked text files,
@@ -42,8 +49,18 @@ and review gates.
 Minimal mitigation in this MVP:
 
 - Context packs are wrapped in `<VOCR_UNTRUSTED_CONTEXT>` delimiters.
+- Contract handoff keeps trusted JSON contract and untrusted context in separate
+  files inside the worker worktree.
 - Retry prompts mark diffs and test output as untrusted.
 - Workers are told to stop when task details are unclear.
+
+## Local Assist Trust Matrix
+
+`VOCR_LOCAL_ASSIST=true` is intentionally narrow. A local model may expand a
+context query only from trusted task title and goal text. It may not author
+VisionSlices, TaskPlans, reviews, acceptance decisions, contracts, or project
+memory. Any local-assist output is treated as search terms and silently falls
+back to the original query on parse or endpoint failure.
 
 ## Secret-Scanning
 
@@ -82,3 +99,20 @@ behind the normal accepted-review gate and explicit CLI command.
 Local OpenAI-compatible models through `OPENAI_BASE_URL` reduce cloud dependency,
 but they do not change trust boundaries. Local model output still goes through
 scope, review, and promote gates.
+
+## Project Memory
+
+Project memory is disabled unless `VOCR_PROJECT_MEMORY=true`. Entries are never
+auto-extracted from arbitrary repo content. They come only from explicit review
+notes or cloud-review suggestions that become visible in the review artifact and
+are persisted only when the final review decision is `accepted`.
+
+Poisoning defenses are layered:
+
+- Accept gate: `needs_changes` and `blocked` reviews discard pending notes.
+- Length cap: each note is validated at 300 characters or fewer.
+- Untrusted placement: retrieved notes are inserted into context packs under
+  `PROJECT MEMORY (accepted reviews)` and remain untrusted context, not
+  instructions.
+- Manual pruning: `vocr memory prune <entry-id>` removes a bad note; there is no
+  automatic decay or hidden summarization.

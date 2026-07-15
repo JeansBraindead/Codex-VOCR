@@ -8,6 +8,25 @@ Der Visionary Agent ist der Single Contact Point fuer den User. Er nimmt Nutzerw
 
 Der normale Einstieg ist `vocr start`: eine einfache Dialogoberflaeche mit Textfeld, in der der User natuerlichsprachlich mit dem Visionaer spricht. Der Visionaer klaert fehlende Informationen, fasst den Intake zusammen, erklaert die Ausfuehrung und wartet auf Freigabe, bevor Tasks oder Worktrees entstehen.
 
+## Contract-Handoff, Token-Oekonomie & Parallelisierung
+
+VOCR haelt den Visionary als menschlichen Kontaktpunkt: erst wenn Ziel, Scope, Akzeptanz, Verifikation, Nicht-Ziele und Ausfuehrungsgrenzen klar sind, entstehen validierte Task-Vertraege. Im Contract-Modus werden der trusted JSON-Contract, die Scope-Policy und der untrusted Context-Pack physisch getrennt, damit Repo-Inhalt nie Instruktionsautoritaet bekommt. Exploration wird gelenkt durch per-Task-Queries, Symbol-Spans, Baseline-Checks und optionale Retrieval-Hilfen. Retries werden durch Failure-Destillate und historische Token-Budgets billiger gemacht. Vorbereitete Worker-Wellen koennen optional parallel laufen, aber nur fuer disjunkte Scope-Claims und weiterhin mit Review-/Promote-Gates.
+
+## Feature Flags
+
+| Flag | Default | Wirkung |
+| --- | --- | --- |
+| `VOCR_PROMPT_MODE` | `legacy` | `contract` schreibt `.vocr/VOCR_TASK.json`, `.vocr/scope.json` und getrennten untrusted Context mit byte-konstantem Worker-Prompt. |
+| `VOCR_REQUIRE_CHECKS` | `off` | `warn` meldet Akzeptanzkriterien ohne ausfuehrbaren Check; `block` verhindert `accepted` bei ungedeckten Textkriterien. |
+| `VOCR_BASELINE_CHECKS` | aus | `true` fuehrt bekannte Check-Kommandos vor Dispatch aus und schreibt deren Status informativ in den Contract. |
+| `VOCR_TOKEN_BUDGET_MODE` | `off` | `warn` meldet Retry-Budget-Ausreisser; `block` stoppt weitere Auto-Fix-Retries fuer den betroffenen Task. |
+| `VOCR_TOKEN_BUDGET_FACTOR` | `2.0` | Multiplikator gegen den historischen Median aus dem LearningStore. |
+| `VOCR_INCREMENTAL_REVIEW` | aus | `true` gibt Codex-Review den letzten Review-Ref als Base; deterministische Gates bleiben auf Voll-Diff. |
+| `VOCR_EMBED_RETRIEVAL` | aus | `true` mischt Embedding-Retrieval mit BM25; nutzt `VOCR_EMBED_BASE_URL` und `VOCR_EMBED_MODEL`. |
+| `VOCR_LOCAL_ASSIST` | aus | `true` erlaubt lokale Query-Expansion nur aus trusted Tasktext; nutzt `VOCR_LOCAL_BASE_URL` und `VOCR_LOCAL_MODEL`. |
+| `VOCR_PARALLEL_WORKERS` | `1` | Werte `>1` aktivieren paralleles `work-ready` fuer claim-disjunkte Tasks einer Welle. |
+| `VOCR_PROJECT_MEMORY` | aus | `true` speichert kompakte Notizen nur aus accepted Reviews und gibt max. 3 als untrusted Context wieder. |
+
 ## Setup
 
 Sehr genaue Anleitungen:
@@ -191,6 +210,7 @@ vocr model openai --model gpt-4.1-mini
 vocr model off
 vocr context --limit 20
 vocr context "git worktree review" --limit 10
+vocr context --symbol src/vocr/cli/app.py:review
 vocr go global --all --reason "AFK run approved"
 vocr organize <slice-id>
 vocr organize <slice-id> --live-agent
@@ -199,6 +219,10 @@ vocr dispatch-ready
 vocr work <task-id>
 vocr work <task-id> --fix --max-retries 2
 vocr work-ready --fix
+vocr claims list
+vocr claims release <task-id>
+vocr memory list
+vocr memory prune <entry-id>
 vocr worker doctor
 vocr worker profile safe
 vocr worker profile unattended
@@ -249,6 +273,8 @@ vocr doctor
 - `vocr go ... --all` oder `vocr vision ... --go` setzt eine geloggte Approve-All-Freigabe fuer VOCR-interne Nachfragen. Externe Codex-/OS-Permissions muessen spaeter vom jeweiligen Runner respektiert werden.
 - Neue Agents sollen zuerst `vocr context` bzw. `.vocr/graph.json` lesen, nicht blind das ganze Repo. Das reduziert Tokenburn und gibt ihnen eine Karte der relevanten Dateien.
 - `vocr dispatch` erzeugt im isolierten Worktree `.vocr/VOCR_TASK.md` mit Task, Context-Pack und Permission-Modus.
+- Mit `VOCR_PROMPT_MODE=contract` erzeugt `vocr dispatch` zusaetzlich `.vocr/VOCR_TASK.json`; der Markdown-Task bleibt nur eine menschenlesbare Spiegelung.
+- Untrusted Repo-Kontext liegt getrennt in `.vocr/CONTEXT_PACK.txt` und darf keine Instruktionen ueberschreiben.
 - `vocr dispatch` erzeugt ausserdem `.vocr/scope.json` und `.vocr/AGENTS.md` als maschinenlesbare und menschenlesbare Scope-Policy fuer Worker.
 - Scope ist hart: `task.scope` wird in erlaubte Pfad-Globs uebersetzt. Aenderungen ausserhalb werden vor dem Commit blockiert und der Task wird `needs_changes`.
 - Der Pre-Commit Secret-Scanner prueft Diffs inklusive neuer untracked Dateien auf Keyword-Secrets, bekannte Token-Muster und Entropie-Hinweise. Treffer blockieren den Commit ohne Secret-Werte auszugeben.
@@ -268,6 +294,9 @@ vocr doctor
 - `vocr log`, `vocr diff`, `vocr clean` und `vocr abort` sind Housekeeping-Kommandos fuer Timeline, Task-Diff, verwaiste Worktrees und kontrollierten Abbruch.
 - `vocr usage` zeigt geschaetzte Token-/Provider-Telemetrie pro Task/Slice.
 - `vocr learn` verdichtet lokale Ledger-, Review- und Telemetrie-Signale in `.vocr/learning.json`.
+- `vocr context --symbol PFAD:NAME` gibt den exakten Python-Symbolspan aus dem Graph aus.
+- `vocr claims list|release` zeigt und loest Scope-Claims fuer parallele Worker-Koordination.
+- `vocr memory list|prune` zeigt und entfernt manuell akzeptiertes Projektgedaechtnis.
 - `vocr compact` aktualisiert Learning und archiviert alte Ledger-Events unter `.vocr/archive/`, damit `.vocr/ledger.jsonl` klein bleibt.
 - `vocr test` fuehrt Syntax- und Unit-Test-Smoke lokal aus.
 - `vocr serve-mcp` startet einen minimalen MCP-Server fuer Status, Graphify-Kontext, VOCR-Planung, Review und Promote-Preview. MCP merged nicht.
@@ -285,6 +314,7 @@ $env:PYTHONPATH="src"; python -m unittest discover -s tests
 - `.vocr/ledger.jsonl` bleibt im Repo als lokaler Ablauf-Speicher.
 - `.vocr/graph.json` speichert den kompakten Graphify-Index fuer tokenarme Agent-Kontexte.
 - `.vocr/learning.json` speichert verdichtete lokale Signale statt Rohprompts oder grosser Diffs.
+- `.vocr/project_memory.jsonl` speichert kompakte Notizen aus akzeptierten Reviews, wenn `VOCR_PROJECT_MEMORY=true` aktiv ist.
 - `.vocr/archive/` enthaelt kompaktierte alte Ledger-Segmente.
 - Telemetrie-Events protokollieren Provider, Modell, Slice/Task und geschaetzte Token pro Worker-Lauf.
 - `docs/THREAT_MODEL.md` beschreibt Prompt-Injection-Grenzen, Scope Guard und Secret-Scanning.
