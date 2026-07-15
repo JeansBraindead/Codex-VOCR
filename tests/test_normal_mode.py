@@ -3,6 +3,8 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from typer.testing import CliRunner
 
@@ -65,7 +67,16 @@ class NormalModeTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0)
         self.assertIn("local GUI Visionary conversation", result.output)
-        self.assertIn("--console", result.output)
+        self.assertIn("console", result.output)
+        self.assertIn("terminal fallback", result.output)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("vocr.cli.app.prepare_start_or_exit", return_value=SimpleNamespace(repo_root=Path(tmp))):
+                with patch("vocr.cli.app.open_normal_mode") as open_normal_mode:
+                    console_result = CliRunner().invoke(app, ["start", "--console"])
+
+        self.assertEqual(console_result.exit_code, 0, console_result.output)
+        open_normal_mode.assert_called_once_with(Path(tmp), console_only=True)
 
     def test_normal_mode_surface_decision_uses_local_gui_without_buildchain(self) -> None:
         decision = normal_mode_surface_decision()
