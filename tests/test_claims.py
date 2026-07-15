@@ -26,6 +26,26 @@ def make_task(task_id: str, scope: list[str]) -> VocrTask:
 
 
 class ClaimTests(unittest.TestCase):
+    def test_claim_root_keeps_exact_files_and_directory_wildcard_roots(self) -> None:
+        self.assertEqual(claim_root("src/api/**"), "src/api")
+        self.assertEqual(claim_root("src/vocr/models.py"), "src/vocr/models.py")
+        self.assertEqual(claim_root("src/api/mod*.py"), "src/api")
+        self.assertEqual(claim_root("src/**/models.py"), "src")
+        self.assertEqual(claim_root("mod*.py"), ".")
+
+    def test_claim_conflict_distinguishes_disjoint_roots_and_exact_files(self) -> None:
+        api = ScopeClaim(task_id="ta1", globs=["src/api/**"], roots=[claim_root("src/api/**")], expanded_paths=[])
+        cli = ScopeClaim(task_id="ta2", globs=["src/cli/**"], roots=[claim_root("src/cli/**")], expanded_paths=[])
+        x_file = ScopeClaim(task_id="ta3", globs=["a/x.py"], roots=[claim_root("a/x.py")], expanded_paths=[])
+        y_file = ScopeClaim(task_id="ta4", globs=["a/y.py"], roots=[claim_root("a/y.py")], expanded_paths=[])
+        a_tree = ScopeClaim(task_id="ta5", globs=["a/**"], roots=[claim_root("a/**")], expanded_paths=[])
+        same_x_file = ScopeClaim(task_id="ta6", globs=["a/x.py"], roots=[claim_root("a/x.py")], expanded_paths=[])
+
+        self.assertFalse(claims_conflict(api, cli))
+        self.assertFalse(claims_conflict(x_file, y_file))
+        self.assertTrue(claims_conflict(x_file, a_tree))
+        self.assertTrue(claims_conflict(x_file, same_x_file))
+
     def test_claim_conflict_catches_overlapping_globs_and_disjoint_trees(self) -> None:
         first = ScopeClaim(task_id="ta1", globs=["src/api/**"], roots=[claim_root("src/api/**")], expanded_paths=[])
         second = ScopeClaim(task_id="ta2", globs=["src/**/models.py"], roots=[claim_root("src/**/models.py")], expanded_paths=[])

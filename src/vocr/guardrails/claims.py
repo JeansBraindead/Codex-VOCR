@@ -9,16 +9,15 @@ from vocr.models import ClaimConflict, ScopeClaim, VocrTask
 def claim_root(glob: str) -> str:
     normalized = glob.strip().replace("\\", "/").lstrip("./")
     wildcard_positions = [pos for pos in (normalized.find(char) for char in "*?[") if pos >= 0]
-    if wildcard_positions:
-        normalized = normalized[: min(wildcard_positions)]
-    normalized = normalized.rstrip("/")
-    if not normalized:
-        return "."
-    if "/" in normalized:
-        return normalized.rsplit("/", 1)[0] or "."
-    if Path(normalized).suffix:
-        return normalized
-    return normalized
+    if not wildcard_positions:
+        return normalized.rstrip("/") or "."
+
+    prefix = normalized[: min(wildcard_positions)]
+    if prefix.endswith("/"):
+        return prefix.rstrip("/") or "."
+    if "/" in prefix:
+        return prefix.rsplit("/", 1)[0] or "."
+    return "."
 
 
 def expand_scope_paths(repo_root: Path | str, globs: list[str]) -> set[str]:
