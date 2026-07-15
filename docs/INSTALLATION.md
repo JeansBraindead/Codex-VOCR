@@ -201,6 +201,8 @@ Erwartung:
 - Der Expertmodus ist ueber den Menuepunkt `Expertmodus` erreichbar.
 - Ueber `Optionen` kannst du optional einen Codex/OpenAI-API-Key oder einen
   LM-Studio-Key speichern.
+- Der Reiter `Beta-Test` bietet Startbutton, Tier-Auswahl, Szenario-Auswahl,
+  Cloud-Checkbox, JSON-Option, Report-Ordner und Tag ohne CLI-Eingabe.
 - Der Visionaer schlaegt den naechsten sinnvollen Schritt vor und fragt fehlende Informationen ab.
 - Der User bestaetigt oder korrigiert natuerlichsprachlich.
 - Pro Fenster oder Console-Session gibt es genau einen aktiven Intake-Zustand.
@@ -424,6 +426,9 @@ vocr compact --keep-last 200
 Der Beta-Pruefstand ist absichtlich aus der Installationsstrecke herausgeloest.
 Nach der Installation findest du Ablauf, Szenarien, Exit-Codes und Session-
 Template in [BETA_TESTING.md](BETA_TESTING.md).
+
+Im Normalmodus ist der einfachste Weg der Reiter `Beta-Test`: `Tier core`
+ausgewaehlt lassen und `Beta-Test starten` druecken.
 
 Kurzcheck:
 

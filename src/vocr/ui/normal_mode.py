@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -906,8 +907,21 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     root.rowconfigure(0, weight=1)
     root.rowconfigure(1, weight=0)
 
-    transcript = scrolledtext.ScrolledText(root, wrap=tk.WORD, padx=12, pady=12, state=tk.DISABLED)
-    transcript.grid(row=0, column=0, sticky="nsew", padx=(14, 8), pady=(14, 8))
+    notebook = ttk.Notebook(root)
+    notebook.grid(row=0, column=0, sticky="nsew", padx=(14, 8), pady=(14, 8))
+
+    dialog_tab = ttk.Frame(notebook)
+    dialog_tab.columnconfigure(0, weight=1)
+    dialog_tab.rowconfigure(0, weight=1)
+    notebook.add(dialog_tab, text="Dialog")
+
+    beta_tab = ttk.Frame(notebook, padding=(12, 12))
+    beta_tab.columnconfigure(0, weight=1)
+    beta_tab.rowconfigure(6, weight=1)
+    notebook.add(beta_tab, text="Beta-Test")
+
+    transcript = scrolledtext.ScrolledText(dialog_tab, wrap=tk.WORD, padx=12, pady=12, state=tk.DISABLED)
+    transcript.grid(row=0, column=0, sticky="nsew")
 
     status_frame = ttk.Frame(root, padding=(10, 10))
     status_frame.grid(row=0, column=1, sticky="nsew", padx=(8, 14), pady=(14, 8))
@@ -925,11 +939,143 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     send_button = ttk.Button(input_frame, text="Senden")
     send_button.grid(row=0, column=1, sticky="ns")
 
+    beta_tier = tk.StringVar(value="core")
+    beta_only = tk.StringVar(value="")
+    beta_allow_cloud = tk.BooleanVar(value=False)
+    beta_json_only = tk.BooleanVar(value=False)
+    beta_report_dir = tk.StringVar(value="beta_reports")
+    beta_tag = tk.StringVar(value="")
+    beta_max_cloud_tasks = tk.IntVar(value=3)
+
+    ttk.Label(beta_tab, text="VOCR Beta-Pruefstand", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, sticky="w")
+    ttk.Label(
+        beta_tab,
+        text=(
+            "Netzfreier Kerncheck fuer Gates, Guards, Claims und Memory. "
+            "Core kostet nichts; Cloud bleibt aus, bis du sie explizit erlaubst."
+        ),
+        wraplength=620,
+    ).grid(row=1, column=0, sticky="ew", pady=(6, 12))
+
+    beta_controls = ttk.Frame(beta_tab)
+    beta_controls.grid(row=2, column=0, sticky="ew")
+    beta_controls.columnconfigure(1, weight=1)
+    ttk.Label(beta_controls, text="Tier").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
+    ttk.Combobox(beta_controls, textvariable=beta_tier, values=("core", "local", "cloud", "all"), state="readonly", width=12).grid(row=0, column=1, sticky="w", pady=4)
+    ttk.Label(beta_controls, text="Szenarien").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=4)
+    ttk.Entry(beta_controls, textvariable=beta_only).grid(row=1, column=1, sticky="ew", pady=4)
+    ttk.Label(beta_controls, text="z.B. S03,S07; leer = Tier-Auswahl").grid(row=1, column=2, sticky="w", padx=(8, 0), pady=4)
+    ttk.Label(beta_controls, text="Report-Ordner").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=4)
+    ttk.Entry(beta_controls, textvariable=beta_report_dir).grid(row=2, column=1, sticky="ew", pady=4)
+    ttk.Label(beta_controls, text="Tag").grid(row=3, column=0, sticky="w", padx=(0, 8), pady=4)
+    ttk.Entry(beta_controls, textvariable=beta_tag).grid(row=3, column=1, sticky="ew", pady=4)
+    ttk.Label(beta_controls, text="Max Cloud Tasks").grid(row=4, column=0, sticky="w", padx=(0, 8), pady=4)
+    ttk.Spinbox(beta_controls, from_=1, to=20, textvariable=beta_max_cloud_tasks, width=6).grid(row=4, column=1, sticky="w", pady=4)
+
+    beta_checks = ttk.Frame(beta_tab)
+    beta_checks.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+    ttk.Checkbutton(beta_checks, text="Cloud-Szenarien erlauben (kann Kontingent kosten)", variable=beta_allow_cloud).grid(row=0, column=0, sticky="w")
+    ttk.Checkbutton(beta_checks, text="Nur JSON-Report schreiben", variable=beta_json_only).grid(row=1, column=0, sticky="w")
+
+    beta_buttons = ttk.Frame(beta_tab)
+    beta_buttons.grid(row=4, column=0, sticky="ew", pady=(10, 8))
+    beta_start_button = ttk.Button(beta_buttons, text="Beta-Test starten")
+    beta_start_button.grid(row=0, column=0, sticky="w")
+    beta_list_button = ttk.Button(beta_buttons, text="Szenarien anzeigen")
+    beta_list_button.grid(row=0, column=1, sticky="w", padx=(8, 0))
+
+    beta_result = scrolledtext.ScrolledText(beta_tab, wrap=tk.WORD, height=14, padx=8, pady=8, state=tk.DISABLED)
+    beta_result.grid(row=6, column=0, sticky="nsew", pady=(8, 0))
+
     def append(sender: str, message: str) -> None:
         transcript.configure(state=tk.NORMAL)
         transcript.insert(tk.END, f"{sender}: {message}\n\n")
         transcript.see(tk.END)
         transcript.configure(state=tk.DISABLED)
+
+    def beta_append(message: str, *, replace: bool = False) -> None:
+        beta_result.configure(state=tk.NORMAL)
+        if replace:
+            beta_result.delete("1.0", tk.END)
+        beta_result.insert(tk.END, message.rstrip() + "\n")
+        beta_result.see(tk.END)
+        beta_result.configure(state=tk.DISABLED)
+
+    def show_beta_scenarios() -> None:
+        from vocr.beta.scenarios import SCENARIOS
+
+        lines = ["Verfuegbare Szenarien:", ""]
+        for scenario in SCENARIOS.values():
+            hard = "hard" if scenario.hard else "soft"
+            lines.append(f"{scenario.id} [{scenario.tier}, {hard}] {scenario.title}")
+        beta_append("\n".join(lines), replace=True)
+        notebook.select(beta_tab)
+
+    def start_beta_run() -> None:
+        from vocr.beta.scenarios import SCENARIOS
+
+        tier = beta_tier.get()
+        only = [item.strip().upper() for item in beta_only.get().split(",") if item.strip()]
+        allow_cloud = beta_allow_cloud.get()
+        if tier in {"cloud", "all"} and not allow_cloud:
+            messagebox.showwarning(
+                "Beta-Test",
+                "Cloud-Szenarien sind nicht erlaubt. Aktiviere die Checkbox, wenn du Cloud-Pfade wirklich laufen lassen willst.",
+            )
+            return
+        report_dir = beta_report_dir.get().strip() or "beta_reports"
+        tag = beta_tag.get().strip() or None
+        try:
+            max_cloud_tasks = max(1, int(beta_max_cloud_tasks.get()))
+        except Exception:
+            max_cloud_tasks = 3
+        beta_start_button.configure(state=tk.DISABLED)
+        beta_append(
+            "\n".join(
+                [
+                    "Beta-Test laeuft...",
+                    f"Tier: {tier}",
+                    f"Szenarien: {','.join(only) if only else 'alle fuer Tier'}",
+                    f"Cloud erlaubt: {'ja' if allow_cloud else 'nein'}",
+                    "",
+                ]
+            ),
+            replace=True,
+        )
+        notebook.select(beta_tab)
+
+        def worker() -> None:
+            try:
+                from vocr.beta.runner import run_beta
+
+                run = run_beta(
+                    SCENARIOS.values(),
+                    tier=tier,
+                    only=only or None,
+                    report_dir=controller.repo_root / report_dir,
+                    allow_cloud=allow_cloud,
+                    max_cloud_tasks=max_cloud_tasks,
+                    json_only=beta_json_only.get(),
+                    tag=tag,
+                )
+                lines = [
+                    f"Verdikt: {run.status.upper()}",
+                    f"Exit-Code: {run.exit_code}",
+                    "",
+                    "Szenarien:",
+                ]
+                for item in run.results:
+                    lines.append(f"- {item.id} {item.title}: {item.status}")
+                if run.report_json:
+                    lines.extend(["", f"JSON-Report: {run.report_json}"])
+                if run.report_markdown:
+                    lines.append(f"Markdown-Report: {run.report_markdown}")
+            except Exception as exc:  # noqa: BLE001 - UI should surface failures.
+                lines = ["Beta-Test konnte nicht abgeschlossen werden:", str(exc)]
+            root.after(0, lambda: beta_append("\n".join(lines), replace=True))
+            root.after(0, lambda: beta_start_button.configure(state=tk.NORMAL))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def save_codex_api_key() -> None:
         api_key = simpledialog.askstring("Codex API-Key", "API-Key fuer Codex/OpenAI eingeben:", show="*", parent=root)
@@ -1017,10 +1163,18 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
 
     send_button.configure(command=send)
     user_input.bind("<Control-Return>", send)
+    beta_start_button.configure(command=start_beta_run)
+    beta_list_button.configure(command=show_beta_scenarios)
 
     opening = controller.opening_message()
     append("Visionaer", opening.message)
     render_status(opening.status)
+    beta_append(
+        "Bereit fuer einen Beta-Test.\n"
+        "Empfohlen: Tier core, keine Cloud, Szenarien leer lassen.\n"
+        "Gezielt testen: IDs wie S03,S07 eintragen und Beta-Test starten.",
+        replace=True,
+    )
     user_input.focus_set()
 
     try:

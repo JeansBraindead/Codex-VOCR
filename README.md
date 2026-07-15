@@ -94,6 +94,10 @@ Worktree-Pfade. Der Visionary fragt fehlende Informationen ab und startet keine
 Planung, solange Ziel, Arbeitsbereich, Akzeptanzkriterien, Verifikation,
 Nicht-Ziele oder Ausfuehrungsgrenzen unklar sind.
 
+Der Reiter `Beta-Test` startet den deterministischen Pruefstand ohne CLI-Wissen.
+Core ist vorausgewaehlt und netzfrei; Cloud-Szenarien laufen erst, wenn du die
+Cloud-Checkbox bewusst aktivierst.
+
 ## Architektur
 
 VOCR haelt die menschliche Entscheidungslinie klar getrennt von Worker-Kontext.
