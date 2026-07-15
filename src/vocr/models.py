@@ -39,6 +39,12 @@ class ReviewDecision(str, Enum):
     blocked = "blocked"
 
 
+class ReviewSeverity(str, Enum):
+    low = "low"
+    medium = "medium"
+    high = "high"
+
+
 class PermissionMode(str, Enum):
     ask_each_time = "ask_each_time"
     approve_all = "approve_all"
@@ -187,6 +193,20 @@ class ReviewComment(BaseModel):
     body: str
     path: str | None = None
     line: int | None = None
+
+
+class CodexReviewFinding(BaseModel):
+    severity: ReviewSeverity
+    path: str | None = None
+    line: int | None = None
+    body: str
+
+
+class CodexReviewReport(BaseModel):
+    schema_version: int = 1
+    decision: ReviewDecision
+    summary: str
+    findings: list[CodexReviewFinding] = Field(default_factory=list)
 
 
 class SecretFinding(BaseModel):

@@ -289,9 +289,7 @@ def review_task(
     if task.worktree_path:
         comments.extend(_diff_review_comments(changed_files, issues, full_diff))
     if codex_review:
-        comment = run_codex_review(task, base_ref=base_ref)
-        if comment:
-            comments.append(comment)
+        comments.extend(run_codex_review(task, base_ref=base_ref))
 
     review_summary = summary or (
         "Manual review accepted the task."
