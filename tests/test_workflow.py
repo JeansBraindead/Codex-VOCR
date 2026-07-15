@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 import os
@@ -36,7 +37,7 @@ from vocr.models import (
     TokenUsage,
     VocrTask,
 )
-from vocr.orchestration.workflow import create_vision, distill_failure_output, organize_slice, render_task_template, review_task
+from vocr.orchestration.workflow import create_vision, distill_failure_output, infer_context_query, organize_slice, render_task_template, review_task
 
 GOOD_REQUEST = (
     "Ziel: Baue eine Healthcheck-API im Backend. "
@@ -381,6 +382,88 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(tasks[0].dependencies, [])
         self.assertEqual(tasks[1].dependencies, [])
         self.assertEqual(set(tasks[2].dependencies), {tasks[0].id, tasks[1].id})
+
+    def test_local_assist_flag_off_does_not_call_endpoint(self) -> None:
+        with patch.dict(os.environ, {"VOCR_LOCAL_ASSIST": ""}), patch(
+            "vocr.orchestration.workflow.urllib.request.urlopen",
+            side_effect=AssertionError("local endpoint should not be called"),
+        ):
+            query = infer_context_query("Payment API healthcheck")
+
+        self.assertEqual(query, "payment healthcheck")
+
+    def test_local_assist_expands_context_query_with_deduped_terms(self) -> None:
+        class FakeResponse:
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *_: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps(
+                    {"choices": [{"message": {"content": json.dumps(["billing", "payment", "checkout", "invoice", "ledger", "extra"])}}]}
+                ).encode("utf-8")
+
+        with patch.dict(
+            os.environ,
+            {
+                "VOCR_LOCAL_ASSIST": "true",
+                "VOCR_LOCAL_BASE_URL": "http://localhost:1234/v1",
+                "VOCR_LOCAL_MODEL": "local-model",
+            },
+        ), patch("vocr.orchestration.workflow.urllib.request.urlopen", return_value=FakeResponse()):
+            query = infer_context_query("Payment API healthcheck")
+
+        self.assertEqual(query, "payment healthcheck billing checkout invoice ledger")
+
+    def test_local_assist_failure_returns_original_query(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "VOCR_LOCAL_ASSIST": "true",
+                "VOCR_LOCAL_BASE_URL": "http://localhost:1234/v1",
+                "VOCR_LOCAL_MODEL": "local-model",
+            },
+        ), patch("vocr.orchestration.workflow.urllib.request.urlopen", side_effect=OSError("down")):
+            query = infer_context_query("Payment API healthcheck")
+
+        self.assertEqual(query, "payment healthcheck")
+
+    def test_local_assist_payload_contains_only_goal_title_text(self) -> None:
+        class FakeResponse:
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *_: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps({"choices": [{"message": {"content": "[]"}}]}).encode("utf-8")
+
+        captured: dict[str, str] = {}
+
+        def fake_urlopen(request: object, timeout: int) -> FakeResponse:
+            captured["payload"] = request.data.decode("utf-8")  # type: ignore[attr-defined]
+            captured["timeout"] = str(timeout)
+            return FakeResponse()
+
+        with patch.dict(
+            os.environ,
+            {
+                "VOCR_LOCAL_ASSIST": "true",
+                "VOCR_LOCAL_BASE_URL": "http://localhost:1234/v1",
+                "VOCR_LOCAL_MODEL": "local-model",
+            },
+        ), patch("vocr.orchestration.workflow.urllib.request.urlopen", side_effect=fake_urlopen):
+            infer_context_query("Trusted Goal Title")
+
+        payload = json.loads(captured["payload"])
+        sent_text = "\n".join(message["content"] for message in payload["messages"])
+        self.assertIn("Trusted Goal Title", sent_text)
+        self.assertNotIn("CONTEXT_PACK", sent_text)
+        self.assertNotIn("diff --git", sent_text)
+        self.assertNotIn("repo context", sent_text.lower())
 
     def test_organize_slice_builds_per_task_context_queries_and_packs(self) -> None:
         request = (

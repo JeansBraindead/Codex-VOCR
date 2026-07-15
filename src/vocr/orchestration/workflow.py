@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
 import re
+import urllib.error
+import urllib.request
 
 from vocr.guardrails.scope_guard import ScopeGuard
 from vocr.guardrails.secrets import scan_diff_for_secrets
@@ -116,7 +119,66 @@ def infer_context_query(text: str) -> str:
     for term in terms:
         if term not in seen:
             seen.append(term)
-    return " ".join(seen[:5]) or "repo"
+    base_terms = seen[:5]
+    if _local_assist_enabled():
+        for term in _local_query_expansion(text):
+            normalized = term.strip().lower()
+            if normalized and normalized not in base_terms:
+                base_terms.append(normalized)
+    return " ".join(base_terms) or "repo"
+
+
+def _local_assist_enabled() -> bool:
+    return os.getenv("VOCR_LOCAL_ASSIST", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _local_query_expansion(text: str) -> list[str]:
+    base_url = os.getenv("VOCR_LOCAL_BASE_URL", "").rstrip("/")
+    model = os.getenv("VOCR_LOCAL_MODEL", "")
+    if not base_url or not model:
+        return []
+    endpoint = base_url if base_url.endswith("/chat/completions") else f"{base_url}/chat/completions"
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "Return only a JSON array of up to five concise search terms.",
+            },
+            {
+                "role": "user",
+                "content": text,
+            },
+        ],
+        "temperature": 0,
+    }
+    request = urllib.request.Request(
+        endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        content = data["choices"][0]["message"]["content"]
+        parsed = json.loads(content)
+    except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError, TypeError):
+        return []
+    if isinstance(parsed, dict):
+        parsed = parsed.get("terms", [])
+    if not isinstance(parsed, list):
+        return []
+    terms: list[str] = []
+    for item in parsed:
+        if not isinstance(item, str):
+            continue
+        cleaned = item.strip().lower()
+        if cleaned and cleaned not in terms:
+            terms.append(cleaned)
+        if len(terms) >= 5:
+            break
+    return terms
 
 
 def build_context_pack(query: str, *, limit: int = 12, vocr_home: str = ".vocr") -> str:
