@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 import inspect
+import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -20,6 +21,7 @@ from vocr.ui.normal_mode import (
     codex_login_status,
     launch_console_mode,
     launch_normal_mode,
+    lmstudio_reachability_status,
     model_auth_status,
     normal_mode_surface_decision,
     open_codex_login_shell,
@@ -227,6 +229,74 @@ class NormalModeTests(unittest.TestCase):
             status = model_auth_status(Path(tmp))
 
         self.assertEqual(status, "API-Key: nicht gesetzt")
+
+    def test_lmstudio_reachability_status_reports_green_without_secret(self) -> None:
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return None
+
+            def read(self) -> bytes:
+                return b'{"data":[{"id":"local-test-model"}]}'
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".env").write_text(
+                "\n".join(
+                    [
+                        "LMSTUDIO_API_KEY=super-secret-local-key",
+                        "OPENAI_BASE_URL=http://localhost:1234/v1",
+                        "OPENAI_MODEL=local-test-model",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch("vocr.ui.normal_mode.urllib.request.urlopen", return_value=FakeResponse()) as urlopen:
+                status = lmstudio_reachability_status(root)
+
+            request = urlopen.call_args.args[0]
+
+        self.assertIn("gruen", status)
+        self.assertIn("erreichbar", status)
+        self.assertNotIn("super-secret-local-key", status)
+        self.assertEqual(request.headers["Authorization"], "Bearer super-secret-local-key")
+
+    def test_lmstudio_reachability_status_reports_auth_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".env").write_text("LMSTUDIO_API_KEY=bad\nOPENAI_BASE_URL=http://localhost:1234/v1\n", encoding="utf-8")
+            error = urllib.error.HTTPError("http://localhost:1234/v1/models", 401, "Unauthorized", hdrs=None, fp=None)
+
+            with patch("vocr.ui.normal_mode.urllib.request.urlopen", side_effect=error):
+                status = lmstudio_reachability_status(root)
+
+        self.assertEqual(status, "LM Studio Ampel: rot - API-Key/Auth abgelehnt")
+        self.assertNotIn("bad", status)
+
+    def test_lmstudio_reachability_status_reports_model_mismatch(self) -> None:
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return None
+
+            def read(self) -> bytes:
+                return b'{"data":[{"id":"other-model"}]}'
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".env").write_text("LMSTUDIO_API_KEY=k\nOPENAI_MODEL=expected-model\n", encoding="utf-8")
+
+            with patch("vocr.ui.normal_mode.urllib.request.urlopen", return_value=FakeResponse()):
+                status = lmstudio_reachability_status(root)
+
+        self.assertIn("gelb", status)
+        self.assertIn("expected-model", status)
 
     def test_gui_activity_bridge_lives_in_gui_launcher(self) -> None:
         gui_source = inspect.getsource(launch_normal_mode)

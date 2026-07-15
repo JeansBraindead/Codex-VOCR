@@ -5,6 +5,8 @@ import json
 import re
 import subprocess
 import threading
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -1008,6 +1010,37 @@ def model_auth_status(repo_root: str | Path = ".") -> str:
     return " | ".join(parts)
 
 
+def lmstudio_reachability_status(repo_root: str | Path = ".") -> str:
+    values = read_env_file(Path(repo_root) / ".env")
+    base_url = (values.get("OPENAI_BASE_URL") or "http://localhost:1234/v1").rstrip("/")
+    api_key = values.get("LMSTUDIO_API_KEY") or values.get("OPENAI_API_KEY")
+    if not api_key:
+        return "LM Studio Ampel: gelb - kein API-Key gesetzt"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    request = urllib.request.Request(f"{base_url}/models", headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            return "LM Studio Ampel: rot - API-Key/Auth abgelehnt"
+        return f"LM Studio Ampel: rot - HTTP {exc.code}"
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return f"LM Studio Ampel: rot - nicht erreichbar ({exc.__class__.__name__})"
+    except json.JSONDecodeError:
+        return "LM Studio Ampel: rot - /models antwortet nicht mit JSON"
+    models = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(models, list):
+        return "LM Studio Ampel: gelb - /models erreichbar, aber ohne Modellliste"
+    configured = values.get("OPENAI_MODEL", "").strip()
+    model_ids = [str(item.get("id")) for item in models if isinstance(item, dict) and item.get("id")]
+    if configured and configured not in model_ids:
+        return f"LM Studio Ampel: gelb - erreichbar, Modell '{configured}' nicht in /models"
+    count = len(model_ids)
+    suffix = f", {count} Modell(e)" if count else ", keine Modelle geladen"
+    return f"LM Studio Ampel: gruen - erreichbar{suffix}"
+
+
 def launch_normal_mode(repo_root: str | Path = ".", session_permission: PermissionGrant | None = None) -> None:
     try:
         import tkinter as tk
@@ -1065,17 +1098,19 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     auth_status_text = tk.StringVar(value="ChatGPT/Codex: nicht geprueft")
     ttk.Label(status_frame, textvariable=auth_status_text, wraplength=260).grid(row=1, column=0, sticky="ew", pady=(8, 0))
     model_status_text = tk.StringVar(value=model_auth_status(controller.repo_root))
+    lmstudio_health_text = tk.StringVar(value="LM Studio Ampel: nicht geprueft")
     ttk.Label(status_frame, textvariable=model_status_text, wraplength=260).grid(row=2, column=0, sticky="ew", pady=(4, 0))
-    ttk.Label(status_frame, textvariable=activity_text, wraplength=260).grid(row=3, column=0, sticky="ew", pady=(6, 0))
+    ttk.Label(status_frame, textvariable=lmstudio_health_text, wraplength=260).grid(row=3, column=0, sticky="ew", pady=(4, 0))
+    ttk.Label(status_frame, textvariable=activity_text, wraplength=260).grid(row=4, column=0, sticky="ew", pady=(6, 0))
     activity_progress = ttk.Progressbar(status_frame, mode="indeterminate")
-    activity_progress.grid(row=4, column=0, sticky="ew", pady=(6, 8))
+    activity_progress.grid(row=5, column=0, sticky="ew", pady=(6, 8))
     status_text = scrolledtext.ScrolledText(status_frame, wrap=tk.WORD, width=34, height=13, padx=8, pady=8, state=tk.DISABLED)
-    status_text.grid(row=5, column=0, sticky="nsew", pady=(0, 8))
-    ttk.Label(status_frame, text="Aktivitaet", font=("Segoe UI", 10, "bold")).grid(row=6, column=0, sticky="w")
+    status_text.grid(row=6, column=0, sticky="nsew", pady=(0, 8))
+    ttk.Label(status_frame, text="Aktivitaet", font=("Segoe UI", 10, "bold")).grid(row=7, column=0, sticky="w")
     activity_log = scrolledtext.ScrolledText(status_frame, wrap=tk.WORD, width=34, height=7, padx=8, pady=8, state=tk.DISABLED)
-    activity_log.grid(row=7, column=0, sticky="nsew", pady=(6, 0))
-    status_frame.rowconfigure(5, weight=2)
-    status_frame.rowconfigure(7, weight=1)
+    activity_log.grid(row=8, column=0, sticky="nsew", pady=(6, 0))
+    status_frame.rowconfigure(6, weight=2)
+    status_frame.rowconfigure(8, weight=1)
 
     input_frame = ttk.Frame(root, padding=(14, 8, 14, 14))
     input_frame.grid(row=1, column=0, columnspan=2, sticky="ew")
@@ -1174,6 +1209,17 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
         status = model_auth_status(controller.repo_root)
         model_status_text.set(status)
         log_activity(status)
+
+    def check_lmstudio_health() -> None:
+        lmstudio_health_text.set("LM Studio Ampel: pruefe...")
+        log_activity("LM-Studio-Erreichbarkeit wird geprueft.")
+
+        def worker() -> None:
+            status = lmstudio_reachability_status(controller.repo_root)
+            root.after(0, lambda: lmstudio_health_text.set(status))
+            root.after(0, lambda: log_activity(status))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def refresh_codex_status() -> None:
         auth_status_text.set("ChatGPT/Codex: pruefe Status...")
@@ -1372,6 +1418,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
         summary = model_auth_status(controller.repo_root)
         append("System", "LM-Studio-Key gespeichert. Lokale Modellfunktionen nutzen jetzt die konfigurierte Base URL.")
         log_activity(summary)
+        check_lmstudio_health()
         messagebox.showinfo("VOCR Optionen", f"LM-Studio-Key gespeichert.\n\n{summary}")
 
     menu = tk.Menu(root)
@@ -1379,6 +1426,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     options_menu.add_command(label="ChatGPT/Codex Login oeffnen", command=start_codex_login)
     options_menu.add_command(label="ChatGPT/Codex Login-Status aktualisieren", command=refresh_codex_status)
     options_menu.add_command(label="API-/Modellstatus aktualisieren", command=refresh_model_status)
+    options_menu.add_command(label="LM Studio Erreichbarkeit pruefen", command=check_lmstudio_health)
     options_menu.add_command(label="Codex/OpenAI API-Key setzen", command=save_codex_api_key)
     options_menu.add_command(label="LM Studio API-Key setzen", command=save_lmstudio_api_key)
     menu.add_cascade(label="Optionen", menu=options_menu)
