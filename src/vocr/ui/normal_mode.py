@@ -951,14 +951,29 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     ttk.Label(
         beta_tab,
         text=(
-            "Netzfreier Kerncheck fuer Gates, Guards, Claims und Memory. "
-            "Core kostet nichts; Cloud bleibt aus, bis du sie explizit erlaubst."
+            "Normaler sinnvollster Lauf: empfohlener Standardtest. "
+            "Er nutzt Tier core, ist netzfrei, kostet kein Kontingent und prueft die zentralen VOCR-Sicherheits- und Workflow-Gates."
         ),
         wraplength=620,
     ).grid(row=1, column=0, sticky="ew", pady=(6, 12))
 
+    beta_recommended = ttk.Frame(beta_tab, padding=(10, 10))
+    beta_recommended.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+    beta_recommended.columnconfigure(0, weight=1)
+    ttk.Label(beta_recommended, text="Empfohlen", font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w")
+    ttk.Label(
+        beta_recommended,
+        text=(
+            "Fuehre diesen Test nach Installation, Updates oder eigenen Aenderungen aus. "
+            "Nur wenn er rot ist oder du gezielt etwas pruefen willst, nutze die erweiterten Optionen darunter."
+        ),
+        wraplength=620,
+    ).grid(row=1, column=0, sticky="ew", pady=(4, 8))
+    beta_recommended_button = ttk.Button(beta_recommended, text="Empfohlenen Standardtest starten")
+    beta_recommended_button.grid(row=2, column=0, sticky="w")
+
     beta_controls = ttk.Frame(beta_tab)
-    beta_controls.grid(row=2, column=0, sticky="ew")
+    beta_controls.grid(row=3, column=0, sticky="ew")
     beta_controls.columnconfigure(1, weight=1)
     ttk.Label(beta_controls, text="Tier").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
     ttk.Combobox(beta_controls, textvariable=beta_tier, values=("core", "local", "cloud", "all"), state="readonly", width=12).grid(row=0, column=1, sticky="w", pady=4)
@@ -973,13 +988,13 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     ttk.Spinbox(beta_controls, from_=1, to=20, textvariable=beta_max_cloud_tasks, width=6).grid(row=4, column=1, sticky="w", pady=4)
 
     beta_checks = ttk.Frame(beta_tab)
-    beta_checks.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+    beta_checks.grid(row=4, column=0, sticky="ew", pady=(8, 0))
     ttk.Checkbutton(beta_checks, text="Cloud-Szenarien erlauben (kann Kontingent kosten)", variable=beta_allow_cloud).grid(row=0, column=0, sticky="w")
     ttk.Checkbutton(beta_checks, text="Nur JSON-Report schreiben", variable=beta_json_only).grid(row=1, column=0, sticky="w")
 
     beta_buttons = ttk.Frame(beta_tab)
-    beta_buttons.grid(row=4, column=0, sticky="ew", pady=(10, 8))
-    beta_start_button = ttk.Button(beta_buttons, text="Beta-Test starten")
+    beta_buttons.grid(row=5, column=0, sticky="ew", pady=(10, 8))
+    beta_start_button = ttk.Button(beta_buttons, text="Erweiterten Beta-Test starten")
     beta_start_button.grid(row=0, column=0, sticky="w")
     beta_list_button = ttk.Button(beta_buttons, text="Szenarien anzeigen")
     beta_list_button.grid(row=0, column=1, sticky="w", padx=(8, 0))
@@ -1011,29 +1026,36 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
         beta_append("\n".join(lines), replace=True)
         notebook.select(beta_tab)
 
-    def start_beta_run() -> None:
+    def start_beta_run(*, recommended: bool = False) -> None:
         from vocr.beta.scenarios import SCENARIOS
 
-        tier = beta_tier.get()
-        only = [item.strip().upper() for item in beta_only.get().split(",") if item.strip()]
-        allow_cloud = beta_allow_cloud.get()
+        tier = "core" if recommended else beta_tier.get()
+        only = [] if recommended else [item.strip().upper() for item in beta_only.get().split(",") if item.strip()]
+        allow_cloud = False if recommended else beta_allow_cloud.get()
+        json_only = False if recommended else beta_json_only.get()
+        report_dir = "beta_reports" if recommended else (beta_report_dir.get().strip() or "beta_reports")
+        tag = "recommended-core" if recommended else (beta_tag.get().strip() or None)
+        max_cloud_tasks = 3
+        if not recommended:
+            try:
+                max_cloud_tasks = max(1, int(beta_max_cloud_tasks.get()))
+            except Exception:
+                max_cloud_tasks = 3
         if tier in {"cloud", "all"} and not allow_cloud:
             messagebox.showwarning(
                 "Beta-Test",
                 "Cloud-Szenarien sind nicht erlaubt. Aktiviere die Checkbox, wenn du Cloud-Pfade wirklich laufen lassen willst.",
             )
             return
-        report_dir = beta_report_dir.get().strip() or "beta_reports"
-        tag = beta_tag.get().strip() or None
-        try:
-            max_cloud_tasks = max(1, int(beta_max_cloud_tasks.get()))
-        except Exception:
-            max_cloud_tasks = 3
         beta_start_button.configure(state=tk.DISABLED)
+        beta_recommended_button.configure(state=tk.DISABLED)
         beta_append(
             "\n".join(
                 [
-                    "Beta-Test laeuft...",
+                    "Empfohlener Standardtest laeuft..." if recommended else "Beta-Test laeuft...",
+                    "Dieser Lauf ist der normale sinnvolle Check: Tier core, keine Cloud, alle Core-Szenarien.",
+                    "Wenn er gruen ist, ist der lokale VOCR-Kernzustand in Ordnung." if recommended else "Erweiterte Optionen sind aktiv.",
+                    "",
                     f"Tier: {tier}",
                     f"Szenarien: {','.join(only) if only else 'alle fuer Tier'}",
                     f"Cloud erlaubt: {'ja' if allow_cloud else 'nein'}",
@@ -1055,12 +1077,17 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
                     report_dir=controller.repo_root / report_dir,
                     allow_cloud=allow_cloud,
                     max_cloud_tasks=max_cloud_tasks,
-                    json_only=beta_json_only.get(),
+                    json_only=json_only,
                     tag=tag,
                 )
                 lines = [
                     f"Verdikt: {run.status.upper()}",
                     f"Exit-Code: {run.exit_code}",
+                    "",
+                    "Einordnung:",
+                    "- Gruen: Standardtest bestanden; fuer normale Nutzung reicht das.",
+                    "- Rot: Report oeffnen und die rot markierten Szenarien gezielt nacharbeiten.",
+                    "- Cloud/local-live brauchst du nur fuer bewusste Spezialpruefungen.",
                     "",
                     "Szenarien:",
                 ]
@@ -1074,6 +1101,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
                 lines = ["Beta-Test konnte nicht abgeschlossen werden:", str(exc)]
             root.after(0, lambda: beta_append("\n".join(lines), replace=True))
             root.after(0, lambda: beta_start_button.configure(state=tk.NORMAL))
+            root.after(0, lambda: beta_recommended_button.configure(state=tk.NORMAL))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1163,6 +1191,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
 
     send_button.configure(command=send)
     user_input.bind("<Control-Return>", send)
+    beta_recommended_button.configure(command=lambda: start_beta_run(recommended=True))
     beta_start_button.configure(command=start_beta_run)
     beta_list_button.configure(command=show_beta_scenarios)
 
@@ -1171,8 +1200,9 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     render_status(opening.status)
     beta_append(
         "Bereit fuer einen Beta-Test.\n"
-        "Empfohlen: Tier core, keine Cloud, Szenarien leer lassen.\n"
-        "Gezielt testen: IDs wie S03,S07 eintragen und Beta-Test starten.",
+        "Normalfall: Empfohlenen Standardtest starten.\n"
+        "Das ist Tier core, keine Cloud, alle Core-Szenarien, Report nach beta_reports.\n"
+        "Erweiterte Optionen brauchst du nur fuer gezielte Szenarien oder bewusste Cloud-/Local-Pruefungen.",
         replace=True,
     )
     user_input.focus_set()

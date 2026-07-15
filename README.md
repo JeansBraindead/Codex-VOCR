@@ -94,9 +94,10 @@ Worktree-Pfade. Der Visionary fragt fehlende Informationen ab und startet keine
 Planung, solange Ziel, Arbeitsbereich, Akzeptanzkriterien, Verifikation,
 Nicht-Ziele oder Ausfuehrungsgrenzen unklar sind.
 
-Der Reiter `Beta-Test` startet den deterministischen Pruefstand ohne CLI-Wissen.
-Core ist vorausgewaehlt und netzfrei; Cloud-Szenarien laufen erst, wenn du die
-Cloud-Checkbox bewusst aktivierst.
+Der Reiter `Beta-Test` hat einen primaeren Button `Empfohlenen Standardtest starten`.
+Das ist der normale sinnvolle Lauf: Tier `core`, keine Cloud, alle Core-Szenarien,
+Reports nach `beta_reports`. Die erweiterten Optionen brauchst du nur fuer gezielte
+Szenarien oder bewusst erlaubte Cloud-/Local-Pruefungen.
 
 ## Architektur
 

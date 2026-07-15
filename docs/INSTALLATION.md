@@ -201,8 +201,9 @@ Erwartung:
 - Der Expertmodus ist ueber den Menuepunkt `Expertmodus` erreichbar.
 - Ueber `Optionen` kannst du optional einen Codex/OpenAI-API-Key oder einen
   LM-Studio-Key speichern.
-- Der Reiter `Beta-Test` bietet Startbutton, Tier-Auswahl, Szenario-Auswahl,
-  Cloud-Checkbox, JSON-Option, Report-Ordner und Tag ohne CLI-Eingabe.
+- Der Reiter `Beta-Test` bietet den primaeren Button `Empfohlenen Standardtest
+  starten`. Darunter liegen Tier-Auswahl, Szenario-Auswahl, Cloud-Checkbox,
+  JSON-Option, Report-Ordner und Tag fuer gezielte Sonderlaeufe.
 - Der Visionaer schlaegt den naechsten sinnvollen Schritt vor und fragt fehlende Informationen ab.
 - Der User bestaetigt oder korrigiert natuerlichsprachlich.
 - Pro Fenster oder Console-Session gibt es genau einen aktiven Intake-Zustand.
@@ -427,8 +428,15 @@ Der Beta-Pruefstand ist absichtlich aus der Installationsstrecke herausgeloest.
 Nach der Installation findest du Ablauf, Szenarien, Exit-Codes und Session-
 Template in [BETA_TESTING.md](BETA_TESTING.md).
 
-Im Normalmodus ist der einfachste Weg der Reiter `Beta-Test`: `Tier core`
-ausgewaehlt lassen und `Beta-Test starten` druecken.
+Im Normalmodus ist der einfachste Weg der Reiter `Beta-Test`: `Empfohlenen
+Standardtest starten` druecken. Das ist der angedachte Normaltest: Tier `core`,
+keine Cloud, alle Core-Szenarien, Report nach `beta_reports`.
+
+Erweiterte Laeufe:
+
+- Einzelne Szenarien: IDs wie `S03,S07` eintragen und den erweiterten Test starten.
+- Cloud-Pfade: Tier `cloud` oder `all` waehlen und die Cloud-Checkbox bewusst aktivieren.
+- Nur JSON: JSON-Checkbox aktivieren, wenn du keinen Markdown-Report brauchst.
 
 Kurzcheck:
 
