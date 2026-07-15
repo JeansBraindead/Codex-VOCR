@@ -48,8 +48,6 @@ def create_vision(request: str) -> VisionSlice:
 
 def organize_slice(slice_item: VisionSlice, *, vocr_home: str = ".vocr") -> list[VocrTask]:
     sections = parse_request_sections(slice_item.request)
-    context_query = infer_context_query(slice_item.goal)
-    context_pack = build_context_pack(context_query, vocr_home=vocr_home)
     scope = _split_items(sections.get("arbeitsbereich", ""))
     non_goals = _split_items(sections.get("nicht_ziele", ""))
     tests = _split_items(sections.get("verifikation", ""))
@@ -64,6 +62,8 @@ def organize_slice(slice_item: VisionSlice, *, vocr_home: str = ".vocr") -> list
         current_group_ids: list[str] = []
         for task_item in group:
             index += 1
+            context_query = infer_context_query(f"{task_item} {slice_item.goal}")
+            context_pack = build_context_pack(context_query, vocr_home=vocr_home)
             task = VocrTask(
                 slice_id=slice_item.id,
                 title=task_item,

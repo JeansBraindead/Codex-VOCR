@@ -21,6 +21,8 @@ from vocr.memory.learning import LearningStore
 from vocr.mcp.server import VocrMcpServer
 from vocr.models import (
     AcceptanceCriterion,
+    GraphNode,
+    RepoGraph,
     LedgerEventType,
     LearningEntry,
     LearningSnapshot,
@@ -202,6 +204,77 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(tasks[0].dependencies, [])
         self.assertEqual(tasks[1].dependencies, [])
         self.assertEqual(set(tasks[2].dependencies), {tasks[0].id, tasks[1].id})
+
+    def test_organize_slice_builds_per_task_context_queries_and_packs(self) -> None:
+        request = (
+            "Ziel: Improve project surfaces. "
+            "Arbeitsbereich: src; docs. "
+            "Akzeptanz: Changes are focused. "
+            "Verifikation: Syntax-Check. "
+            "Tasks: Payment API; Install Docs."
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            vocr_home = Path(tmp) / ".vocr"
+            GraphStore(vocr_home).save(
+                RepoGraph(
+                    root=tmp,
+                    nodes=[
+                        GraphNode(
+                            path="src/payments/api.py",
+                            kind="py",
+                            size_bytes=10,
+                            line_count=1,
+                            content_hash="api",
+                            summary="payment api charge refund endpoint",
+                            symbols=["def charge"],
+                        ),
+                        GraphNode(
+                            path="docs/install.md",
+                            kind="md",
+                            size_bytes=10,
+                            line_count=1,
+                            content_hash="docs",
+                            summary="install docs setup guide",
+                        ),
+                    ],
+                )
+            )
+
+            tasks = organize_slice(create_vision(request), vocr_home=str(vocr_home))
+
+        self.assertEqual(len(tasks), 2)
+        self.assertNotEqual(tasks[0].context_query, tasks[1].context_query)
+        self.assertNotEqual(tasks[0].context_pack, tasks[1].context_pack)
+        self.assertIn("payment", tasks[0].context_query or "")
+        self.assertIn("install", tasks[1].context_query or "")
+        self.assertIn("src/payments/api.py", tasks[0].context_pack or "")
+        self.assertIn("docs/install.md", tasks[1].context_pack or "")
+
+    def test_organize_slice_single_task_keeps_goal_context_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vocr_home = Path(tmp) / ".vocr"
+            GraphStore(vocr_home).save(
+                RepoGraph(
+                    root=tmp,
+                    nodes=[
+                        GraphNode(
+                            path="src/slice.py",
+                            kind="py",
+                            size_bytes=10,
+                            line_count=1,
+                            content_hash="health",
+                            summary="implement first scoped slice healthcheck endpoint",
+                            symbols=["def implement_slice"],
+                        )
+                    ],
+                )
+            )
+
+            tasks = organize_slice(create_vision(GOOD_REQUEST), vocr_home=str(vocr_home))
+
+        self.assertEqual(len(tasks), 1)
+        self.assertIn("implement first scoped slice", tasks[0].context_query or "")
+        self.assertIn("src/slice.py", tasks[0].context_pack or "")
 
     def test_codex_manifest_writes_contract_and_separate_context_pack(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
