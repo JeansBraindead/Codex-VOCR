@@ -3,13 +3,17 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
-from shutil import which
 from dataclasses import dataclass
 from pathlib import Path
 
 from vocr.codex.config import codex_available
-from vocr.models import CodexRunResult, PermissionGrant, PermissionMode, TaskContract, VocrTask
-from vocr.orchestration.workflow import render_contract_task_prompt, render_legacy_task_template, render_task_template
+from vocr.models import BaselineCheck, CodexRunResult, PermissionGrant, PermissionMode, TaskContract, VocrTask
+from vocr.orchestration.workflow import (
+    normalize_check_command,
+    render_contract_task_prompt,
+    render_legacy_task_template,
+    render_task_template,
+)
 
 
 @dataclass(slots=True)
@@ -63,8 +67,12 @@ class CodexMcpClient:
         payload = self.build_payload(task, permission=permission)
         target = Path(payload.worktree_path) / filename
         target.parent.mkdir(parents=True, exist_ok=True)
+        baseline_checks = _collect_baseline_checks(task) if _baseline_checks_enabled() else []
         contract_path = target.parent / "VOCR_TASK.json"
-        contract_path.write_text(TaskContract.from_task(task).model_dump_json(indent=2), encoding="utf-8")
+        contract_path.write_text(
+            TaskContract.from_task(task, baseline_checks=baseline_checks).model_dump_json(indent=2),
+            encoding="utf-8",
+        )
         if task.context_pack:
             context_path = target.parent / "CONTEXT_PACK.txt"
             context_path.write_text(task.context_pack, encoding="utf-8")
@@ -145,3 +153,51 @@ class CodexMcpClient:
         if profile == "unsandboxed" or os.getenv("VOCR_CODEX_UNSANDBOXED", "").lower() in {"1", "true", "yes"}:
             command.append("--dangerously-bypass-approvals-and-sandbox")
         return command
+
+
+def _baseline_checks_enabled() -> bool:
+    return os.getenv("VOCR_BASELINE_CHECKS", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _collect_baseline_checks(task: VocrTask) -> list[BaselineCheck]:
+    checks: list[BaselineCheck] = []
+    for check in task.tests:
+        command = normalize_check_command(check)
+        if command is None:
+            checks.append(
+                BaselineCheck(
+                    command=check,
+                    status="manual",
+                    summary="No safe automatic command mapped for this check.",
+                )
+            )
+            continue
+        command_text = " ".join(command)
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=task.worktree_path,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=300,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            checks.append(BaselineCheck(command=command_text, status="error", summary=_summarize_check_output(str(exc))))
+            continue
+        output = "\n".join(part for part in [completed.stdout.strip(), completed.stderr.strip()] if part)
+        checks.append(
+            BaselineCheck(
+                command=command_text,
+                status="passed" if completed.returncode == 0 else "failed",
+                summary=_summarize_check_output(output or f"exit_code={completed.returncode}"),
+            )
+        )
+    return checks
+
+
+def _summarize_check_output(text: str, max_chars: int = 200) -> str:
+    summary = " ".join(text.split())
+    if len(summary) <= max_chars:
+        return summary
+    return summary[: max_chars - 3].rstrip() + "..."

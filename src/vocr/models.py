@@ -154,6 +154,12 @@ class VocrTask(BaseModel):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class BaselineCheck(BaseModel):
+    command: str
+    status: str
+    summary: str
+
+
 class TaskContract(BaseModel):
     schema_version: int = TASK_CONTRACT_SCHEMA_VERSION
     task_id: str
@@ -165,10 +171,10 @@ class TaskContract(BaseModel):
     acceptance_criteria: list[AcceptanceCriterion]
     tests: list[str]
     dependencies: list[str]
-    baseline_checks: list = Field(default_factory=list)
+    baseline_checks: list[BaselineCheck] = Field(default_factory=list)
 
     @classmethod
-    def from_task(cls, task: VocrTask) -> "TaskContract":
+    def from_task(cls, task: VocrTask, baseline_checks: list[BaselineCheck] | None = None) -> "TaskContract":
         return cls(
             task_id=task.id,
             slice_id=task.slice_id,
@@ -179,6 +185,7 @@ class TaskContract(BaseModel):
             acceptance_criteria=list(task.acceptance_criteria),
             tests=list(task.tests),
             dependencies=list(task.dependencies),
+            baseline_checks=baseline_checks or [],
         )
 
 

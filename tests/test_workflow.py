@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 import os
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -334,10 +335,67 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn(".vocr/VOCR_TASK.json", prompt_one)
         self.assertIn(".vocr/scope.json", prompt_one)
         self.assertIn(".vocr/CONTEXT_PACK.txt", prompt_one)
+        self.assertIn("baseline_checks", prompt_one)
         self.assertNotIn(task_one.title, prompt_one)
         self.assertNotIn("First unique criterion", prompt_one)
         self.assertNotIn(task_two.title, prompt_two)
         self.assertNotIn("Second unique criterion", prompt_two)
+
+    def test_baseline_checks_flag_off_does_not_run_subprocess_and_leaves_contract_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp)
+            task = VocrTask(
+                id="task-baseline-off",
+                slice_id="slice-baseline",
+                title="No baseline by default",
+                summary="Do not run checks unless the flag is on.",
+                scope=["src"],
+                acceptance_criteria=[AcceptanceCriterion(text="Contract exists")],
+                tests=["Syntax-Check"],
+                worktree_path=worktree,
+            )
+
+            with patch.dict(os.environ, {"VOCR_BASELINE_CHECKS": ""}, clear=False), patch(
+                "vocr.codex.mcp_client.subprocess.run",
+                side_effect=AssertionError("baseline subprocess should not run"),
+            ):
+                CodexMcpClient(command="codex").write_manifest(task)
+            contract = TaskContract.model_validate_json(
+                (worktree / ".vocr" / "VOCR_TASK.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(contract.baseline_checks, [])
+
+    def test_baseline_checks_flag_on_records_failed_and_manual_checks_without_blocking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp)
+            task = VocrTask(
+                id="task-baseline-on",
+                slice_id="slice-baseline",
+                title="Collect baseline",
+                summary="Record baseline checks in the contract.",
+                scope=["src"],
+                acceptance_criteria=[AcceptanceCriterion(text="Contract has baseline")],
+                tests=["Syntax-Check", "manual smoke"],
+                worktree_path=worktree,
+            )
+
+            def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+                return subprocess.CompletedProcess(command, 1, stdout="line one\n" + ("x" * 250), stderr="")
+
+            with patch.dict(os.environ, {"VOCR_BASELINE_CHECKS": "true"}), patch(
+                "vocr.codex.mcp_client.subprocess.run",
+                side_effect=fake_run,
+            ):
+                manifest_path = CodexMcpClient(command="codex").write_manifest(task)
+            contract = TaskContract.model_validate_json(
+                (worktree / ".vocr" / "VOCR_TASK.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(manifest_path.name, "VOCR_TASK.md")
+        self.assertEqual([item.status for item in contract.baseline_checks], ["failed", "manual"])
+        self.assertLessEqual(len(contract.baseline_checks[0].summary), 200)
+        self.assertEqual(contract.baseline_checks[1].command, "manual smoke")
 
     def test_mcp_server_lists_vocr_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
