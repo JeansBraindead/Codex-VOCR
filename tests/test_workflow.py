@@ -22,6 +22,7 @@ from vocr.memory.learning import LearningStore
 from vocr.mcp.server import VocrMcpServer
 from vocr.models import (
     AcceptanceCriterion,
+    CodexRunResult,
     GraphNode,
     RepoGraph,
     LedgerEventType,
@@ -681,6 +682,133 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("scope:docs", snapshot.scopes)
         self.assertEqual(snapshot.scopes["scope:docs"].files["README.md"], 1)
         self.assertEqual(snapshot.scopes["scope:docs"].estimated_tokens, 42)
+
+    def test_learning_store_predicts_task_tokens_from_matching_terms(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / ".vocr"
+            LearningStore(root).save(
+                LearningSnapshot(
+                    scopes={
+                        "scope:docs": LearningEntry(key="scope:docs", count=2, estimated_tokens=80),
+                        "scope:api": LearningEntry(key="scope:api", count=1, estimated_tokens=200),
+                    },
+                    task_titles={
+                        "task:budget retry": LearningEntry(key="task:budget retry", count=1, estimated_tokens=20)
+                    },
+                )
+            )
+            task = VocrTask(
+                id="tb-budget",
+                slice_id="slice-budget",
+                title="Budget Retry",
+                summary="Exercise token budget prediction.",
+                scope=["docs"],
+                acceptance_criteria=[AcceptanceCriterion(text="Budget checked")],
+                tests=["manual review"],
+            )
+
+            prediction = LearningStore(root).predict_task_tokens(task)
+
+        self.assertEqual(prediction, 30)
+
+    def test_token_budget_warn_records_message_but_keeps_auto_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vocr_home = Path(tmp) / ".vocr"
+            worktree = Path(tmp) / "worktree"
+            worktree.mkdir()
+            ledger = MemoryLedger(vocr_home)
+            task = VocrTask(
+                id="tb-budget-warn",
+                slice_id="slice-budget",
+                title="Budget Retry",
+                summary="Warn but keep retrying.",
+                scope=["docs"],
+                acceptance_criteria=[AcceptanceCriterion(text="Budget warning recorded")],
+                tests=["manual review"],
+                status=TaskStatus.dispatched,
+                worktree_path=worktree,
+            )
+            ledger.append(LedgerEventType.task_created, task)
+            LearningStore(vocr_home).save(
+                LearningSnapshot(task_titles={"task:budget retry": LearningEntry(key="task:budget retry", count=1, estimated_tokens=1)})
+            )
+            calls: list[str | None] = []
+
+            def fake_run(*_: object, **kwargs: object) -> CodexRunResult:
+                calls.append(kwargs.get("extra_prompt"))
+                return CodexRunResult(task_id=task.id, command=["codex"], exit_code=1, stderr="x" * 200)
+
+            with patch.dict(
+                os.environ,
+                {"VOCR_HOME": str(vocr_home), "VOCR_TOKEN_BUDGET_MODE": "warn", "VOCR_TOKEN_BUDGET_FACTOR": "1.0"},
+            ), patch("vocr.cli.app.CodexMcpClient.run_task", side_effect=fake_run), patch(
+                "vocr.cli.app.GitWorktreeManager.diff",
+                return_value="",
+            ):
+                result = CliRunner().invoke(
+                    app,
+                    ["run", task.id, "--fix", "--max-retries", "1", "--no-commit"],
+                    env={
+                        "VOCR_HOME": str(vocr_home),
+                        "VOCR_TOKEN_BUDGET_MODE": "warn",
+                        "VOCR_TOKEN_BUDGET_FACTOR": "1.0",
+                    },
+                )
+            messages = [event.payload.get("message", "") for event in MemoryLedger(vocr_home).events() if event.type == LedgerEventType.message]
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(len(calls), 2)
+        self.assertIsNotNone(calls[1])
+        self.assertTrue(any("token budget exceeded" in message for message in messages))
+
+    def test_token_budget_block_stops_auto_retry_after_exceeded_attempt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vocr_home = Path(tmp) / ".vocr"
+            worktree = Path(tmp) / "worktree"
+            worktree.mkdir()
+            ledger = MemoryLedger(vocr_home)
+            task = VocrTask(
+                id="tb-budget-block",
+                slice_id="slice-budget",
+                title="Budget Retry",
+                summary="Block further retries.",
+                scope=["docs"],
+                acceptance_criteria=[AcceptanceCriterion(text="Budget block recorded")],
+                tests=["manual review"],
+                status=TaskStatus.dispatched,
+                worktree_path=worktree,
+            )
+            ledger.append(LedgerEventType.task_created, task)
+            LearningStore(vocr_home).save(
+                LearningSnapshot(task_titles={"task:budget retry": LearningEntry(key="task:budget retry", count=1, estimated_tokens=1)})
+            )
+            calls: list[str | None] = []
+
+            def fake_run(*_: object, **kwargs: object) -> CodexRunResult:
+                calls.append(kwargs.get("extra_prompt"))
+                return CodexRunResult(task_id=task.id, command=["codex"], exit_code=1, stderr="x" * 200)
+
+            with patch.dict(
+                os.environ,
+                {"VOCR_HOME": str(vocr_home), "VOCR_TOKEN_BUDGET_MODE": "block", "VOCR_TOKEN_BUDGET_FACTOR": "1.0"},
+            ), patch("vocr.cli.app.CodexMcpClient.run_task", side_effect=fake_run), patch(
+                "vocr.cli.app.GitWorktreeManager.diff",
+                side_effect=AssertionError("block mode should not build retry diff"),
+            ):
+                result = CliRunner().invoke(
+                    app,
+                    ["run", task.id, "--fix", "--max-retries", "2", "--no-commit"],
+                    env={
+                        "VOCR_HOME": str(vocr_home),
+                        "VOCR_TOKEN_BUDGET_MODE": "block",
+                        "VOCR_TOKEN_BUDGET_FACTOR": "1.0",
+                    },
+                )
+            messages = [event.payload.get("message", "") for event in MemoryLedger(vocr_home).events() if event.type == LedgerEventType.message]
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(any("token budget exceeded" in message for message in messages))
 
     def test_ledger_compact_archives_old_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

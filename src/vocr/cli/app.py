@@ -46,6 +46,7 @@ from vocr.models import (
     RunTelemetry,
     TaskStatus,
     TokenUsage,
+    VocrTask,
 )
 from vocr.orchestration.workflow import (
     create_vision,
@@ -106,7 +107,7 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4) if text else 0
 
 
-def record_worker_telemetry(store: MemoryLedger, task_id: str, result, prompt_text: str) -> None:
+def record_worker_telemetry(store: MemoryLedger, task_id: str, result, prompt_text: str) -> int:
     task = store.get_task(task_id)
     config = live_model_config()
     telemetry = RunTelemetry(
@@ -127,6 +128,40 @@ def record_worker_telemetry(store: MemoryLedger, task_id: str, result, prompt_te
     )
     telemetry.token_usage.total_tokens = total
     store.append(LedgerEventType.telemetry_recorded, telemetry)
+    return total
+
+
+def token_budget_mode() -> str:
+    mode = os.getenv("VOCR_TOKEN_BUDGET_MODE", "off").strip().lower()
+    if mode in {"warn", "block"}:
+        return mode
+    return "off"
+
+
+def token_budget_factor() -> float:
+    try:
+        return max(float(os.getenv("VOCR_TOKEN_BUDGET_FACTOR", "2.0")), 0.1)
+    except ValueError:
+        return 2.0
+
+
+def retry_blocked_by_token_budget(store: MemoryLedger, task: VocrTask, actual_tokens: int) -> bool:
+    mode = token_budget_mode()
+    if mode == "off":
+        return False
+    predicted = LearningStore(store.root).predict_task_tokens(task)
+    if predicted is None:
+        return False
+    factor = token_budget_factor()
+    if actual_tokens <= predicted * factor:
+        return False
+    message = (
+        f"token budget exceeded: {actual_tokens} vs median {predicted} "
+        f"- consider splitting {task.scope[0] if task.scope else task.title}"
+    )
+    console.print(f"[yellow]{safe_text(message)}[/yellow]")
+    store.append(LedgerEventType.message, {"task_id": task.id, "message": message})
+    return mode == "block"
 
 
 def print_live_agent_fallback(component: str, exc: BaseException) -> None:
@@ -819,9 +854,10 @@ def run_worker(
                 extra_prompt=extra_prompt,
             )
             final_result = result
-            record_worker_telemetry(store, task_id, result, prompt_text + (extra_prompt or ""))
+            actual_tokens = record_worker_telemetry(store, task_id, result, prompt_text + (extra_prompt or ""))
+            retry_budget_blocked = retry_blocked_by_token_budget(store, task, actual_tokens)
             if result.exit_code != 0:
-                if not auto_fix or attempt >= max_retries:
+                if not auto_fix or attempt >= max_retries or retry_budget_blocked:
                     break
                 issues = [f"Worker exited with {result.exit_code}", distill_failure_output(result.stderr or result.stdout)]
                 diff_text = GitWorktreeManager(task.worktree_path or ".").diff()
@@ -833,7 +869,7 @@ def run_worker(
                 if scope_issues:
                     store.append(LedgerEventType.task_worker_ran, result)
                     record_scope_block(store, task.id, scope_issues)
-                    if not auto_fix or attempt >= max_retries:
+                    if not auto_fix or attempt >= max_retries or retry_budget_blocked:
                         raise typer.BadParameter("Scope guard blocked commit: " + "; ".join(scope_issues))
                     extra_prompt = retry_prompt(attempt + 1, scope_issues, worktree_git.diff(), task.scope)
                     continue
@@ -845,7 +881,7 @@ def run_worker(
                     ]
                     store.append(LedgerEventType.task_worker_ran, result)
                     record_secret_block(store, task.id, issues)
-                    if not auto_fix or attempt >= max_retries:
+                    if not auto_fix or attempt >= max_retries or retry_budget_blocked:
                         raise typer.BadParameter("Secret scanner blocked commit: " + "; ".join(issues))
                     extra_prompt = retry_prompt(attempt + 1, issues, worktree_git.diff_for_scan(), task.scope)
                     continue

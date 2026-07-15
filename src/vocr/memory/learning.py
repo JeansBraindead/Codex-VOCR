@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
+from statistics import median
 
 from vocr.memory.ledger import MemoryLedger
-from vocr.models import LearningEntry, LearningSnapshot, ReviewDecision
+from vocr.models import LearningEntry, LearningSnapshot, ReviewDecision, VocrTask
 
 
 class LearningStore:
@@ -73,6 +75,24 @@ class LearningStore:
             for path, count in entry.files.items():
                 boosts[path] = boosts.get(path, 0.0) + min(count * 0.35 * risk_multiplier * success_multiplier, max_boost)
         return {path: min(score, max_boost) for path, score in boosts.items()}
+
+    def predict_task_tokens(self, task: VocrTask) -> int | None:
+        snapshot = self.load()
+        task_terms = set(_terms(" ".join([task.title, *task.scope])))
+        if not task_terms:
+            return None
+
+        estimates: list[float] = []
+        for entry in [*snapshot.scopes.values(), *snapshot.task_titles.values()]:
+            entry_terms = set(_terms(entry.key))
+            if not entry_terms.intersection(task_terms):
+                continue
+            if entry.estimated_tokens <= 0:
+                continue
+            estimates.append(entry.estimated_tokens / max(entry.count, 1))
+        if not estimates:
+            return None
+        return int(median(estimates))
 
 
 def build_learning_snapshot(ledger: MemoryLedger) -> LearningSnapshot:
@@ -161,4 +181,4 @@ def _top_items(values: dict[str, int], limit: int) -> str:
 
 
 def _terms(query: str) -> list[str]:
-    return [term.strip().lower() for term in query.split() if term.strip()]
+    return [term.lower() for term in re.findall(r"[A-Za-z0-9]+", query) if term]
