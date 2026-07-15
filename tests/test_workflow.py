@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 from vocr.agents.runtime import diagnose_live_agent_error
 from vocr.cli.app import app, clean_artifacts, latest_open_clarification, write_review_artifact
 from vocr.codex.mcp_client import CodexMcpClient
-from vocr.graph.graphify import GraphStore, RepoGraphBuilder
+from vocr.graph.graphify import EmbeddingUnavailable, GraphStore, RepoGraphBuilder
 from vocr.config.env_file import provider_from_env, read_env_file, redact_env, update_env_file
 from vocr.guardrails.scope_guard import ScopeGuard
 from vocr.guardrails.secrets import _gitleaks_command, scan_diff_for_secrets
@@ -234,6 +234,94 @@ class WorkflowTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(result.output.strip(), "def beta():\n    value = 2\n    return value")
+
+    def test_embedding_retrieval_flag_off_makes_no_embedding_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "README.md").write_text("# Docs\n", encoding="utf-8")
+            store = GraphStore(Path(tmp) / ".vocr")
+
+            with patch.dict(os.environ, {"VOCR_EMBED_RETRIEVAL": ""}), patch(
+                "vocr.graph.graphify._embed_text",
+                side_effect=AssertionError("embedding call should not happen"),
+            ):
+                store.refresh(root)
+                context = store.context_pack(query="docs", limit=1)
+
+        self.assertIn("README.md", context)
+
+    def test_embedding_retrieval_fuses_semantic_rank_with_bm25(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "payments.py").write_text("def checkout():\n    return True\n", encoding="utf-8")
+            (root / "notes.md").write_text("# unrelated banana\n", encoding="utf-8")
+            store = GraphStore(Path(tmp) / ".vocr")
+
+            def fake_embed(text: str) -> list[float]:
+                if "billing" in text:
+                    return [1.0, 0.0]
+                if "payments" in text or "checkout" in text:
+                    return [1.0, 0.0]
+                return [0.0, 1.0]
+
+            with patch.dict(
+                os.environ,
+                {
+                    "VOCR_EMBED_RETRIEVAL": "true",
+                    "VOCR_EMBED_BASE_URL": "http://example.test/v1",
+                    "VOCR_EMBED_MODEL": "mock-embed",
+                },
+            ), patch("vocr.graph.graphify._embed_text", side_effect=fake_embed):
+                store.refresh(root)
+                context = store.context_pack(query="billing", limit=1)
+
+        self.assertIn("payments.py", context)
+
+    def test_embedding_cache_skips_unchanged_node_embedding_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "README.md").write_text("# Docs\n", encoding="utf-8")
+            store = GraphStore(Path(tmp) / ".vocr")
+            calls: list[str] = []
+
+            def fake_embed(text: str) -> list[float]:
+                calls.append(text)
+                return [1.0, 0.0]
+
+            with patch.dict(
+                os.environ,
+                {
+                    "VOCR_EMBED_RETRIEVAL": "true",
+                    "VOCR_EMBED_BASE_URL": "http://example.test/v1",
+                    "VOCR_EMBED_MODEL": "mock-embed",
+                },
+            ), patch("vocr.graph.graphify._embed_text", side_effect=fake_embed):
+                store.refresh(root)
+                first_call_count = len(calls)
+                store.refresh(root)
+
+        self.assertEqual(first_call_count, 1)
+        self.assertEqual(len(calls), 1)
+
+    def test_embedding_retrieval_endpoint_error_falls_back_to_bm25_with_note(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "README.md").write_text("# Docs\n", encoding="utf-8")
+            store = GraphStore(Path(tmp) / ".vocr")
+            store.save(RepoGraphBuilder(root).build())
+
+            with patch.dict(
+                os.environ,
+                {
+                    "VOCR_EMBED_RETRIEVAL": "true",
+                    "VOCR_EMBED_BASE_URL": "http://example.test/v1",
+                    "VOCR_EMBED_MODEL": "mock-embed",
+                },
+            ), patch("vocr.graph.graphify._embed_text", side_effect=EmbeddingUnavailable("down")):
+                context = store.context_pack(query="docs", limit=1)
+
+        self.assertIn("README.md", context)
+        self.assertIn("embedding retrieval unavailable, lexical only", context)
 
     def test_secret_scanner_blocks_added_secret_values(self) -> None:
         diff = "\n".join(

@@ -377,10 +377,15 @@ class RepoGraph(BaseModel):
         limit: int = 20,
         query: str | None = None,
         learning_boosts: dict[str, float] | None = None,
+        ranked_nodes: list[GraphNode] | None = None,
+        note: str | None = None,
     ) -> str:
         nodes = self.nodes
         ranked_paths: list[str] = []
-        if query:
+        if ranked_nodes is not None:
+            ranked_paths = [node.path for node in ranked_nodes]
+            nodes = self._expand_with_neighbors(ranked_nodes, limit=limit)
+        elif query:
             nodes = self._rank_nodes_bm25(query, learning_boosts=learning_boosts)
             ranked_paths = [node.path for node in nodes]
             nodes = self._expand_with_neighbors(nodes, limit=limit)
@@ -388,6 +393,8 @@ class RepoGraph(BaseModel):
         lines = ["VOCR repo graph brief:"]
         if query:
             lines.append(f"Query: {query}")
+        if note:
+            lines.append(f"Note: {note}")
         for node in nodes[:limit]:
             symbol_text = _symbol_text(node)
             marker = ""

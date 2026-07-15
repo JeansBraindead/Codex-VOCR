@@ -3,8 +3,11 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
+import urllib.error
+import urllib.request
 
 from vocr.memory.learning import LearningStore
 from vocr.models import GraphEdge, GraphNode, RepoGraph, SymbolSpan
@@ -27,6 +30,7 @@ class GraphStore:
     def __init__(self, vocr_home: Path | str = ".vocr") -> None:
         self.vocr_home = Path(vocr_home)
         self.path = self.vocr_home / "graph.json"
+        self.embeddings_path = self.vocr_home / "graph_embeddings.json"
 
     def save(self, graph: RepoGraph) -> None:
         self.vocr_home.mkdir(parents=True, exist_ok=True)
@@ -36,6 +40,11 @@ class GraphStore:
         previous = self.load() if self.exists() else None
         graph = RepoGraphBuilder(root, previous=previous).build()
         self.save(graph)
+        if _embedding_retrieval_enabled():
+            try:
+                self.refresh_embeddings(graph)
+            except EmbeddingUnavailable:
+                pass
         return graph
 
     def load(self) -> RepoGraph:
@@ -49,7 +58,60 @@ class GraphStore:
         learning = LearningStore(self.vocr_home)
         if learning.exists():
             boosts = learning.file_boosts(query=query)
-        return self.load().context_brief(limit=limit, query=query, learning_boosts=boosts)
+        graph = self.load()
+        if _embedding_retrieval_enabled() and query:
+            try:
+                ranked_nodes = self._embedding_fused_rank(graph, query, learning_boosts=boosts)
+                return graph.context_brief(limit=limit, query=query, ranked_nodes=ranked_nodes)
+            except EmbeddingUnavailable:
+                return graph.context_brief(
+                    limit=limit,
+                    query=query,
+                    learning_boosts=boosts,
+                    note="embedding retrieval unavailable, lexical only",
+                )
+        return graph.context_brief(limit=limit, query=query, learning_boosts=boosts)
+
+    def refresh_embeddings(self, graph: RepoGraph) -> None:
+        cache = self._load_embedding_cache()
+        changed = False
+        for node in graph.nodes:
+            if node.content_hash in cache:
+                continue
+            cache[node.content_hash] = _embed_text(_node_embedding_text(node))
+            changed = True
+        if changed:
+            self._save_embedding_cache(cache)
+
+    def _embedding_fused_rank(
+        self,
+        graph: RepoGraph,
+        query: str,
+        learning_boosts: dict[str, float] | None = None,
+    ) -> list[GraphNode]:
+        cache = self._load_embedding_cache()
+        query_embedding = _embed_text(query)
+        lexical_rank = graph._rank_nodes_bm25(query, learning_boosts=learning_boosts)
+        semantic_scored: list[tuple[float, GraphNode]] = []
+        for node in graph.nodes:
+            embedding = cache.get(node.content_hash)
+            if embedding is None:
+                continue
+            semantic_scored.append((_cosine_similarity(query_embedding, embedding), node))
+        semantic_rank = [
+            node for score, node in sorted(semantic_scored, key=lambda item: (-item[0], item[1].path)) if score > 0
+        ]
+        return _reciprocal_rank_fusion([lexical_rank, semantic_rank])
+
+    def _load_embedding_cache(self) -> dict[str, list[float]]:
+        if not self.embeddings_path.exists():
+            return {}
+        data = json.loads(self.embeddings_path.read_text(encoding="utf-8"))
+        return {str(key): [float(item) for item in value] for key, value in data.items()}
+
+    def _save_embedding_cache(self, cache: dict[str, list[float]]) -> None:
+        self.vocr_home.mkdir(parents=True, exist_ok=True)
+        self.embeddings_path.write_text(json.dumps(cache, indent=2), encoding="utf-8")
 
 
 class RepoGraphBuilder:
@@ -209,3 +271,61 @@ class RepoGraphBuilder:
 
 def graph_to_json(graph: RepoGraph) -> str:
     return json.dumps(graph.model_dump(mode="json"), indent=2)
+
+
+class EmbeddingUnavailable(RuntimeError):
+    pass
+
+
+def _embedding_retrieval_enabled() -> bool:
+    return os.getenv("VOCR_EMBED_RETRIEVAL", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _embed_text(text: str) -> list[float]:
+    base_url = os.getenv("VOCR_EMBED_BASE_URL", "").rstrip("/")
+    model = os.getenv("VOCR_EMBED_MODEL", "")
+    if not base_url or not model:
+        raise EmbeddingUnavailable("Embedding endpoint or model is not configured.")
+    payload = json.dumps({"model": model, "input": text}).encode("utf-8")
+    endpoint = base_url if base_url.endswith("/embeddings") else f"{base_url}/embeddings"
+    request = urllib.request.Request(
+        endpoint,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise EmbeddingUnavailable(str(exc)) from exc
+    try:
+        embedding = data["data"][0]["embedding"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise EmbeddingUnavailable("Embedding response did not contain data[0].embedding.") from exc
+    return [float(item) for item in embedding]
+
+
+def _cosine_similarity(left: list[float], right: list[float]) -> float:
+    if not left or not right or len(left) != len(right):
+        return 0.0
+    numerator = sum(a * b for a, b in zip(left, right))
+    left_norm = math.sqrt(sum(item * item for item in left))
+    right_norm = math.sqrt(sum(item * item for item in right))
+    if left_norm == 0 or right_norm == 0:
+        return 0.0
+    return numerator / (left_norm * right_norm)
+
+
+def _reciprocal_rank_fusion(rankings: list[list[GraphNode]], *, k: int = 60) -> list[GraphNode]:
+    by_path: dict[str, GraphNode] = {}
+    scores: dict[str, float] = {}
+    for ranking in rankings:
+        for index, node in enumerate(ranking, start=1):
+            by_path[node.path] = node
+            scores[node.path] = scores.get(node.path, 0.0) + 1.0 / (k + index)
+    return [by_path[path] for path, _ in sorted(scores.items(), key=lambda item: (-item[1], item[0]))]
+
+
+def _node_embedding_text(node: GraphNode) -> str:
+    return " ".join([node.path, node.summary, " ".join(node.imports), " ".join(node.symbols)])
