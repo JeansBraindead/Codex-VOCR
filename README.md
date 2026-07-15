@@ -320,8 +320,6 @@ Siehe auch [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
 ## Roadmap
 
-1. Reviewer Agent mit echten inline PR-Review-Kommentaren erweitern.
-2. Echte Token-Usage aus Agents SDK/Codex auslesen, sobald stabil verfuegbar.
-3. MCP-Server um explizit bestaetigte Promote-Aktionen erweitern.
-4. Mid-flight Budget-Abort und bessere Retry-Steuerung pruefen.
-5. Optionales Memory-Retention-Konzept ohne Auto-Poisoning einfuehren.
+Die aktuelle lineare Roadmap steht in [docs/VOCR_Roadmap.md](docs/VOCR_Roadmap.md).
+Sie priorisiert zuerst Messbarkeit und Beta-Baselines, danach den ersten echten
+VOCR-Lauf, Modellmessungen und datenbasierte Abo-Profile.
