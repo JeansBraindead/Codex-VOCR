@@ -4,7 +4,9 @@ import re
 import subprocess
 import threading
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 from vocr.codex.mcp_client import CodexMcpClient
 from vocr.config.env_file import update_env_file
@@ -97,6 +99,7 @@ class NormalModeController:
         repo_root: str | Path = ".",
         vocr_home: str | Path | None = None,
         session_permission: PermissionGrant | None = None,
+        on_activity: Callable[[str], None] | None = None,
     ) -> None:
         self.repo_root = Path(repo_root).resolve()
         self.ledger = MemoryLedger(Path(vocr_home) if vocr_home else self.repo_root / ".vocr")
@@ -109,6 +112,11 @@ class NormalModeController:
         self.history: list[str] = []
         self.prepared_task_count = 0
         self.prepared_worktree_count = 0
+        self.on_activity = on_activity
+
+    def _activity(self, message: str) -> None:
+        if self.on_activity:
+            self.on_activity(message)
 
     def opening_message(self) -> NormalModeResponse:
         if self.session_permission:
@@ -130,6 +138,8 @@ class NormalModeController:
         return NormalModeResponse(
             message=self._normal_mode_text(
                 "Ich bin der Visionaer. Sag mir frei, was du bauen oder aendern willst. "
+                "Vor echter Benutzung melde dich bitte einmal mit `codex login` an; "
+                "ein API-Key ist nur optional fuer Expert-Setups. "
                 "Ich frage gezielt nach, bis Ziel, Grenzen und Pruefung belastbar sind."
                 + permission_note
             ),
@@ -305,13 +315,19 @@ class NormalModeController:
         return self._response(ack + self._next_intake_step_message())
 
     def _prepare_confirmed_intake(self) -> NormalModeResponse:
+        self._activity("Ledger wird initialisiert.")
         self.ledger.init()
+        self._activity("Repository-Graph wird aktualisiert.")
         self.graph_store.refresh(self.repo_root)
+        self._activity("VisionSlice wird aus dem Intake erzeugt.")
         slice_item = create_vision(self._structured_request())
+        self._activity(f"VisionSlice {slice_item.id} wird im Ledger gespeichert.")
         self.ledger.append(LedgerEventType.vision_created, slice_item)
 
+        self._activity("Tasks werden aus dem VisionSlice organisiert.")
         tasks = organize_slice(slice_item, vocr_home=str(self.ledger.root))
         for task in tasks:
+            self._activity(f"Task {task.id} wird gespeichert: {task.title}")
             self.ledger.append(LedgerEventType.task_created, task)
 
         prepare_worktree_requested = self._should_prepare_worktrees()
@@ -323,6 +339,7 @@ class NormalModeController:
                 reason="User confirmed the normal Visionary flow.",
             )
             self.ledger.append(LedgerEventType.permission_granted, grant)
+            self._activity("Worktree-Vorbereitung wurde angefordert.")
             prepared_worktrees = self._prepare_ready_worktrees(tasks)
 
         self.phase = NormalModePhase.prepared
@@ -352,15 +369,20 @@ class NormalModeController:
         guard = ScopeGuard()
         for task in tasks:
             if task.dependencies:
+                self._activity(f"Task {task.id} wartet auf Abhaengigkeiten und wird noch nicht vorbereitet.")
                 continue
             try:
+                self._activity(f"Arbeitsbereich fuer Task {task.id} wird angelegt.")
                 dispatched = dispatch_task(self.ledger, manager, task.id)
                 permission = self.session_permission or self.ledger.active_permission(dispatched.slice_id)
+                self._activity(f"Worker-Handoff fuer Task {task.id} wird geschrieben.")
                 CodexMcpClient().write_manifest(dispatched, permission=permission)
+                self._activity(f"Scope-Policy fuer Task {task.id} wird geschrieben.")
                 guard.write_worker_policy(dispatched)
                 guard.write_worker_agents_file(dispatched)
                 prepared += 1
             except (GitWorktreeError, ValueError) as exc:
+                self._activity(f"Worktree-Vorbereitung fuer Task {task.id} uebersprungen: {exc}")
                 self.ledger.append(
                     LedgerEventType.message,
                     {
@@ -851,7 +873,14 @@ class NormalModeController:
 
 
 def launch_console_mode(repo_root: str | Path = ".", session_permission: PermissionGrant | None = None) -> None:
-    controller = NormalModeController(repo_root, session_permission=session_permission)
+    controller_activity: dict[str, Callable[[str], None] | None] = {"handler": None}
+
+    def controller_activity_sink(message: str) -> None:
+        handler = controller_activity["handler"]
+        if handler:
+            handler(message)
+
+    controller = NormalModeController(repo_root, session_permission=session_permission, on_activity=controller_activity_sink)
     opening = controller.opening_message()
     print(f"\nVisionaer: {opening.message}\n")
     while True:
@@ -877,6 +906,19 @@ def open_expert_shell(repo_root: str | Path = ".") -> None:
         "Write-Host 'Startpunkte: vocr --help, vocr doctor, vocr worker doctor, vocr beta --help'; "
         "Write-Host ''; "
         f"Set-Location -LiteralPath '{root_literal}'"
+    )
+    subprocess.Popen(["powershell", "-NoExit", "-Command", command], cwd=str(root))
+
+
+def open_codex_login_shell(repo_root: str | Path = ".") -> None:
+    root = Path(repo_root).resolve()
+    root_literal = str(root).replace("'", "''")
+    command = (
+        "Write-Host 'VOCR Codex Login' -ForegroundColor Cyan; "
+        "Write-Host 'Melde dich hier mit codex login an. Danach dieses Fenster schliessen und VOCR weiter nutzen.'; "
+        "Write-Host ''; "
+        f"Set-Location -LiteralPath '{root_literal}'; "
+        "codex login"
     )
     subprocess.Popen(["powershell", "-NoExit", "-Command", command], cwd=str(root))
 
@@ -927,9 +969,17 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     status_frame.grid(row=0, column=1, sticky="nsew", padx=(8, 14), pady=(14, 8))
     status_frame.columnconfigure(0, weight=1)
     ttk.Label(status_frame, text="Projektstatus", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, sticky="w")
-    status_text = scrolledtext.ScrolledText(status_frame, wrap=tk.WORD, width=34, height=20, padx=8, pady=8, state=tk.DISABLED)
-    status_text.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
-    status_frame.rowconfigure(1, weight=1)
+    activity_text = tk.StringVar(value="Bereit")
+    ttk.Label(status_frame, textvariable=activity_text, wraplength=260).grid(row=1, column=0, sticky="ew", pady=(8, 0))
+    activity_progress = ttk.Progressbar(status_frame, mode="indeterminate")
+    activity_progress.grid(row=2, column=0, sticky="ew", pady=(6, 8))
+    status_text = scrolledtext.ScrolledText(status_frame, wrap=tk.WORD, width=34, height=13, padx=8, pady=8, state=tk.DISABLED)
+    status_text.grid(row=3, column=0, sticky="nsew", pady=(0, 8))
+    ttk.Label(status_frame, text="Aktivitaet", font=("Segoe UI", 10, "bold")).grid(row=4, column=0, sticky="w")
+    activity_log = scrolledtext.ScrolledText(status_frame, wrap=tk.WORD, width=34, height=7, padx=8, pady=8, state=tk.DISABLED)
+    activity_log.grid(row=5, column=0, sticky="nsew", pady=(6, 0))
+    status_frame.rowconfigure(3, weight=2)
+    status_frame.rowconfigure(5, weight=1)
 
     input_frame = ttk.Frame(root, padding=(14, 8, 14, 14))
     input_frame.grid(row=1, column=0, columnspan=2, sticky="ew")
@@ -943,6 +993,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     beta_only = tk.StringVar(value="")
     beta_allow_cloud = tk.BooleanVar(value=False)
     beta_json_only = tk.BooleanVar(value=False)
+    beta_debug = tk.BooleanVar(value=False)
     beta_report_dir = tk.StringVar(value="beta_reports")
     beta_tag = tk.StringVar(value="")
     beta_max_cloud_tasks = tk.IntVar(value=3)
@@ -991,6 +1042,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     beta_checks.grid(row=4, column=0, sticky="ew", pady=(8, 0))
     ttk.Checkbutton(beta_checks, text="Cloud-Szenarien erlauben (kann Kontingent kosten)", variable=beta_allow_cloud).grid(row=0, column=0, sticky="w")
     ttk.Checkbutton(beta_checks, text="Nur JSON-Report schreiben", variable=beta_json_only).grid(row=1, column=0, sticky="w")
+    ttk.Checkbutton(beta_checks, text="Debug-Details anzeigen", variable=beta_debug).grid(row=2, column=0, sticky="w")
 
     beta_buttons = ttk.Frame(beta_tab)
     beta_buttons.grid(row=5, column=0, sticky="ew", pady=(10, 8))
@@ -1007,6 +1059,27 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
         transcript.insert(tk.END, f"{sender}: {message}\n\n")
         transcript.see(tk.END)
         transcript.configure(state=tk.DISABLED)
+
+    def log_activity(message: str) -> None:
+        stamp = datetime.now().strftime("%H:%M:%S")
+        activity_log.configure(state=tk.NORMAL)
+        activity_log.insert(tk.END, f"[{stamp}] {message}\n")
+        activity_log.see(tk.END)
+        activity_log.configure(state=tk.DISABLED)
+
+    def set_activity(message: str, *, busy: bool = False) -> None:
+        activity_text.set(message)
+        if busy:
+            activity_progress.start(12)
+        else:
+            activity_progress.stop()
+
+    def controller_activity_handler(message: str) -> None:
+        set_activity(message, busy=True)
+        log_activity(message)
+        root.update_idletasks()
+
+    controller_activity["handler"] = controller_activity_handler
 
     def beta_append(message: str, *, replace: bool = False) -> None:
         beta_result.configure(state=tk.NORMAL)
@@ -1027,12 +1100,11 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
         notebook.select(beta_tab)
 
     def start_beta_run(*, recommended: bool = False) -> None:
-        from vocr.beta.scenarios import SCENARIOS
-
         tier = "core" if recommended else beta_tier.get()
         only = [] if recommended else [item.strip().upper() for item in beta_only.get().split(",") if item.strip()]
         allow_cloud = False if recommended else beta_allow_cloud.get()
         json_only = False if recommended else beta_json_only.get()
+        show_debug = beta_debug.get()
         report_dir = "beta_reports" if recommended else (beta_report_dir.get().strip() or "beta_reports")
         tag = "recommended-core" if recommended else (beta_tag.get().strip() or None)
         max_cloud_tasks = 3
@@ -1049,6 +1121,8 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
             return
         beta_start_button.configure(state=tk.DISABLED)
         beta_recommended_button.configure(state=tk.DISABLED)
+        set_activity("Beta-Test startet", busy=True)
+        log_activity("Beta-Test gestartet.")
         beta_append(
             "\n".join(
                 [
@@ -1068,7 +1142,27 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
 
         def worker() -> None:
             try:
+                from vocr.beta.scenarios import SCENARIOS
                 from vocr.beta.runner import run_beta
+
+                def progress(event: str, payload: object) -> None:
+                    if event == "selected":
+                        scenarios = list(payload)  # type: ignore[arg-type]
+                        root.after(0, lambda: beta_append(f"{len(scenarios)} Szenarien ausgewaehlt."))
+                        root.after(0, lambda: log_activity(f"Beta-Auswahl: {len(scenarios)} Szenarien."))
+                    elif event == "start":
+                        scenario = payload
+                        label = f"{scenario.id} {scenario.title}"  # type: ignore[attr-defined]
+                        root.after(0, lambda label=label: set_activity(f"Beta laeuft: {label}", busy=True))
+                        root.after(0, lambda label=label: beta_append(f"Starte {label} ..."))
+                        root.after(0, lambda label=label: log_activity(f"Starte Szenario {label}."))
+                    elif event == "finish":
+                        item = payload
+                        label = f"{item.id} {item.title}: {item.status} ({item.duration_s}s)"  # type: ignore[attr-defined]
+                        root.after(0, lambda label=label: beta_append(f"Fertig {label}"))
+                        root.after(0, lambda label=label: log_activity(f"Szenario fertig: {label}."))
+                    elif event == "report":
+                        root.after(0, lambda: log_activity("Beta-Reports werden geschrieben."))
 
                 run = run_beta(
                     SCENARIOS.values(),
@@ -1079,6 +1173,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
                     max_cloud_tasks=max_cloud_tasks,
                     json_only=json_only,
                     tag=tag,
+                    on_progress=progress,
                 )
                 lines = [
                     f"Verdikt: {run.status.upper()}",
@@ -1093,13 +1188,22 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
                 ]
                 for item in run.results:
                     lines.append(f"- {item.id} {item.title}: {item.status}")
+                    if show_debug:
+                        for item_step in item.steps:
+                            detail = f" ({item_step.details})" if item_step.details else ""
+                            lines.append(f"  - {item_step.name}: {item_step.status}{detail}")
+                        for note in item.notes:
+                            lines.append(f"  - note: {note.strip()}")
                 if run.report_json:
                     lines.extend(["", f"JSON-Report: {run.report_json}"])
                 if run.report_markdown:
                     lines.append(f"Markdown-Report: {run.report_markdown}")
             except Exception as exc:  # noqa: BLE001 - UI should surface failures.
                 lines = ["Beta-Test konnte nicht abgeschlossen werden:", str(exc)]
+                root.after(0, lambda exc=exc: log_activity(f"Beta-Test fehlgeschlagen: {exc}"))
             root.after(0, lambda: beta_append("\n".join(lines), replace=True))
+            root.after(0, lambda: set_activity("Beta-Test abgeschlossen", busy=False))
+            root.after(0, lambda: log_activity("Beta-Test abgeschlossen."))
             root.after(0, lambda: beta_start_button.configure(state=tk.NORMAL))
             root.after(0, lambda: beta_recommended_button.configure(state=tk.NORMAL))
 
@@ -1139,6 +1243,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
 
     menu = tk.Menu(root)
     options_menu = tk.Menu(menu, tearoff=0)
+    options_menu.add_command(label="Codex Login oeffnen", command=lambda: open_codex_login_shell(controller.repo_root))
     options_menu.add_command(label="Codex API-Key setzen", command=save_codex_api_key)
     options_menu.add_command(label="LM Studio API-Key setzen", command=save_lmstudio_api_key)
     menu.add_cascade(label="Optionen", menu=options_menu)
@@ -1177,6 +1282,9 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
             return "break"
         user_input.delete("1.0", tk.END)
         append("Du", text)
+        set_activity("Visionaer verarbeitet deine Eingabe", busy=True)
+        log_activity("Visionaer verarbeitet Eingabe.")
+        root.update_idletasks()
         try:
             response = controller.receive(text)
         except Exception as exc:  # pragma: no cover - UI safety net
@@ -1187,6 +1295,8 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
             )
         append("Visionaer", response.message)
         render_status(response.status)
+        set_activity(f"Bereit: {response.status.current_step}", busy=False)
+        log_activity(f"Visionaer-Schritt abgeschlossen: {response.status.current_step}.")
         return "break"
 
     send_button.configure(command=send)
@@ -1198,6 +1308,8 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     opening = controller.opening_message()
     append("Visionaer", opening.message)
     render_status(opening.status)
+    set_activity("Bereit: Codex Login pruefen, dann Ziel beschreiben", busy=False)
+    log_activity("Normalmode gestartet.")
     beta_append(
         "Bereit fuer einen Beta-Test.\n"
         "Normalfall: Empfohlenen Standardtest starten.\n"
@@ -1206,6 +1318,18 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
         replace=True,
     )
     user_input.focus_set()
+    root.after(
+        350,
+        lambda: (
+            open_codex_login_shell(controller.repo_root)
+            if messagebox.askyesno(
+                "VOCR Codex Login",
+                "Vor echter VOCR-Benutzung bitte einmal mit codex login anmelden. Soll ich dafuer jetzt eine Login-Shell oeffnen?",
+                parent=root,
+            )
+            else log_activity("Codex-Login-Hinweis uebersprungen.")
+        ),
+    )
 
     try:
         root.mainloop()
@@ -1220,6 +1344,7 @@ __all__ = [
     "NormalModeUiError",
     "launch_console_mode",
     "launch_normal_mode",
+    "open_codex_login_shell",
     "open_expert_shell",
     "normal_mode_surface_decision",
 ]

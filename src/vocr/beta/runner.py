@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Literal
 
 from pydantic import BaseModel, Field
 
@@ -62,6 +62,10 @@ class BetaRun(BaseModel):
     report_markdown: str | None = None
 
 
+BetaProgressEvent = Literal["selected", "start", "finish", "report"]
+BetaProgressCallback = Callable[[BetaProgressEvent, Scenario | ScenarioResult | list[Scenario] | tuple[Path | None, Path | None]], None]
+
+
 @contextmanager
 def set_env(values: dict[str, str | None]):
     previous = {key: os.environ.get(key) for key in values}
@@ -90,10 +94,13 @@ def run_beta(
     max_cloud_tasks: int = 3,
     json_only: bool = False,
     tag: str | None = None,
+    on_progress: BetaProgressCallback | None = None,
 ) -> BetaRun:
     from vocr.beta.report import write_reports
 
     selected = select_scenarios(scenarios, tier=tier, only=only, allow_cloud=allow_cloud)
+    if on_progress:
+        on_progress("selected", selected)
     report_path = Path(report_dir)
     results: list[ScenarioResult] = []
     with tempfile.TemporaryDirectory(prefix="vocr-beta-") as tmp:
@@ -104,10 +111,17 @@ def run_beta(
             max_cloud_tasks=max_cloud_tasks,
         )
         for scenario in selected:
-            results.append(_run_one(scenario, ctx))
+            if on_progress:
+                on_progress("start", scenario)
+            scenario_result = _run_one(scenario, ctx)
+            results.append(scenario_result)
+            if on_progress:
+                on_progress("finish", scenario_result)
     exit_code = beta_exit_code(results)
     status = "passed" if exit_code == 0 else "failed"
     report_json, report_markdown = write_reports(results, report_path, json_only=json_only, tag=tag)
+    if on_progress:
+        on_progress("report", (report_json, report_markdown))
     return BetaRun(
         status=status,
         exit_code=exit_code,

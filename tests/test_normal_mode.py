@@ -11,7 +11,7 @@ from typer.testing import CliRunner
 from vocr.cli.app import app
 from vocr.memory.ledger import MemoryLedger
 from vocr.models import LedgerEventType, NormalModePhase, PermissionGrant, PermissionMode
-from vocr.ui.normal_mode import NormalModeController, normal_mode_surface_decision, open_expert_shell
+from vocr.ui.normal_mode import NormalModeController, normal_mode_surface_decision, open_codex_login_shell, open_expert_shell
 
 
 def assert_no_normal_mode_debug_ids(testcase: unittest.TestCase, message: str) -> None:
@@ -105,6 +105,7 @@ class NormalModeTests(unittest.TestCase):
 
             opening = controller.opening_message()
 
+            self.assertIn("codex login", opening.message)
             self.assertIn("dangerously-skip-permissions", opening.message)
             self.assertIn("riskanter", opening.message)
 
@@ -134,6 +135,18 @@ class NormalModeTests(unittest.TestCase):
             self.assertIn("powershell", args[0][0])
             self.assertIn("-NoExit", args[0])
             self.assertIn("vocr --help", args[0][-1])
+
+    def test_codex_login_menu_opens_login_shell_in_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch("vocr.ui.normal_mode.subprocess.Popen") as popen:
+                open_codex_login_shell(root)
+
+            args, kwargs = popen.call_args
+            self.assertEqual(kwargs["cwd"], str(root.resolve()))
+            self.assertIn("powershell", args[0][0])
+            self.assertIn("-NoExit", args[0])
+            self.assertIn("codex login", args[0][-1])
 
     def test_normal_mode_surface_decision_uses_local_gui_without_buildchain(self) -> None:
         decision = normal_mode_surface_decision()
@@ -260,6 +273,25 @@ class NormalModeTests(unittest.TestCase):
             self.assertEqual(prepared.prepared_tasks, 1)
             self.assertIn("Automatischer Promote/Merge ist ausgeschlossen", prepared.message)
             self.assertTrue((root / ".vocr" / "ledger.jsonl").exists())
+
+    def test_normal_mode_reports_internal_activity_during_prepare(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            events: list[str] = []
+            controller = NormalModeController(Path(tmp), on_activity=events.append)
+
+            controller.receive("Ich will eine Startshell fuer VOCR.")
+            controller.receive("ja")
+            controller.receive("ja")
+            controller.receive("ja")
+            controller.receive("ja")
+            controller.receive("nur planen")
+            prepared = controller.receive("Bestaetigen")
+
+            self.assertEqual(prepared.phase, NormalModePhase.prepared)
+            self.assertTrue(any("Ledger" in event for event in events))
+            self.assertTrue(any("Repository-Graph" in event for event in events))
+            self.assertTrue(any("VisionSlice" in event for event in events))
+            self.assertTrue(any("Task" in event for event in events))
 
     def test_new_goal_resets_active_intake(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
