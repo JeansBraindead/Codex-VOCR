@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from vocr.codex.config import codex_available
-from vocr.models import CodexRunResult, PermissionGrant, PermissionMode, VocrTask
-from vocr.orchestration.workflow import render_task_template
+from vocr.models import CodexRunResult, PermissionGrant, PermissionMode, TaskContract, VocrTask
+from vocr.orchestration.workflow import render_contract_task_prompt, render_legacy_task_template, render_task_template
 
 
 @dataclass(slots=True)
@@ -33,9 +33,17 @@ class CodexMcpClient:
         permission: PermissionGrant | None = None,
         extra_prompt: str | None = None,
     ) -> CodexDispatchPayload:
+        """Build the worker prompt.
+
+        In contract mode the stable prefix is byte-identical across tasks; volatile
+        bounded-retry context is appended only at the end.
+        """
         if task.worktree_path is None:
             raise ValueError("Task must be dispatched to a worktree before Codex can run.")
-        prompt = render_task_template(task)
+        if os.getenv("VOCR_PROMPT_MODE", "legacy").lower() == "contract":
+            prompt = render_contract_task_prompt(include_context_pack=extra_prompt is None)
+        else:
+            prompt = render_task_template(task)
         if extra_prompt:
             prompt = f"{prompt}\n\n## Bounded retry context\n\n{extra_prompt}"
         return CodexDispatchPayload(
@@ -55,6 +63,11 @@ class CodexMcpClient:
         payload = self.build_payload(task, permission=permission)
         target = Path(payload.worktree_path) / filename
         target.parent.mkdir(parents=True, exist_ok=True)
+        contract_path = target.parent / "VOCR_TASK.json"
+        contract_path.write_text(TaskContract.from_task(task).model_dump_json(indent=2), encoding="utf-8")
+        if task.context_pack:
+            context_path = target.parent / "CONTEXT_PACK.txt"
+            context_path.write_text(task.context_pack, encoding="utf-8")
         target.write_text(
             "\n".join(
                 [
@@ -65,7 +78,7 @@ class CodexMcpClient:
                     "",
                     "## Prompt",
                     "",
-                    payload.prompt,
+                    render_legacy_task_template(task),
                 ]
             ),
             encoding="utf-8",

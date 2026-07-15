@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 from vocr.agents.runtime import diagnose_live_agent_error
 from vocr.cli.app import app, clean_artifacts, latest_open_clarification, write_review_artifact
+from vocr.codex.mcp_client import CodexMcpClient
 from vocr.graph.graphify import GraphStore, RepoGraphBuilder
 from vocr.config.env_file import provider_from_env, read_env_file, redact_env, update_env_file
 from vocr.guardrails.scope_guard import ScopeGuard
@@ -26,10 +27,11 @@ from vocr.models import (
     ReviewDecision,
     ReviewResult,
     RunTelemetry,
+    TaskContract,
     TokenUsage,
     VocrTask,
 )
-from vocr.orchestration.workflow import create_vision, organize_slice
+from vocr.orchestration.workflow import create_vision, organize_slice, render_task_template
 
 GOOD_REQUEST = (
     "Ziel: Baue eine Healthcheck-API im Backend. "
@@ -199,6 +201,69 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(tasks[0].dependencies, [])
         self.assertEqual(tasks[1].dependencies, [])
         self.assertEqual(set(tasks[2].dependencies), {tasks[0].id, tasks[1].id})
+
+    def test_codex_manifest_writes_contract_and_separate_context_pack(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = Path(tmp)
+            task = VocrTask(
+                id="task-contract",
+                slice_id="slice-contract",
+                title="Update handoff",
+                summary="Write the contract handoff files.",
+                scope=["src/vocr/codex/mcp_client.py"],
+                non_goals=["Do not change promotion."],
+                acceptance_criteria=[AcceptanceCriterion(text="Contract JSON exists")],
+                tests=["python -m compileall src"],
+                dependencies=["task-parent"],
+                context_pack="UNTRUSTED_MARKER: repo context only",
+                worktree_path=worktree,
+            )
+
+            manifest_path = CodexMcpClient(command="codex").write_manifest(task)
+            contract_path = worktree / ".vocr" / "VOCR_TASK.json"
+            context_path = worktree / ".vocr" / "CONTEXT_PACK.txt"
+            contract_text = contract_path.read_text(encoding="utf-8")
+            context_text = context_path.read_text(encoding="utf-8")
+            contract = TaskContract.model_validate_json(contract_text)
+
+        self.assertEqual(manifest_path.name, "VOCR_TASK.md")
+        self.assertEqual(contract.task_id, task.id)
+        self.assertEqual(contract.dependencies, ["task-parent"])
+        self.assertEqual(context_text, "UNTRUSTED_MARKER: repo context only")
+        self.assertNotIn("UNTRUSTED_MARKER", contract_text)
+
+    def test_contract_prompt_mode_is_byte_identical_and_excludes_task_content(self) -> None:
+        task_one = VocrTask(
+            id="task-one",
+            slice_id="slice-contract",
+            title="First volatile title",
+            summary="First summary",
+            scope=["src/one.py"],
+            acceptance_criteria=[AcceptanceCriterion(text="First unique criterion")],
+            tests=["python -m compileall src"],
+        )
+        task_two = VocrTask(
+            id="task-two",
+            slice_id="slice-contract",
+            title="Second volatile title",
+            summary="Second summary",
+            scope=["src/two.py"],
+            acceptance_criteria=[AcceptanceCriterion(text="Second unique criterion")],
+            tests=["python -m unittest discover -s tests"],
+        )
+
+        with patch.dict(os.environ, {"VOCR_PROMPT_MODE": "contract"}):
+            prompt_one = render_task_template(task_one)
+            prompt_two = render_task_template(task_two)
+
+        self.assertEqual(prompt_one, prompt_two)
+        self.assertIn(".vocr/VOCR_TASK.json", prompt_one)
+        self.assertIn(".vocr/scope.json", prompt_one)
+        self.assertIn(".vocr/CONTEXT_PACK.txt", prompt_one)
+        self.assertNotIn(task_one.title, prompt_one)
+        self.assertNotIn("First unique criterion", prompt_one)
+        self.assertNotIn(task_two.title, prompt_two)
+        self.assertNotIn("Second unique criterion", prompt_two)
 
     def test_mcp_server_lists_vocr_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

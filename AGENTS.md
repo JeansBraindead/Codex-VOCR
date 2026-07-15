@@ -18,7 +18,8 @@ this repo without explicit license review and attribution in the touched files.
 - Promotion must require an accepted review.
 - For token efficiency, read `.vocr/graph.json` or run `vocr context` before broad file reads.
 - Prefer targeted file reads from the graph over scanning the whole repository.
-- Worker handoff belongs in `.vocr/VOCR_TASK.md` inside the isolated worktree.
+- Worker handoff belongs in `.vocr/VOCR_TASK.json` inside the isolated worktree; `.vocr/VOCR_TASK.md` is the human-readable mirror.
+- Untrusted repo context belongs in `.vocr/CONTEXT_PACK.txt`, physically separate from the task contract.
 - Worker scope policy belongs in `.vocr/scope.json` inside the isolated worktree.
 - `approve_all` removes VOCR-internal permission prompts only; keep promote review-gated.
 - Prefer simple Python 3.11 code and Pydantic models over framework-heavy abstractions.

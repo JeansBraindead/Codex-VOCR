@@ -11,6 +11,9 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 
+TASK_CONTRACT_SCHEMA_VERSION = 1
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -142,6 +145,34 @@ class VocrTask(BaseModel):
     branch_name: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+
+class TaskContract(BaseModel):
+    schema_version: int = TASK_CONTRACT_SCHEMA_VERSION
+    task_id: str
+    slice_id: str
+    title: str
+    summary: str
+    scope: list[str]
+    non_goals: list[str]
+    acceptance_criteria: list[AcceptanceCriterion]
+    tests: list[str]
+    dependencies: list[str]
+    baseline_checks: list = Field(default_factory=list)
+
+    @classmethod
+    def from_task(cls, task: VocrTask) -> "TaskContract":
+        return cls(
+            task_id=task.id,
+            slice_id=task.slice_id,
+            title=task.title,
+            summary=task.summary,
+            scope=list(task.scope),
+            non_goals=list(task.non_goals),
+            acceptance_criteria=list(task.acceptance_criteria),
+            tests=list(task.tests),
+            dependencies=list(task.dependencies),
+        )
 
 
 class TestRunResult(BaseModel):
