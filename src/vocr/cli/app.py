@@ -50,6 +50,7 @@ from vocr.models import (
 from vocr.orchestration.workflow import (
     create_vision,
     dispatch_task,
+    distill_failure_output,
     organize_slice,
     promote_task,
     render_review_markdown,
@@ -799,7 +800,7 @@ def run_worker(
             if result.exit_code != 0:
                 if not auto_fix or attempt >= max_retries:
                     break
-                issues = [f"Worker exited with {result.exit_code}", (result.stderr or result.stdout)[-1200:]]
+                issues = [f"Worker exited with {result.exit_code}", distill_failure_output(result.stderr or result.stdout)]
                 diff_text = GitWorktreeManager(task.worktree_path or ".").diff()
                 extra_prompt = retry_prompt(attempt + 1, issues, diff_text, task.scope)
                 continue

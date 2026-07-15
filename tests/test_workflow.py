@@ -35,7 +35,7 @@ from vocr.models import (
     TokenUsage,
     VocrTask,
 )
-from vocr.orchestration.workflow import create_vision, organize_slice, render_task_template, review_task
+from vocr.orchestration.workflow import create_vision, distill_failure_output, organize_slice, render_task_template, review_task
 
 GOOD_REQUEST = (
     "Ziel: Baue eine Healthcheck-API im Backend. "
@@ -396,6 +396,41 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual([item.status for item in contract.baseline_checks], ["failed", "manual"])
         self.assertLessEqual(len(contract.baseline_checks[0].summary), 200)
         self.assertEqual(contract.baseline_checks[1].command, "manual smoke")
+
+    def test_distill_failure_output_keeps_repo_traceback_and_exception_without_site_packages(self) -> None:
+        text = "\n".join(
+            [
+                "noise before",
+                "Traceback (most recent call last):",
+                '  File "C:\\Users\\jeenz\\Desktop\\Agent\\.venv\\Lib\\site-packages\\pkg\\runner.py", line 10, in run',
+                "    call()",
+                '  File "C:\\Users\\jeenz\\Desktop\\Agent\\src\\vocr\\cli\\app.py", line 802, in run_worker',
+                "    raise ValueError('boom')",
+                "ValueError: boom",
+            ]
+        )
+
+        distilled = distill_failure_output(text, max_chars=1200)
+
+        self.assertIn("Traceback (most recent call last):", distilled)
+        self.assertIn("src\\vocr\\cli\\app.py", distilled)
+        self.assertIn("ValueError: boom", distilled)
+        self.assertNotIn("site-packages", distilled)
+
+    def test_distill_failure_output_uses_error_window_without_traceback(self) -> None:
+        text = "\n".join(["line 1", "line 2", "FAILED: build target", "line 4", "line 5", "line 6"])
+
+        distilled = distill_failure_output(text, max_chars=1200)
+
+        self.assertIn("line 1", distilled)
+        self.assertIn("FAILED: build target", distilled)
+        self.assertIn("line 5", distilled)
+        self.assertNotIn("line 6", distilled)
+
+    def test_distill_failure_output_falls_back_to_exact_tail_slice(self) -> None:
+        text = "abcdefghijklmnopqrstuvwxyz"
+
+        self.assertEqual(distill_failure_output(text, max_chars=10), text[-10:])
 
     def test_mcp_server_lists_vocr_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

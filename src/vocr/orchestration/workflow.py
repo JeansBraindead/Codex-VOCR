@@ -197,6 +197,71 @@ def render_contract_task_prompt(*, include_context_pack: bool = True) -> str:
     )
 
 
+def distill_failure_output(text: str, max_chars: int = 1200) -> str:
+    if max_chars <= 0:
+        return ""
+    traceback = _distill_traceback(text)
+    if traceback:
+        return traceback[-max_chars:]
+    error_window = _distill_error_window(text)
+    if error_window:
+        return error_window[-max_chars:]
+    return text[-max_chars:]
+
+
+def _distill_traceback(text: str) -> str:
+    marker = "Traceback (most recent call last):"
+    index = text.rfind(marker)
+    if index == -1:
+        return ""
+    block = text[index:]
+    lines = block.splitlines()
+    if not lines:
+        return ""
+
+    distilled = [lines[0]]
+    current_file_line: str | None = None
+    current_code_line: str | None = None
+    for line in lines[1:]:
+        stripped = line.strip()
+        if stripped.startswith("File "):
+            if current_file_line and _is_repo_traceback_frame(current_file_line):
+                distilled.append(current_file_line)
+                if current_code_line:
+                    distilled.append(current_code_line)
+            current_file_line = line
+            current_code_line = None
+            continue
+        if current_file_line and current_code_line is None and stripped:
+            current_code_line = line
+
+    if current_file_line and _is_repo_traceback_frame(current_file_line):
+        distilled.append(current_file_line)
+        if current_code_line:
+            distilled.append(current_code_line)
+
+    for line in reversed(lines[1:]):
+        if line.strip():
+            distilled.append(line)
+            break
+    return "\n".join(distilled)
+
+
+def _is_repo_traceback_frame(line: str) -> bool:
+    lowered = line.replace("\\", "/").lower()
+    return "site-packages/" not in lowered and "/lib/" not in lowered and "/python" not in lowered
+
+
+def _distill_error_window(text: str, radius: int = 2) -> str:
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if re.search(r"error|failed|exception", line, flags=re.IGNORECASE):
+            start = max(0, index - radius)
+            end = min(len(lines), index + radius + 1)
+            return "\n".join(lines[start:end])
+    return ""
+
+
 def dispatch_task(ledger: MemoryLedger, manager: GitWorktreeManager, task_id: str) -> VocrTask:
     task = ledger.get_task(task_id)
     if task is None:
