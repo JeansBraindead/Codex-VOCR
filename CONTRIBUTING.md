@@ -60,7 +60,7 @@ Every change needs to keep these green:
 ```powershell
 python -m compileall src tests
 $env:PYTHONPATH="src"; python -m unittest discover -s tests
-vocr eval-golden
+vocr beta --tier core
 ```
 
 Add tests alongside the change, not after. If you're fixing a bug, add the
@@ -78,7 +78,7 @@ gate.
 
 - Keep the diff focused on the stated goal; note explicit non-goals if
   something adjacent looked tempting to fix too.
-- State what you ran to verify it (`compileall`/`unittest`/`eval-golden`, plus
+- State what you ran to verify it (`compileall`/`unittest`/`vocr beta`, plus
   any manual steps for UI or installer changes — see
   [`docs/BETA_TESTING.md`](docs/BETA_TESTING.md) for the manual test catalog
   if you're touching install, normal mode, or the gate pipeline).

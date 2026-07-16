@@ -1,32 +1,21 @@
-# VOCR Beta Analysis Summary
+# VOCR Beta Summary
 
-Running log of periodic analysis passes over `docs/beta/sessions/`. See
-`docs/BETA_TESTING.md` §4 for the review cadence and the exact prompt used to
-generate each entry below. Newest entry on top. Do not delete prior entries —
-append only, so trend lines stay visible across the beta.
+Current source of truth:
 
-## Entry template (copy for each new pass)
+- [2026-07-16-jeenz-normalmode.md](sessions/2026-07-16-jeenz-normalmode.md)
 
-```markdown
-## YYYY-MM-DD — sessions reviewed: <list of session files>
+Status: **GREEN - local final passed**
 
-Total issues: <n> (Blocker: n, Major: n, Minor: n, Cosmetic: n)
+The current handoff confirms:
 
-### Recurring patterns
--
+- Normalmode startup works.
+- Update from UI works in the test clone.
+- ChatGPT/Codex login is confirmed.
+- LM Studio reachability is green with 16 visible models.
+- Syntax and unit gates pass.
+- Recommended core beta passes.
+- Final staged beta chain passes.
+- Local-live LM Studio checks S21/S22 pass against the already loaded model.
 
-### Highest-priority fixes
-1.
-
-### Test coverage gaps (T-codes never run)
--
-
-### Recommendation
-Go / no-go / go-with-caveats
-```
-
----
-
-*(No analysis passes yet — the first one runs after 3 session files exist
-under `docs/beta/sessions/`, or after 48 hours of active testing, whichever
-comes first.)*
+Cloud tests are still explicitly opt-in and were not part of the local green
+handoff.

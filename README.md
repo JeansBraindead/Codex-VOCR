@@ -1,10 +1,9 @@
 # VOCR
 
 VOCR ist ein lokaler Python-MVP fuer **Vision / Organize / Code / Review**.
-Der normale Einstieg ist ein gefuehrter Visionaer-Dialog: VOCR klaert den
-Auftrag, zerlegt ihn in reviewbare Tasks, bereitet isolierte Worktrees vor,
-koordiniert Worker ueber Scope-Claims und promotet Aenderungen erst nach
-akzeptiertem Review.
+Der normale Einstieg ist der gefuehrte **Normalmode**: VOCR klaert ein Ziel,
+plant reviewbare Tasks, nutzt Scope-Claims fuer sichere Parallelitaet, bereitet
+isolierte Worktrees vor und promotet Aenderungen erst nach akzeptiertem Review.
 
 VOCR ist architektonisch von [VOIT](https://github.com/yesitsfebreeze/voit)
 inspiriert, ist aber eine eigenstaendige Python/Codex-Umsetzung. Es ist kein
@@ -12,18 +11,19 @@ Fork und enthaelt keinen vendored VOIT-Code.
 
 ## Quickstart
 
-Windows, empfohlen:
+Windows:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install-vocr.ps1 -Tests -NoStart
-codex login
 .\start-vocr.ps1
 ```
 
 Der Installer legt `.venv` an, installiert VOCR editable, bootstrapped das Repo
-und erkennt fehlendes Git oder Python 3.11+. Wenn `winget` verfuegbar ist, fragt
-er nach und installiert fehlende Voraussetzungen automatisch. Fuer
-unbeaufsichtigte Setups:
+und schreibt die Windows-Startskripte. Fehlendes Git oder Python 3.11+ wird
+erkannt; wenn `winget` verfuegbar ist, fragt der Installer nach und kann die
+Voraussetzungen automatisch installieren.
+
+Unbeaufsichtigtes Setup:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install-vocr.ps1 -Tests -NoStart -AutoYes
@@ -39,9 +39,9 @@ vocr bootstrap --write-scripts --tests
 vocr start
 ```
 
-Details stehen in [docs/INSTALLATION.md](docs/INSTALLATION.md).
+Details: [docs/INSTALLATION.md](docs/INSTALLATION.md)
 
-## Normalmodus
+## Normalmode
 
 ```powershell
 vocr start
@@ -54,20 +54,19 @@ moeglich ist:
 vocr start --console
 ```
 
-Beim Start weist VOCR auf `codex login` hin und kann eine Login-Shell oeffnen.
-Ein OpenAI-/Codex-API-Key ist optional fuer Expert-Setups; der Standardpfad ist
-`codex login`. LM-Studio-Keys koennen ueber `Optionen` gesetzt werden und sollen
-bei normalen Patches nicht ueberschrieben werden.
+Login und Keys werden nicht beim Programmstart erzwungen. Nutze im Normalmode
+`Optionen`:
 
-Der Normalmode zeigt sichtbar, was VOCR gerade tut:
+- `ChatGPT/Codex Login oeffnen`
+- `ChatGPT/Codex Login-Status aktualisieren`
+- `Codex/OpenAI API-Key setzen` fuer Expert-Setups
+- `LM Studio API-Key setzen`
+- `LM Studio Erreichbarkeit pruefen`
 
-- laufender Status und Fortschrittsanzeige
-- Aktivitaetslog mit Zeitstempeln
-- Dialogstatus fuer Ziel, Scope, Akzeptanz, Verifikation, Nicht-Ziele und Grenzen
-- Beta-Test-Log pro Szenario
-- optionale Debug-Details im Beta-Reiter
+LM-Studio-Keys werden aus der Repo-`.env` gelesen und sollen bei Patches nicht
+ueberschrieben werden.
 
-Riskantere Session ohne einzelne Worker-Permission-Nachfragen:
+Riskantere Session ohne einzelne interne Worker-Permission-Nachfragen:
 
 ```powershell
 vocr start --dangerously-skip-permissions
@@ -76,12 +75,52 @@ vocr start --dangerously-skip-permissions
 Das gilt nur fuer diese Session. Review, ScopeGuard, Secret-Scan und Promote
 bleiben aktiv; es ist kein Auto-Merge.
 
+## Beta-Test Im Normalmode
+
+Der Reiter `Beta-Test` ist der aktuelle Standardweg fuer Regressionen.
+
+Wichtige Buttons:
+
+- `Update aus Git holen`: `git pull --ff-only`, editable install, Bootstrap und
+  Startskripte aktualisieren.
+- `Empfohlenen Standardtest starten`: deterministischer Core-Lauf ohne Cloud.
+- `Nur Beta-Testkette starten`: Smoke, Safety, Workflow/Parallelitaet/Memory und
+  Local-Assist-Mocks.
+- `Finale lokale Testsequenz starten`: All-in-One-Handoff vor Cloud.
+
+Die finale lokale Testsequenz umfasst:
+
+- Update/Install-Refresh
+- Syntax-Check
+- komplette Unit-Tests
+- ChatGPT/Codex Login-Status
+- LM-Studio-Erreichbarkeit
+- empfohlenen Core-Beta-Lauf
+- finale gestaffelte Core-Kette
+- Local-Live-Szenarien S21/S22 gegen das bereits laufende LM Studio
+
+S21/S22 laden, starten oder downloaden kein Modell. Sie pruefen nur `/models`
+und eine kleine `/chat/completions`-Anfrage gegen ein bereits sichtbares Modell.
+Cloud bleibt opt-in ueber die Cloud-Checkbox.
+
+CLI:
+
+```powershell
+vocr beta
+vocr beta --only S03,S07
+vocr beta --only S21,S22 --tier local
+vocr beta --tier all --allow-cloud
+```
+
+Aktueller gruen verifizierter Handoff:
+[docs/beta/sessions/2026-07-16-jeenz-normalmode.md](docs/beta/sessions/2026-07-16-jeenz-normalmode.md)
+
 ## Ablauf
 
 ```mermaid
 flowchart TD
     U["User beschreibt Ziel"] --> V["Visionaer klaert Auftrag"]
-    V --> G{"Alle Pflichtpunkte klar?"}
+    V --> G{"Pflichtpunkte klar?"}
     G -- "Nein" --> Q["Gezielte Rueckfrage"]
     Q --> V
     G -- "Ja" --> O["Organizer erzeugt Tasks"]
@@ -89,23 +128,22 @@ flowchart TD
     A --> D["Dispatch in isolierte Worktrees"]
     D --> W["Worker arbeiten im Scope"]
     W --> C["Checks, ScopeGuard, Secret-Scan"]
-    C --> R["Review: accepted / needs_changes / blocked"]
+    C --> R["Review"]
     R -- "needs_changes" --> W
-    R -- "accepted" --> P["Promote: Merge oder Draft PR"]
+    R -- "accepted" --> P["Promote / Ship"]
 ```
 
 Der Visionaer startet keine Planung, solange Ziel, Arbeitsbereich,
 Akzeptanzkriterien, Verifikation, Nicht-Ziele oder Ausfuehrungsgrenzen unklar
 sind. Im Normalmode sieht der User keine technischen Clarification-IDs.
 
-## Worker-Parallelitaet
+## Parallelitaet
 
 VOCR kann Worker parallel vorbereiten und ausfuehren, wenn Scope-Claims keine
-Konflikte zeigen. Der Normalmode zeigt dazu Vorschlaege des Visionaers, zum
-Beispiel mehrere Worker-Optionen mit grobem Speedup, Token-/Kontext-Overhead,
-Konfliktrisiko und Empfehlung.
+Konflikte zeigen. Der Visionaer zeigt Worker-Optionen mit grobem Speedup,
+Token-/Kontext-Overhead, Konfliktrisiko und Empfehlung.
 
-Die Empfehlung kommt nicht aus einer festen Zahl. Der Advisor bewertet konkret:
+Die Empfehlung ist nicht hardcoded. Bewertet werden:
 
 - dependency-freie Tasks
 - Scope-Claim-Kompatibilitaet
@@ -113,80 +151,11 @@ Die Empfehlung kommt nicht aus einer festen Zahl. Der Advisor bewertet konkret:
 - Testlast
 - Context-Pack-Groesse
 - Reviewlast
-- geschaetzten Token-/Kontext-Overhead
-
-```mermaid
-flowchart LR
-    T["Geplante Tasks"] --> C["Scope-Claims + Dependencies"]
-    C --> S["Konfliktfreie Welle"]
-    S --> M["Komplexitaet, Tests, Kontext"]
-    M --> O["Worker-Optionen mit Score"]
-    O --> E["Visionaer-Empfehlung"]
-```
+- geschaetzter Token-/Kontext-Overhead
 
 Im Expertpfad fuehrt `vocr work-ready` claim-disjunkte Wellen parallel aus,
-wenn `VOCR_PARALLEL_WORKERS>1` gesetzt ist. Konfliktierende Tasks warten auf die
-naechste Welle. Claims sind Koordination, kein Security-Feature.
-
-## Beta-Test
-
-Im Normalmode gibt es den Reiter `Beta-Test` mit dem Primaerbutton
-`Empfohlenen Standardtest starten`.
-
-Dieser Lauf ist der normale Regressionstest:
-
-- Tier `core`
-- keine Cloud
-- alle Core-Szenarien
-- Reports nach `beta_reports`
-- deterministisch und netzfrei
-
-CLI:
-
-```powershell
-vocr beta
-vocr beta --only S03,S07
-vocr beta --tier all --allow-cloud
-```
-
-Der Core-Beta-Test deckt inzwischen auch die Visionaer-Worker-Planung ab
-(`S20`). Cloud-Pfade bleiben bewusst opt-in; der aktuelle Cloud-Smoke ist noch
-kein vollwertiger Live-Codex-E2E-Nachweis.
-
-## Architektur
-
-VOCR trennt trusted Workflow-State von untrusted Repo-Kontext.
-
-```mermaid
-flowchart LR
-    subgraph Trusted["Trusted VOCR State"]
-        VS["VisionSlice"]
-        T["VocrTask"]
-        JSON["VOCR_TASK.json"]
-        SCOPE["scope.json"]
-    end
-
-    subgraph Untrusted["Untrusted Context"]
-        GRAPH["graph.json"]
-        PACK["CONTEXT_PACK.txt"]
-        DIFF["Diffs / test output"]
-        MEM["Project memory"]
-    end
-
-    VS --> T --> JSON
-    T --> SCOPE
-    GRAPH --> PACK
-    MEM --> PACK
-    JSON --> W["Worker"]
-    SCOPE --> W
-    PACK -. "Karte, keine Instruktion" .-> W
-    W --> DIFF
-    DIFF --> R["Review"]
-```
-
-Im Contract-Modus (`VOCR_PROMPT_MODE=contract`) werden Task-Contract,
-Scope-Policy und Context-Pack physisch getrennt. Der Contract ist trusted; Repo-
-Kontext, Diffs, Testausgaben und Project Memory bleiben untrusted input.
+wenn `VOCR_PARALLEL_WORKERS>1` gesetzt ist. Claims sind Koordination, kein
+Security-Feature.
 
 ## Sicherheit
 
@@ -195,35 +164,33 @@ Kontext, Diffs, Testausgaben und Project Memory bleiben untrusted input.
 - ScopeGuard blockiert Aenderungen ausserhalb erlaubter Globs.
 - Secret-Scanning blockiert verdaechtige Diffs vor Commit.
 - Review entscheidet `accepted`, `needs_changes` oder `blocked`.
-- Promote merged nur Tasks mit akzeptiertem Review.
-- `approve_all` entfernt nur VOCR-interne Nachfragen, nicht Review- oder
-  Promote-Gates.
+- Promote/Ship bleibt review-gated.
+- Local Assist verarbeitet nur trusted Titel/Ziele und bleibt nicht-autoritativ.
 
-Mehr dazu: [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+Mehr dazu: [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)
 
-## Modelle und Auth
+## Modelle Und Auth
 
-Standard:
+Standardpfad:
 
 ```powershell
 codex login
 ```
 
-Optionale Expert-/API-Key-Konfiguration:
+Expert-/API-Key-Konfiguration:
 
 ```powershell
 vocr auth status
 vocr auth codex-key
-vocr auth lmstudio-key --model "dein-lm-studio-modell"
+vocr auth lmstudio-key --model "gpt-oss-20b"
 vocr model status
 vocr model off
 ```
 
-LM Studio kann fuer lokale Assistenz oder OpenAI-kompatible Tests vorbereitet
-werden. Aktuell bleiben Codex-Worker, Scope, Review und Promote die
-Sicherheitslinie.
+LM Studio kann fuer Local-Live-Beta-Smokes und lokale Assistenz genutzt werden.
+Codex-Worker, Scope, Review und Promote bleiben die Sicherheitslinie.
 
-## Wichtige Feature Flags
+## Wichtige Flags
 
 | Flag | Default | Wirkung |
 | --- | --- | --- |
@@ -244,6 +211,7 @@ Reparatur und manuelle Steuerung:
 ```powershell
 vocr doctor
 vocr test
+vocr beta --list
 vocr graphify
 vocr context "query" --limit 10
 vocr ask "Ziel: ... Arbeitsbereich: ... Akzeptanz: ... Verifikation: ... Nicht-Ziele: ... Ausfuehrung: ..." --go
@@ -259,7 +227,7 @@ vocr compact --keep-last 200
 vocr secrets scan
 ```
 
-Mehr Details: [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md).
+Mehr Details: [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md)
 
 ## Speicherorte
 
