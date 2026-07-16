@@ -16,6 +16,7 @@ Duration: 01:16-ongoing
 | T12.4 LM Studio reachability ampel | pass | User first clicked reachability before entering the key; the ampel correctly showed `gelb - kein API-Key gesetzt`. After key save, the check returned `gruen - erreichbar, 16 Modell(e)`. |
 | T12.5 Beta standard test from UI | pass | Normalmode Beta log showed 20 selected scenarios, all passed: S00-S16, S18, S19, S20. |
 | T13 Beta next-test chain design | pass-pending-fresh-ui-click | Beta tab now offers a multi-step next-test chain: Smoke, Safety, Workflow/Parallelitaet/Memory, Local-Assist-Mocks, plus optional Cloud-Smoke only when cloud is explicitly enabled. Local chain smoke passed: 3 + 5 + 10 + 2 scenarios, all exit 0. |
+| T14 All-in-One final sequence | pass-pending-fresh-ui-click | Beta tab now includes update, syntax, full unit tests, ChatGPT/Codex login status, LM Studio reachability, recommended core beta and the final staged core chain in one run. S17 stays opt-in via the cloud checkbox. Local implementation validation passed: 127 unit tests, recommended core beta 20 scenarios exit 0, staged core chain 3 + 5 + 10 + 2 scenarios exit 0. |
 
 ## Issues found
 
@@ -53,10 +54,19 @@ Duration: 01:16-ongoing
 - Implementation: Added `Naechste Testkette starten` with staged deterministic core checks and an opt-in cloud ending.
 - Status: Implemented and locally validated; needs fresh-clone UI click retest after pull/reinstall.
 
+### Follow-up: Claude handoff needs one all-in-one final button
+
+- Severity: UX/Testability
+- Test case: T14
+- Request: The user needs one final run that includes all previous automated checks before starting cloud tests.
+- Implementation: Added `Finale lokale Testsequenz starten` and `Update aus Git holen` in the Beta tab.
+- Scope: Update/install refresh, compileall, full unittest, Codex login status, LM Studio reachability, recommended core beta, staged final core chain; optional S17 only with cloud checkbox.
+- Status: Implemented and locally validated; needs fresh-clone UI click retest after pull/reinstall.
+
 ## Free-form observations
 
 - Normalmode activity logging is now visible and useful during Beta.
 - ChatGPT/Codex login should remain user-initiated from Optionen, not prompted at startup.
 - LM Studio key must not be overwritten by future patches unless the user explicitly changes it.
 - LM Studio reachability now gives a useful before/after signal: yellow before key, green with model count after key.
-- The next manual retest should use the Beta tab button `Naechste Testkette starten` once without cloud and verify that separate chain reports are written under `beta_reports/`.
+- The next manual retest should use `Update aus Git holen`, restart VOCR if the UI changed, then run `Finale lokale Testsequenz starten` once without cloud and verify the final reports under `beta_reports/`.

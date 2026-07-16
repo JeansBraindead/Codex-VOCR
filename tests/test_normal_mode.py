@@ -21,10 +21,13 @@ from vocr.ui.normal_mode import (
     NormalModeController,
     beta_next_test_chain,
     codex_login_status,
+    final_all_in_one_labels,
+    final_local_test_command_plan,
     launch_console_mode,
     launch_normal_mode,
     lmstudio_reachability_status,
     model_auth_status,
+    normal_mode_update_command_plan,
     normal_mode_surface_decision,
     open_codex_login_shell,
     open_expert_shell,
@@ -325,6 +328,31 @@ class NormalModeTests(unittest.TestCase):
         self.assertEqual(cloud_step.tier, "cloud")
         self.assertTrue(cloud_step.allow_cloud)
         self.assertEqual(cloud_step.max_cloud_tasks, 3)
+
+    def test_update_button_plan_uses_fast_forward_pull_and_refreshes_install(self) -> None:
+        plan = normal_mode_update_command_plan()
+        flattened = [" ".join(command) for _, command in plan]
+
+        self.assertIn("git pull --ff-only", flattened[0])
+        self.assertTrue(any("-m pip install -e ." in command for command in flattened))
+        self.assertTrue(any("-m vocr.main bootstrap --no-start --write-scripts" in command for command in flattened))
+
+    def test_final_all_in_one_labels_cover_previous_automated_checks(self) -> None:
+        labels = " ".join(final_all_in_one_labels())
+        cloud_labels = " ".join(final_all_in_one_labels(include_cloud=True))
+        gate_commands = [" ".join(command) for _, command in final_local_test_command_plan()]
+
+        self.assertIn("Update", labels)
+        self.assertIn("Syntax", labels)
+        self.assertIn("Unit-Tests", labels)
+        self.assertIn("ChatGPT/Codex", labels)
+        self.assertIn("LM Studio", labels)
+        self.assertIn("Core-Beta", labels)
+        self.assertIn("Core-Beta-Kette", labels)
+        self.assertNotIn("S17", labels)
+        self.assertIn("S17", cloud_labels)
+        self.assertTrue(any("-m compileall src tests" in command for command in gate_commands))
+        self.assertTrue(any("-m unittest discover -s tests" in command for command in gate_commands))
 
     def test_gui_activity_bridge_lives_in_gui_launcher(self) -> None:
         gui_source = inspect.getsource(launch_normal_mode)

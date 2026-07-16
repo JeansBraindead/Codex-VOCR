@@ -4,6 +4,7 @@ import base64
 import json
 import re
 import subprocess
+import sys
 import threading
 import urllib.error
 import urllib.request
@@ -153,6 +154,37 @@ def beta_next_test_chain(*, include_cloud: bool = False) -> tuple[BetaTestChainS
             )
         )
     return tuple(steps)
+
+
+def normal_mode_update_command_plan() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    return (
+        ("Git-Stand holen", ("git", "pull", "--ff-only")),
+        ("Editable Installation auffrischen", (sys.executable, "-m", "pip", "install", "-e", ".")),
+        ("Bootstrap und Startskripte aktualisieren", (sys.executable, "-m", "vocr.main", "bootstrap", "--no-start", "--write-scripts")),
+    )
+
+
+def final_local_test_command_plan() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    return (
+        ("Syntax-Check", (sys.executable, "-m", "compileall", "src", "tests")),
+        ("Unit-Tests", (sys.executable, "-m", "unittest", "discover", "-s", "tests")),
+    )
+
+
+def final_all_in_one_labels(*, include_cloud: bool = False) -> tuple[str, ...]:
+    labels = [
+        "Update aus Git holen",
+        "Editable Installation und Startskripte auffrischen",
+        "Syntax-Check",
+        "Komplette Unit-Tests",
+        "ChatGPT/Codex Login-Status",
+        "LM Studio Erreichbarkeit",
+        "Empfohlener Core-Beta-Standardtest",
+        "Finale gestaffelte Core-Beta-Kette",
+    ]
+    if include_cloud:
+        labels.append("Optionaler Cloud-Smoke S17")
+    return tuple(labels)
 
 
 class NormalModeController:
@@ -1218,18 +1250,21 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     ttk.Label(
         beta_chain,
         text=(
-            "Mehrstufiger Ablauf fuer die naechste Beta-Runde: Smoke, Safety, Workflow/Parallelitaet/Memory "
-            "und Local-Assist-Mocks. Mit Cloud-Checkbox kommt als letzter Schritt ein kleiner Cloud-Smoke dazu."
+            "All-in-One Final vor Cloud-Tests: Update, lokale Gates, Login-/LM-Studio-Status, empfohlener Core-Lauf "
+            "und komplette gestaffelte Core-Kette. Mit Cloud-Checkbox kommt S17 als opt-in Abschluss dazu."
         ),
         wraplength=620,
     ).grid(row=1, column=0, sticky="ew", pady=(4, 8))
-    beta_chain_lines = [
-        f"{step.title}: {', '.join(step.only)}"
-        for step in beta_next_test_chain(include_cloud=False)
-    ]
+    beta_chain_lines = [f"{step.title}: {', '.join(step.only)}" for step in beta_next_test_chain(include_cloud=False)]
     ttk.Label(beta_chain, text="\n".join(beta_chain_lines), wraplength=620).grid(row=2, column=0, sticky="ew", pady=(0, 8))
-    beta_chain_button = ttk.Button(beta_chain, text="Naechste Testkette starten")
-    beta_chain_button.grid(row=3, column=0, sticky="w")
+    beta_chain_buttons = ttk.Frame(beta_chain)
+    beta_chain_buttons.grid(row=3, column=0, sticky="ew")
+    beta_update_button = ttk.Button(beta_chain_buttons, text="Update aus Git holen")
+    beta_update_button.grid(row=0, column=0, sticky="w")
+    beta_final_button = ttk.Button(beta_chain_buttons, text="Finale lokale Testsequenz starten")
+    beta_final_button.grid(row=0, column=1, sticky="w", padx=(8, 0))
+    beta_chain_button = ttk.Button(beta_chain_buttons, text="Nur Beta-Testkette starten")
+    beta_chain_button.grid(row=0, column=2, sticky="w", padx=(8, 0))
 
     beta_controls = ttk.Frame(beta_tab)
     beta_controls.grid(row=4, column=0, sticky="ew")
@@ -1340,6 +1375,42 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
         beta_result.see(tk.END)
         beta_result.configure(state=tk.DISABLED)
 
+    def set_beta_buttons_enabled(enabled: bool) -> None:
+        state = tk.NORMAL if enabled else tk.DISABLED
+        for button in (beta_update_button, beta_final_button, beta_chain_button, beta_start_button, beta_recommended_button, beta_list_button):
+            button.configure(state=state)
+
+    def run_command_plan(plan: tuple[tuple[str, tuple[str, ...]], ...], *, stop_on_failure: bool) -> tuple[int, list[str]]:
+        exit_code = 0
+        lines: list[str] = []
+        for title, command in plan:
+            display_command = " ".join(command)
+            root.after(0, lambda title=title: set_activity(title, busy=True))
+            root.after(0, lambda title=title: beta_append(f"Starte: {title}"))
+            root.after(0, lambda title=title: log_activity(f"Starte: {title}."))
+            completed = subprocess.run(
+                list(command),
+                cwd=str(controller.repo_root),
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=900,
+            )
+            output = "\n".join(part.strip() for part in (completed.stdout, completed.stderr) if part and part.strip())
+            if len(output) > 1800:
+                output = output[:1800].rstrip() + "\n... gekuerzt ..."
+            status = "PASS" if completed.returncode == 0 else "FAIL"
+            exit_code = max(exit_code, 0 if completed.returncode == 0 else 2)
+            lines.extend([f"{status}: {title}", f"  Command: {display_command}", f"  Exit-Code: {completed.returncode}"])
+            if output:
+                lines.append(f"  Output: {output}")
+            lines.append("")
+            root.after(0, lambda status=status, title=title: beta_append(f"{status}: {title}"))
+            root.after(0, lambda status=status, title=title: log_activity(f"{status}: {title}."))
+            if completed.returncode != 0 and stop_on_failure:
+                break
+        return exit_code, lines
+
     def show_beta_scenarios() -> None:
         from vocr.beta.scenarios import SCENARIOS
 
@@ -1370,9 +1441,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
                 "Cloud-Szenarien sind nicht erlaubt. Aktiviere die Checkbox, wenn du Cloud-Pfade wirklich laufen lassen willst.",
             )
             return
-        beta_start_button.configure(state=tk.DISABLED)
-        beta_recommended_button.configure(state=tk.DISABLED)
-        beta_chain_button.configure(state=tk.DISABLED)
+        set_beta_buttons_enabled(False)
         set_activity("Beta-Test startet", busy=True)
         log_activity("Beta-Test gestartet.")
         beta_append(
@@ -1456,18 +1525,14 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
             root.after(0, lambda: beta_append("\n".join(lines), replace=True))
             root.after(0, lambda: set_activity("Beta-Test abgeschlossen", busy=False))
             root.after(0, lambda: log_activity("Beta-Test abgeschlossen."))
-            root.after(0, lambda: beta_start_button.configure(state=tk.NORMAL))
-            root.after(0, lambda: beta_recommended_button.configure(state=tk.NORMAL))
-            root.after(0, lambda: beta_chain_button.configure(state=tk.NORMAL))
+            root.after(0, lambda: set_beta_buttons_enabled(True))
 
         threading.Thread(target=worker, daemon=True).start()
 
     def start_beta_chain() -> None:
         include_cloud = beta_allow_cloud.get()
         steps = beta_next_test_chain(include_cloud=include_cloud)
-        beta_start_button.configure(state=tk.DISABLED)
-        beta_recommended_button.configure(state=tk.DISABLED)
-        beta_chain_button.configure(state=tk.DISABLED)
+        set_beta_buttons_enabled(False)
         set_activity("Beta-Testkette startet", busy=True)
         log_activity("Beta-Testkette gestartet.")
         beta_append(
@@ -1570,9 +1635,211 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
             root.after(0, lambda: beta_append("\n".join(lines), replace=True))
             root.after(0, lambda: set_activity("Beta-Testkette abgeschlossen", busy=False))
             root.after(0, lambda: log_activity("Beta-Testkette abgeschlossen."))
-            root.after(0, lambda: beta_start_button.configure(state=tk.NORMAL))
-            root.after(0, lambda: beta_recommended_button.configure(state=tk.NORMAL))
-            root.after(0, lambda: beta_chain_button.configure(state=tk.NORMAL))
+            root.after(0, lambda: set_beta_buttons_enabled(True))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def start_update_from_git() -> None:
+        set_beta_buttons_enabled(False)
+        set_activity("Update startet", busy=True)
+        log_activity("Update aus Git gestartet.")
+        beta_append(
+            "Update aus Git laeuft...\n"
+            "Schritte: git pull --ff-only, editable Installation auffrischen, Bootstrap/Startskripte aktualisieren.\n"
+            "Hinweis: Falls sich UI-Code geaendert hat, starte VOCR danach neu.",
+            replace=True,
+        )
+        notebook.select(beta_tab)
+
+        def worker() -> None:
+            try:
+                exit_code, lines = run_command_plan(normal_mode_update_command_plan(), stop_on_failure=True)
+                verdict = "PASSED" if exit_code == 0 else "FAILED"
+                lines = [
+                    f"Update-Verdikt: {verdict}",
+                    "",
+                    *lines,
+                    "Naechster Schritt: VOCR neu starten, falls beim Pull UI-/Installer-Code aktualisiert wurde.",
+                ]
+            except Exception as exc:  # noqa: BLE001 - UI should surface failures.
+                lines = ["Update konnte nicht abgeschlossen werden:", str(exc)]
+                root.after(0, lambda exc=exc: log_activity(f"Update fehlgeschlagen: {exc}"))
+            root.after(0, lambda: beta_append("\n".join(lines), replace=True))
+            root.after(0, lambda: set_activity("Update abgeschlossen", busy=False))
+            root.after(0, lambda: log_activity("Update aus Git abgeschlossen."))
+            root.after(0, lambda: set_beta_buttons_enabled(True))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def start_final_all_in_one() -> None:
+        include_cloud = beta_allow_cloud.get()
+        labels = final_all_in_one_labels(include_cloud=include_cloud)
+        report_dir = beta_report_dir.get().strip() or "beta_reports"
+        set_beta_buttons_enabled(False)
+        set_activity("Finale Testsequenz startet", busy=True)
+        log_activity("All-in-One Final gestartet.")
+        beta_append(
+            "\n".join(
+                [
+                    "All-in-One Final laeuft...",
+                    "Dieser Lauf ist fuer den Claude-Handoff gedacht.",
+                    "Er enthaelt alle bisher sinnvoll automatisierbaren Checks in einem Rutsch.",
+                    "",
+                    f"Cloud enthalten: {'ja - S17 opt-in' if include_cloud else 'nein - lokaler Final vor Cloud'}",
+                    f"Report-Ordner: {report_dir}",
+                    "",
+                    *[f"- {label}" for label in labels],
+                    "",
+                ]
+            ),
+            replace=True,
+        )
+        notebook.select(beta_tab)
+
+        def worker() -> None:
+            final_lines: list[str] = []
+            overall_exit_code = 0
+            try:
+                from vocr.beta.scenarios import SCENARIOS
+                from vocr.beta.runner import run_beta
+
+                update_exit, update_lines = run_command_plan(normal_mode_update_command_plan(), stop_on_failure=True)
+                overall_exit_code = max(overall_exit_code, update_exit)
+                final_lines.extend(["## Update und Installation", "", *update_lines])
+                if update_exit == 2:
+                    final_lines.append("Final gestoppt: Update/Install-Schritt ist fehlgeschlagen.")
+                    raise RuntimeError("Update/Install-Schritt fehlgeschlagen")
+
+                gate_exit, gate_lines = run_command_plan(final_local_test_command_plan(), stop_on_failure=True)
+                overall_exit_code = max(overall_exit_code, gate_exit)
+                final_lines.extend(["## Lokale Gates", "", *gate_lines])
+                if gate_exit == 2:
+                    final_lines.append("Final gestoppt: lokale Gates sind fehlgeschlagen.")
+                    raise RuntimeError("Lokale Gates fehlgeschlagen")
+
+                codex_status = codex_login_status()
+                lm_status = lmstudio_reachability_status(controller.repo_root)
+                root.after(0, lambda: auth_status_text.set(codex_status))
+                root.after(0, lambda: lmstudio_health_text.set(lm_status))
+                root.after(0, lambda: beta_append(f"Codex/Login: {codex_status}"))
+                root.after(0, lambda: beta_append(lm_status))
+                root.after(0, lambda: log_activity(codex_status))
+                root.after(0, lambda: log_activity(lm_status))
+                final_lines.extend(
+                    [
+                        "## Umgebung",
+                        "",
+                        f"Codex/Login: {codex_status}",
+                        f"LM Studio: {lm_status}",
+                        "",
+                    ]
+                )
+
+                def beta_progress(event: str, payload: object) -> None:
+                    if event == "selected":
+                        scenarios = list(payload)  # type: ignore[arg-type]
+                        root.after(0, lambda scenarios=scenarios: beta_append(f"{len(scenarios)} Szenarien ausgewaehlt."))
+                    elif event == "start":
+                        scenario = payload
+                        label = f"{scenario.id} {scenario.title}"  # type: ignore[attr-defined]
+                        root.after(0, lambda label=label: set_activity(f"Beta laeuft: {label}", busy=True))
+                        root.after(0, lambda label=label: beta_append(f"Starte {label} ..."))
+                        root.after(0, lambda label=label: log_activity(f"Starte Szenario {label}."))
+                    elif event == "finish":
+                        item = payload
+                        label = f"{item.id} {item.title}: {item.status} ({item.duration_s}s)"  # type: ignore[attr-defined]
+                        root.after(0, lambda label=label: beta_append(f"Fertig {label}"))
+                        root.after(0, lambda label=label: log_activity(f"Szenario fertig: {label}."))
+                    elif event == "report":
+                        root.after(0, lambda: log_activity("Beta-Report wird geschrieben."))
+
+                recommended = run_beta(
+                    SCENARIOS.values(),
+                    tier="core",
+                    only=None,
+                    report_dir=controller.repo_root / report_dir,
+                    allow_cloud=False,
+                    max_cloud_tasks=3,
+                    json_only=beta_json_only.get(),
+                    tag="final-all-recommended-core",
+                    on_progress=beta_progress,
+                )
+                overall_exit_code = max(overall_exit_code, recommended.exit_code)
+                final_lines.extend(
+                    [
+                        "## Empfohlener Core-Beta-Standardtest",
+                        "",
+                        f"Verdikt: {recommended.status.upper()} / Exit-Code {recommended.exit_code}",
+                        f"Szenarien: {', '.join(f'{item.id}:{item.status}' for item in recommended.results)}",
+                    ]
+                )
+                if recommended.report_json:
+                    final_lines.append(f"JSON-Report: {recommended.report_json}")
+                if recommended.report_markdown:
+                    final_lines.append(f"Markdown-Report: {recommended.report_markdown}")
+                final_lines.append("")
+                if recommended.exit_code == 2:
+                    final_lines.append("Final gestoppt: empfohlener Core-Beta-Lauf hatte einen harten Fehler.")
+                    raise RuntimeError("Empfohlener Core-Beta-Lauf fehlgeschlagen")
+
+                final_lines.extend(["## Finale gestaffelte Beta-Kette", ""])
+                for index, step in enumerate(beta_next_test_chain(include_cloud=include_cloud), start=1):
+                    root.after(0, lambda step=step: beta_append(f"== Final {step.title} =="))
+                    root.after(0, lambda step=step: log_activity(f"Finaler Kettenschritt gestartet: {step.title}."))
+                    run = run_beta(
+                        SCENARIOS.values(),
+                        tier=step.tier,
+                        only=list(step.only),
+                        report_dir=controller.repo_root / report_dir,
+                        allow_cloud=step.allow_cloud,
+                        max_cloud_tasks=step.max_cloud_tasks,
+                        json_only=beta_json_only.get(),
+                        tag=f"final-all-{step.tag}",
+                        on_progress=beta_progress,
+                    )
+                    overall_exit_code = max(overall_exit_code, run.exit_code)
+                    final_lines.extend(
+                        [
+                            f"{index}. {step.title}",
+                            f"   Zweck: {step.purpose}",
+                            f"   Verdikt: {run.status.upper()} / Exit-Code {run.exit_code}",
+                            f"   Szenarien: {', '.join(f'{item.id}:{item.status}' for item in run.results)}",
+                        ]
+                    )
+                    if run.report_json:
+                        final_lines.append(f"   JSON-Report: {run.report_json}")
+                    if run.report_markdown:
+                        final_lines.append(f"   Markdown-Report: {run.report_markdown}")
+                    final_lines.append("")
+                    root.after(0, lambda step=step, run=run: log_activity(f"Finaler Kettenschritt fertig: {step.title}: {run.status}."))
+                    if run.exit_code == 2:
+                        final_lines.append("Final gestoppt: harter Fehler im Kettenschritt.")
+                        break
+
+                verdict = "PASSED" if overall_exit_code == 0 else "NEEDS REVIEW" if overall_exit_code == 1 else "FAILED"
+                lines = [
+                    f"ALL-IN-ONE FINAL: {verdict}",
+                    f"Hoechster Exit-Code: {overall_exit_code}",
+                    "",
+                    "Claude-Handoff:",
+                    "- Gruen: lokaler Stand ist bereit fuer den anschliessenden Cloud-Test.",
+                    "- Gelb: Soft-Hinweise im Report pruefen.",
+                    "- Rot: beim ersten roten Abschnitt nacharbeiten.",
+                    "",
+                    *final_lines,
+                ]
+            except Exception as exc:  # noqa: BLE001 - UI should surface failures.
+                lines = [
+                    "ALL-IN-ONE FINAL: FAILED",
+                    str(exc),
+                    "",
+                    *final_lines,
+                ]
+                root.after(0, lambda exc=exc: log_activity(f"All-in-One Final fehlgeschlagen: {exc}"))
+            root.after(0, lambda: beta_append("\n".join(lines), replace=True))
+            root.after(0, lambda: set_activity("Finale Testsequenz abgeschlossen", busy=False))
+            root.after(0, lambda: log_activity("All-in-One Final abgeschlossen."))
+            root.after(0, lambda: set_beta_buttons_enabled(True))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1676,6 +1943,8 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
 
     send_button.configure(command=send)
     user_input.bind("<Control-Return>", send)
+    beta_update_button.configure(command=start_update_from_git)
+    beta_final_button.configure(command=start_final_all_in_one)
     beta_recommended_button.configure(command=lambda: start_beta_run(recommended=True))
     beta_start_button.configure(command=start_beta_run)
     beta_chain_button.configure(command=start_beta_chain)
@@ -1689,8 +1958,8 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     beta_append(
         "Bereit fuer einen Beta-Test.\n"
         "Normalfall: Empfohlenen Standardtest starten.\n"
-        "Naechster gruendlicher Ablauf: Naechste Testkette starten.\n"
-        "Das ist Tier core, keine Cloud, alle Core-Szenarien, Report nach beta_reports.\n"
+        "Claude-Handoff: Finale lokale Testsequenz starten.\n"
+        "Das ist Update, Syntax, Unit-Tests, Login-/LM-Studio-Status, Core-Beta und finale Core-Kette in einem Rutsch.\n"
         "Erweiterte Optionen brauchst du nur fuer gezielte Szenarien oder bewusste Cloud-/Local-Pruefungen.",
         replace=True,
     )
@@ -1709,8 +1978,11 @@ __all__ = [
     "NormalModeResponse",
     "NormalModeUiError",
     "beta_next_test_chain",
+    "final_all_in_one_labels",
+    "final_local_test_command_plan",
     "launch_console_mode",
     "launch_normal_mode",
+    "normal_mode_update_command_plan",
     "open_codex_login_shell",
     "open_expert_shell",
     "normal_mode_surface_decision",
