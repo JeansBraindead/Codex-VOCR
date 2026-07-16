@@ -76,6 +76,11 @@ class WorkerParallelismAdvisor:
             )
         return "\n".join(lines)
 
+    def recommended_workers(self, tasks: list[VocrTask]) -> int:
+        options = self.options(tasks)
+        recommended = next((option for option in options if option.recommended), options[0])
+        return recommended.workers
+
     def _score_option(self, wave: list[VocrTask], workers: int) -> WorkerPlanOption:
         selected = wave[:workers]
         avg_complexity = sum(self._task_complexity(task) for task in selected) / workers

@@ -114,6 +114,55 @@ class ParallelWorkerTests(unittest.TestCase):
         self.assertEqual(events[0].payload["mode"], "parallel")
         self.assertGreaterEqual(events[0].payload["wall_seconds"], 0)
 
+    def test_work_ready_workers_auto_uses_advisor_recommendation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            vocr_home = root / ".vocr"
+            store = MemoryLedger(vocr_home)
+            append_dispatched(store, make_task("ta1", ["docs/**"]), root)
+            append_dispatched(store, make_task("ta2", ["src/api/**"]), root)
+            calls: list[str] = []
+
+            def fake_run_worker(task_id: str, **_: object) -> None:
+                calls.append(task_id)
+
+            with patch("vocr.cli.app.run_worker", side_effect=fake_run_worker), patch(
+                "vocr.cli.app.WARMUP_STAGGER_SECONDS", 0.0
+            ):
+                result = CliRunner().invoke(
+                    app,
+                    ["work-ready", "--limit", "2", "--workers", "auto"],
+                    env={"VOCR_HOME": str(vocr_home)},
+                )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("Advisor empfiehlt 2 Worker", result.output)
+        self.assertEqual(set(calls), {"ta1", "ta2"})
+
+    def test_work_ready_workers_option_overrides_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            vocr_home = root / ".vocr"
+            store = MemoryLedger(vocr_home)
+            append_dispatched(store, make_task("ta1", ["docs/**"]), root)
+            append_dispatched(store, make_task("ta2", ["src/api/**"]), root)
+            calls: list[str] = []
+
+            def fake_run_worker(task_id: str, **_: object) -> None:
+                calls.append(task_id)
+
+            with patch("vocr.cli.app.run_worker", side_effect=fake_run_worker), patch(
+                "vocr.cli.app.time.sleep", side_effect=AssertionError("explicit serial override must not stagger")
+            ):
+                result = CliRunner().invoke(
+                    app,
+                    ["work-ready", "--limit", "2", "--workers", "1"],
+                    env={"VOCR_HOME": str(vocr_home), "VOCR_PARALLEL_WORKERS": "2"},
+                )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(calls, ["ta1", "ta2"])
+
     def test_conflicting_parallel_task_waits_for_next_wave(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

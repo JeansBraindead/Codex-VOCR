@@ -64,6 +64,7 @@ from vocr.orchestration.workflow import (
     render_task_template,
 )
 from vocr.orchestration.readiness import assess_request_readiness
+from vocr.orchestration.worker_advisor import WorkerParallelismAdvisor
 from vocr.ui.normal_mode import NormalModeUiError, launch_console_mode, launch_normal_mode
 
 app = typer.Typer(help="VOCR: Vision / Organize / Code / Review")
@@ -128,6 +129,25 @@ def parallel_worker_count() -> int:
     except ValueError:
         return 1
     return max(1, count)
+
+
+def parse_worker_count(value: str) -> int:
+    try:
+        return max(1, int(value))
+    except ValueError as exc:
+        raise typer.BadParameter("--workers must be 'auto' or a positive integer.") from exc
+
+
+def resolve_ready_worker_count(store: MemoryLedger, limit: int, workers: str | None) -> int:
+    if workers is None:
+        return parallel_worker_count()
+    normalized = workers.strip().lower()
+    if normalized == "auto":
+        tasks = ready_dispatched_tasks(store, limit)
+        recommended = WorkerParallelismAdvisor(Path.cwd()).recommended_workers(tasks)
+        console.print(f"[cyan]Advisor empfiehlt {recommended} Worker fuer diese Welle.[/cyan]")
+        return recommended
+    return parse_worker_count(normalized)
 
 
 def parse_memory_note(raw: str) -> MemoryNote:
@@ -982,7 +1002,10 @@ def run_worker(
     commit: bool = typer.Option(True, "--commit/--no-commit", help="Commit worker changes on success."),
     auto_fix: bool = typer.Option(False, "--fix", help="Retry bounded fixes until review_ready."),
     max_retries: int = typer.Option(2, "--max-retries", min=0, max=3, help="Bounded worker retry count."),
+    workers: str | None = typer.Option(None, "--workers", help="Accepted for CLI parity; single-task runs always use one worker."),
 ) -> None:
+    if workers:
+        console.print("[yellow]--workers gilt fuer work-ready-Wellen; dieser einzelne Task laeuft mit 1 Worker.[/yellow]")
     store = ledger()
     task = store.get_task(task_id)
     if task is None:
@@ -1144,9 +1167,10 @@ def work_ready(
     limit: int = typer.Option(3, "--limit", help="Maximum dispatched tasks to work."),
     timeout_seconds: int = typer.Option(3600, "--timeout", help="Worker timeout in seconds."),
     auto_fix: bool = typer.Option(False, "--fix", help="Retry bounded fixes until review_ready."),
+    workers: str | None = typer.Option(None, "--workers", help="Worker count for this wave: auto or positive integer."),
 ) -> None:
-    worker_count = parallel_worker_count()
     store = ledger()
+    worker_count = resolve_ready_worker_count(store, limit, workers)
     if worker_count > 1:
         tasks = ready_dispatched_tasks(store, limit)
         worked = run_parallel_work_wave(

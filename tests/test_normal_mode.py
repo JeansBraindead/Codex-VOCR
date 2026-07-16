@@ -546,6 +546,7 @@ class NormalModeTests(unittest.TestCase):
             self.assertGreater(options[-1].token_overhead_pct, options[0].token_overhead_pct)
             self.assertTrue(all(option.confidence == "heuristic" for option in options))
             self.assertEqual(options[1].speedup_pct, 50)
+            self.assertEqual(WorkerParallelismAdvisor(root).recommended_workers(tasks), 2)
             self.assertIn("Worker-Vorschlag des Visionaers", message)
             self.assertIn("Empfohlen:", message)
             self.assertIn("Heuristik", message)
