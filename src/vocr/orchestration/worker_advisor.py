@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from vocr.guardrails.claims import build_scope_claim, claims_conflict
+from vocr.memory.advisor_calibration import AdvisorCalibration
 from vocr.models import VocrTask
 
 
@@ -16,12 +17,14 @@ class WorkerPlanOption:
     conflict_risk: str
     score: float
     rationale: str
+    confidence: str = "heuristic"
     recommended: bool = False
 
 
 class WorkerParallelismAdvisor:
     def __init__(self, repo_root: str | Path = ".") -> None:
         self.repo_root = Path(repo_root)
+        self.calibration = AdvisorCalibration(self.repo_root)
 
     def options(self, tasks: list[VocrTask]) -> list[WorkerPlanOption]:
         wave = self._claim_compatible_wave([task for task in tasks if not task.dependencies])
@@ -35,6 +38,7 @@ class WorkerParallelismAdvisor:
                     conflict_risk="keine freie Task",
                     score=0.0,
                     rationale="Keine dependency-freie, konfliktfreie Task ist bereit.",
+                    confidence="heuristic",
                     recommended=True,
                 )
             ]
@@ -51,6 +55,7 @@ class WorkerParallelismAdvisor:
                 conflict_risk=option.conflict_risk,
                 score=option.score,
                 rationale=option.rationale,
+                confidence=option.confidence,
                 recommended=option.score == best_score,
             )
             for option in raw_options
@@ -74,14 +79,31 @@ class WorkerParallelismAdvisor:
     def _score_option(self, wave: list[VocrTask], workers: int) -> WorkerPlanOption:
         selected = wave[:workers]
         avg_complexity = sum(self._task_complexity(task) for task in selected) / workers
-        speedup_pct = int(round((1 - (1 / workers)) * 100)) if workers > 1 else 0
+        measured_speedup = self.calibration.measured_speedup(workers)
+        speedup_pct = (
+            int(round(measured_speedup.value))
+            if measured_speedup is not None
+            else self._heuristic_speedup_pct(workers)
+        )
+        measured_durations = [self.calibration.measured_task_duration(task) for task in selected]
+        measured_duration_count = sum(item.sample_count for item in measured_durations if item is not None)
+        if measured_durations and all(item is not None for item in measured_durations):
+            median_seconds = sum(item.value for item in measured_durations if item is not None) / workers
+            avg_complexity += min(median_seconds / 30, 4.0)
         token_overhead_pct = int(round(self._token_overhead_pct(selected)))
         review_penalty = max(0, workers - 1) * (6 + avg_complexity * 1.5)
         risk_penalty = self._risk_penalty(selected)
         score = speedup_pct - token_overhead_pct - review_penalty - risk_penalty
         if workers == 1:
             score += 8
-        rationale = self._rationale(avg_complexity, review_penalty, risk_penalty)
+        confidence = "measured" if measured_speedup is not None or measured_duration_count >= 5 else "heuristic"
+        rationale = self._rationale(
+            avg_complexity,
+            review_penalty,
+            risk_penalty,
+            confidence=confidence,
+            measured_runs=measured_speedup.sample_count if measured_speedup is not None else measured_duration_count,
+        )
         return WorkerPlanOption(
             workers=workers,
             runnable_tasks=workers,
@@ -90,7 +112,11 @@ class WorkerParallelismAdvisor:
             conflict_risk=self._conflict_risk(selected, avg_complexity, risk_penalty),
             score=round(score, 2),
             rationale=rationale,
+            confidence=confidence,
         )
+
+    def _heuristic_speedup_pct(self, workers: int) -> int:
+        return int(round((1 - (1 / workers)) * 100)) if workers > 1 else 0
 
     def _claim_compatible_wave(self, tasks: list[VocrTask]) -> list[VocrTask]:
         selected: list[VocrTask] = []
@@ -141,7 +167,15 @@ class WorkerParallelismAdvisor:
             return "mittel"
         return "niedrig"
 
-    def _rationale(self, avg_complexity: float, review_penalty: float, risk_penalty: float) -> str:
+    def _rationale(
+        self,
+        avg_complexity: float,
+        review_penalty: float,
+        risk_penalty: float,
+        *,
+        confidence: str,
+        measured_runs: int,
+    ) -> str:
         notes: list[str] = []
         if avg_complexity < 3:
             notes.append("Tasks sind klein genug fuer parallele Bearbeitung")
@@ -153,4 +187,8 @@ class WorkerParallelismAdvisor:
             notes.append("Reviewlast steigt sichtbar")
         if risk_penalty > 0:
             notes.append("breite Scopes oder viele Tests erhoehen Risiko")
+        if confidence == "measured":
+            notes.append(f"kalibriert aus {measured_runs} Lauf-Samples")
+        else:
+            notes.append("Heuristik, noch keine Messdaten")
         return "; ".join(notes) + "."

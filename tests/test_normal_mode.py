@@ -15,7 +15,17 @@ from typer.testing import CliRunner
 from vocr.cli.app import app
 from vocr.beta.scenarios import SCENARIOS
 from vocr.memory.ledger import MemoryLedger
-from vocr.models import AcceptanceCriterion, LedgerEventType, NormalModePhase, PermissionGrant, PermissionMode, VocrTask
+from vocr.memory.learning import LearningStore
+from vocr.models import (
+    AcceptanceCriterion,
+    LedgerEventType,
+    LearningEntry,
+    LearningSnapshot,
+    NormalModePhase,
+    PermissionGrant,
+    PermissionMode,
+    VocrTask,
+)
 from vocr.orchestration.worker_advisor import WorkerParallelismAdvisor
 from vocr.ui.normal_mode import (
     NormalModeController,
@@ -534,8 +544,59 @@ class NormalModeTests(unittest.TestCase):
             self.assertEqual(len([option for option in options if option.recommended]), 1)
             self.assertGreater(options[-1].speedup_pct, options[0].speedup_pct)
             self.assertGreater(options[-1].token_overhead_pct, options[0].token_overhead_pct)
+            self.assertTrue(all(option.confidence == "heuristic" for option in options))
+            self.assertEqual(options[1].speedup_pct, 50)
             self.assertIn("Worker-Vorschlag des Visionaers", message)
             self.assertIn("Empfohlen:", message)
+            self.assertIn("Heuristik", message)
+
+    def test_visionary_worker_plan_uses_measured_speedup_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger = MemoryLedger(root / ".vocr")
+            for _ in range(3):
+                ledger.append(
+                    LedgerEventType.wave_executed,
+                    {"worker_count": 1, "task_count": 2, "worked_count": 2, "wall_seconds": 10.0, "mode": "serial"},
+                )
+                ledger.append(
+                    LedgerEventType.wave_executed,
+                    {"worker_count": 2, "task_count": 2, "worked_count": 2, "wall_seconds": 7.0, "mode": "parallel"},
+                )
+            tasks = [
+                self._task("ta1", ["docs/**"]),
+                self._task("ta2", ["src/api/**"]),
+            ]
+
+            options = WorkerParallelismAdvisor(root).options(tasks)
+            measured = next(option for option in options if option.workers == 2)
+            message = WorkerParallelismAdvisor(root).message(tasks)
+
+            self.assertEqual(measured.speedup_pct, 30)
+            self.assertEqual(measured.confidence, "measured")
+            self.assertIn("kalibriert aus 3 Lauf-Samples", measured.rationale)
+            self.assertIn("kalibriert aus 3 Lauf-Samples", message)
+
+    def test_visionary_worker_plan_uses_measured_duration_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            LearningStore(root / ".vocr").save(
+                LearningSnapshot(
+                    task_titles={
+                        "task:task ta1": LearningEntry(
+                            key="task:task ta1",
+                            count=5,
+                            duration_samples=[30.0, 32.0, 34.0, 36.0, 38.0],
+                        )
+                    }
+                )
+            )
+            tasks = [self._task("ta1", ["docs/**"])]
+
+            options = WorkerParallelismAdvisor(root).options(tasks)
+
+            self.assertEqual(options[0].confidence, "measured")
+            self.assertIn("kalibriert aus 5 Lauf-Samples", options[0].rationale)
 
     def test_visionary_worker_plan_respects_scope_conflicts_and_dependencies(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
