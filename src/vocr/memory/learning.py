@@ -99,6 +99,7 @@ def build_learning_snapshot(ledger: MemoryLedger) -> LearningSnapshot:
     snapshot = LearningSnapshot()
     tasks = {task.id: task for task in ledger.tasks()}
     telemetry_by_task: dict[str, int] = {}
+    durations_by_task: dict[str, list[float]] = {}
     for item in ledger.telemetry():
         if not item.task_id:
             continue
@@ -107,6 +108,8 @@ def build_learning_snapshot(ledger: MemoryLedger) -> LearningSnapshot:
             usage.completion_tokens_estimate or 0
         )
         telemetry_by_task[item.task_id] = telemetry_by_task.get(item.task_id, 0) + total
+        if item.duration_seconds is not None:
+            durations_by_task.setdefault(item.task_id, []).append(item.duration_seconds)
 
     for review in ledger.reviews():
         task = tasks.get(review.task_id)
@@ -116,6 +119,7 @@ def build_learning_snapshot(ledger: MemoryLedger) -> LearningSnapshot:
         tests = review.tests_reviewed
         risks = review.required_changes + review.risks
         token_total = telemetry_by_task.get(task.id, 0)
+        duration_samples = durations_by_task.get(task.id, [])
 
         for scope in task.scope:
             _apply_signal(
@@ -125,6 +129,7 @@ def build_learning_snapshot(ledger: MemoryLedger) -> LearningSnapshot:
                 review.decision.value,
                 risks,
                 token_total,
+                duration_samples,
             )
         _apply_signal(
             _entry(snapshot.task_titles, f"task:{task.title.lower()}"),
@@ -133,6 +138,7 @@ def build_learning_snapshot(ledger: MemoryLedger) -> LearningSnapshot:
             review.decision.value,
             risks,
             token_total,
+            duration_samples,
         )
         for path in files:
             _apply_signal(
@@ -142,6 +148,7 @@ def build_learning_snapshot(ledger: MemoryLedger) -> LearningSnapshot:
                 review.decision.value,
                 risks,
                 token_total,
+                duration_samples,
             )
     return snapshot
 
@@ -159,9 +166,12 @@ def _apply_signal(
     decision: str,
     risks: list[str],
     token_total: int,
+    duration_samples: list[float] | None = None,
 ) -> None:
     entry.count += 1
     entry.estimated_tokens += token_total
+    if duration_samples:
+        entry.duration_samples = [*entry.duration_samples, *duration_samples][-20:]
     _count_many(entry.files, files)
     _count_many(entry.tests, tests)
     _count_many(entry.decisions, [decision])

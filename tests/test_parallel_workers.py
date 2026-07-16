@@ -61,10 +61,19 @@ class ParallelWorkerTests(unittest.TestCase):
                 for event in MemoryLedger(vocr_home).events()
                 if event.type in {LedgerEventType.claim_acquired, LedgerEventType.claim_released}
             ]
+            wave_events = [
+                event
+                for event in MemoryLedger(vocr_home).events()
+                if event.type == LedgerEventType.wave_executed
+            ]
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(calls, ["ta1", "ta2"])
         self.assertEqual(claim_events, [])
+        self.assertEqual(len(wave_events), 1)
+        self.assertEqual(wave_events[0].payload["worker_count"], 1)
+        self.assertEqual(wave_events[0].payload["task_count"], 2)
+        self.assertEqual(wave_events[0].payload["mode"], "serial")
 
     def test_parallel_workers_run_disjoint_tasks_concurrently(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -89,10 +98,21 @@ class ParallelWorkerTests(unittest.TestCase):
                     ["work-ready", "--limit", "2"],
                     env={"VOCR_HOME": str(vocr_home), "VOCR_PARALLEL_WORKERS": "2"},
                 )
+            events = [
+                event
+                for event in MemoryLedger(vocr_home).events()
+                if event.type == LedgerEventType.wave_executed
+            ]
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertEqual(set(starts), {"ta1", "ta2"})
         self.assertLess(abs(starts["ta1"] - starts["ta2"]), 0.04)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].payload["worker_count"], 2)
+        self.assertEqual(events[0].payload["task_count"], 2)
+        self.assertEqual(events[0].payload["worked_count"], 2)
+        self.assertEqual(events[0].payload["mode"], "parallel")
+        self.assertGreaterEqual(events[0].payload["wall_seconds"], 0)
 
     def test_conflicting_parallel_task_waits_for_next_wave(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

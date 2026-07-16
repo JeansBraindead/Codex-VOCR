@@ -1039,6 +1039,7 @@ class WorkflowTests(unittest.TestCase):
                     slice_id=task.slice_id,
                     agent="codex-worker",
                     token_usage=TokenUsage(total_tokens=42),
+                    duration_seconds=1.5,
                 ),
             )
             ledger.append(
@@ -1058,6 +1059,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("scope:docs", snapshot.scopes)
         self.assertEqual(snapshot.scopes["scope:docs"].files["README.md"], 1)
         self.assertEqual(snapshot.scopes["scope:docs"].estimated_tokens, 42)
+        self.assertEqual(snapshot.scopes["scope:docs"].duration_samples, [1.5])
+        self.assertEqual(snapshot.scopes["scope:docs"].avg_duration, 1.5)
 
     def test_learning_store_predicts_task_tokens_from_matching_terms(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -83,6 +83,7 @@ class LedgerEventType(str, Enum):
     message = "message"
     claim_acquired = "claim_acquired"
     claim_released = "claim_released"
+    wave_executed = "wave_executed"
 
 
 class AcceptanceCriterion(BaseModel):
@@ -341,6 +342,7 @@ class RunTelemetry(BaseModel):
     agent: str
     token_usage: TokenUsage = Field(default_factory=TokenUsage)
     command: list[str] = Field(default_factory=list)
+    duration_seconds: float | None = None
     created_at: datetime = Field(default_factory=utc_now)
 
 
@@ -352,6 +354,13 @@ class LearningEntry(BaseModel):
     decisions: dict[str, int] = Field(default_factory=dict)
     risks: dict[str, int] = Field(default_factory=dict)
     estimated_tokens: int = 0
+    duration_samples: list[float] = Field(default_factory=list)
+
+    @property
+    def avg_duration(self) -> float | None:
+        if not self.duration_samples:
+            return None
+        return sum(self.duration_samples) / len(self.duration_samples)
 
 
 class LearningSnapshot(BaseModel):

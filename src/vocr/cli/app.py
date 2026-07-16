@@ -156,7 +156,13 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4) if text else 0
 
 
-def record_worker_telemetry(store: MemoryLedger, task_id: str, result, prompt_text: str) -> int:
+def record_worker_telemetry(
+    store: MemoryLedger,
+    task_id: str,
+    result,
+    prompt_text: str,
+    duration_seconds: float | None = None,
+) -> int:
     task = store.get_task(task_id)
     config = live_model_config()
     telemetry = RunTelemetry(
@@ -167,6 +173,7 @@ def record_worker_telemetry(store: MemoryLedger, task_id: str, result, prompt_te
         task_id=task_id,
         agent="codex-worker",
         command=result.command,
+        duration_seconds=duration_seconds,
         token_usage=TokenUsage(
             prompt_tokens_estimate=estimate_tokens(prompt_text),
             completion_tokens_estimate=estimate_tokens((result.stdout or "") + (result.stderr or "")),
@@ -987,14 +994,22 @@ def run_worker(
     prompt_text = render_task_template(task)
     try:
         for attempt in range(max_retries + 1):
+            attempt_started = time.perf_counter()
             result = client.run_task(
                 task,
                 permission=permission,
                 timeout_seconds=timeout_seconds,
                 extra_prompt=extra_prompt,
             )
+            attempt_duration = time.perf_counter() - attempt_started
             final_result = result
-            actual_tokens = record_worker_telemetry(store, task_id, result, prompt_text + (extra_prompt or ""))
+            actual_tokens = record_worker_telemetry(
+                store,
+                task_id,
+                result,
+                prompt_text + (extra_prompt or ""),
+                duration_seconds=attempt_duration,
+            )
             retry_budget_blocked = retry_blocked_by_token_budget(store, task, actual_tokens)
             if result.exit_code != 0:
                 if not auto_fix or attempt >= max_retries or retry_budget_blocked:
@@ -1093,6 +1108,7 @@ def run_parallel_work_wave(
         )
 
     worked = 0
+    wave_started = time.perf_counter()
     with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as pool:
         futures: dict[concurrent.futures.Future, str] = {}
         first, rest = runnable[0], runnable[1:]
@@ -1110,6 +1126,16 @@ def run_parallel_work_wave(
             else:
                 worked += 1
                 console.print(f"[green][T-{safe_text(task_id)}] Worker complete[/green]")
+    store.append(
+        LedgerEventType.wave_executed,
+        {
+            "worker_count": worker_count,
+            "task_count": len(runnable),
+            "worked_count": worked,
+            "wall_seconds": time.perf_counter() - wave_started,
+            "mode": "serial" if worker_count == 1 else "parallel",
+        },
+    )
     return worked
 
 
@@ -1120,8 +1146,9 @@ def work_ready(
     auto_fix: bool = typer.Option(False, "--fix", help="Retry bounded fixes until review_ready."),
 ) -> None:
     worker_count = parallel_worker_count()
+    store = ledger()
     if worker_count > 1:
-        tasks = ready_dispatched_tasks(ledger(), limit)
+        tasks = ready_dispatched_tasks(store, limit)
         worked = run_parallel_work_wave(
             tasks,
             worker_count=worker_count,
@@ -1131,14 +1158,23 @@ def work_ready(
         console.print(f"[green]Ready work complete[/green] worked={worked}")
         return
 
+    tasks = ready_dispatched_tasks(store, limit)
     worked = 0
-    for task in ledger().tasks():
-        if worked >= limit:
-            break
-        if task.status != TaskStatus.dispatched:
-            continue
+    wave_started = time.perf_counter()
+    for task in tasks:
         run_worker(task.id, timeout_seconds=timeout_seconds, commit=True, auto_fix=auto_fix, max_retries=2)
         worked += 1
+    if tasks:
+        store.append(
+            LedgerEventType.wave_executed,
+            {
+                "worker_count": 1,
+                "task_count": len(tasks),
+                "worked_count": worked,
+                "wall_seconds": time.perf_counter() - wave_started,
+                "mode": "serial",
+            },
+        )
     console.print(f"[green]Ready work complete[/green] worked={worked}")
 
 
