@@ -415,7 +415,8 @@ def _s19(scenario: Scenario, ctx: BetaContext):
 
 
 def _s20(scenario: Scenario, ctx: BetaContext):
-    advisor = WorkerParallelismAdvisor(ctx.temp_root / "s20-repo")
+    repo = ctx.temp_root / "s20-repo"
+    advisor = WorkerParallelismAdvisor(repo)
     tasks = [
         _task("task-s20-docs", scope=["docs/**"]),
         _task("task-s20-api", scope=["src/api/**"]),
@@ -428,13 +429,82 @@ def _s20(scenario: Scenario, ctx: BetaContext):
     options = advisor.options(tasks)
     message = advisor.message(tasks)
     recommended = [option for option in options if option.recommended]
+    recommended_option = recommended[0] if recommended else options[0]
+    tiny_tasks = [
+        _task("task-s20-a", scope=["docs/a.md"]),
+        _task("task-s20-b", scope=["src/api/b.py"]),
+        _task("task-s20-c", scope=["src/cli/c.py"]),
+        _task("task-s20-d", scope=["tests/d.py"]),
+    ]
+    broad_tasks = [_task("task-s20-wide", scope=["src/**"])]
+    mixed_tasks = [
+        _task("task-s20-mixed-doc", scope=["docs/m.md"]),
+        _task("task-s20-mixed-src", scope=["src/**"]),
+        _task("task-s20-mixed-test", scope=["tests/m.py"]),
+    ]
+    broad_tasks[0].context_pack = "context " * 1200
+    broad_tasks[0].tests = ["unit", "integration", "manual review"]
+    measured_repo = ctx.temp_root / "s20-measured"
+    measured_ledger = MemoryLedger(measured_repo / ".vocr")
+    for _ in range(3):
+        measured_ledger.append(
+            LedgerEventType.wave_executed,
+            {"worker_count": 1, "task_count": 2, "worked_count": 2, "wall_seconds": 10.0, "mode": "serial"},
+        )
+        measured_ledger.append(
+            LedgerEventType.wave_executed,
+            {"worker_count": 2, "task_count": 2, "worked_count": 2, "wall_seconds": 7.0, "mode": "parallel"},
+        )
+    measured_options = WorkerParallelismAdvisor(measured_repo).options(tiny_tasks[:2])
     steps = [
         step("offers ordered worker options", [option.workers for option in options] == list(range(1, len(options) + 1))),
         step("recommends one scored option", len(recommended) == 1 and recommended[0].score == max(option.score for option in options)),
         step("explains token overhead", "Token-/Kontext-Overhead" in message),
         step("excludes conflicts and dependencies from wave", options[-1].runnable_tasks == 4),
+        step("tiny disjoint tasks parallelize", advisor.recommended_workers(tiny_tasks) > 1),
+        step("broad task stays serial", advisor.recommended_workers(broad_tasks) == 1),
+        step("mixed tasks choose bounded middle", 1 <= advisor.recommended_workers(mixed_tasks) <= len(mixed_tasks)),
+        step("heuristic confidence without seed", recommended_option.confidence == "heuristic"),
+        step("measured confidence with seed", any(option.confidence == "measured" for option in measured_options)),
     ]
-    return _scenario_result(scenario, steps)
+    return _scenario_result(
+        scenario,
+        steps,
+        metrics={
+            "recommended_workers": float(recommended_option.workers),
+            "speedup_pct_recommended": float(recommended_option.speedup_pct),
+            "confidence": recommended_option.confidence,
+        },
+    )
+
+
+def _s23(scenario: Scenario, ctx: BetaContext):
+    advisor = WorkerParallelismAdvisor(ctx.temp_root / "s23-repo")
+    tasks = [
+        _task("task-s23-docs", scope=["docs/**"]),
+        _task("task-s23-api", scope=["src/api/**"]),
+        _task("task-s23-tests", scope=["tests/**"]),
+    ]
+    options = advisor.options(tasks)
+    workers_two = next(option for option in options if option.workers == 2)
+    workers_three = next(option for option in options if option.workers == 3)
+    steps = [
+        step("fallback confidence is heuristic", all(option.confidence == "heuristic" for option in options)),
+        step("two-worker speedup unchanged", workers_two.speedup_pct == 50),
+        step("three-worker speedup unchanged", workers_three.speedup_pct == 67),
+        step("two-worker overhead unchanged", workers_two.token_overhead_pct == 15),
+        step("three-worker overhead unchanged", workers_three.token_overhead_pct == 24),
+        step("recommended fallback stable", advisor.recommended_workers(tasks) == 2),
+    ]
+    return _scenario_result(
+        scenario,
+        steps,
+        metrics={
+            "recommended_workers": float(advisor.recommended_workers(tasks)),
+            "speedup_pct_recommended": float(next(option for option in options if option.recommended).speedup_pct),
+            "confidence": next(option for option in options if option.recommended).confidence,
+        },
+    )
 
 
 def _lmstudio_config(repo_root: Path) -> tuple[str | None, str | None, str | None]:
@@ -597,5 +667,6 @@ SCENARIOS: dict[str, Scenario] = {
         _wrap("S20", "visionary-worker-plan", "core", True, _s20),
         _wrap("S21", "lmstudio-models-live", "local", False, _s21),
         _wrap("S22", "lmstudio-chat-live", "local", False, _s22),
+        _wrap("S23", "advisor-calibration-fallback", "core", True, _s23),
     ]
 }

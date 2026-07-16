@@ -24,7 +24,7 @@ Erreicht:
 - Normalmode mit sichtbarem Aktivitaetslog.
 - Update-Button im Beta-Reiter.
 - Final-All-in-One-Sequenz.
-- Core-Beta S00-S16, S18-S20 gruen.
+- Core-Beta S00-S16, S18-S20 und S23 gruen.
 - Local-Live S21/S22 gegen LM Studio gruen.
 - Visionary Worker Advisor fuer optimale Worker-Empfehlungen.
 - Claim-Koordination fuer parallele, disjunkte Wellen.

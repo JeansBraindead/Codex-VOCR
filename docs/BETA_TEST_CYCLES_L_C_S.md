@@ -7,11 +7,12 @@ handoff and the first controlled cloud runs.
 Current verified baseline from July 16, 2026:
 
 - 133 unit tests pass.
-- Beta Core passes 20/20 with exit code 0.
+- Beta Core passes the current deterministic Core suite with exit code 0.
 - S11 measures 41.3% prompt-token reduction in contract mode: 654 to 384.
 - S21 confirms LM Studio model visibility when LM Studio is reachable.
 - S22 confirms a small LM Studio chat completion against an already loaded
   model.
+- S23 locks the Worker Advisor heuristic fallback until calibration data exists.
 - S21/S22 skip cleanly when key or server is unavailable; skip is not fail.
 - S17 cloud remains skipped unless `--allow-cloud` is explicit.
 

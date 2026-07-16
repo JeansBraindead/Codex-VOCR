@@ -326,6 +326,7 @@ class NormalModeTests(unittest.TestCase):
         self.assertEqual(len(scenario_ids), len(set(scenario_ids)))
         self.assertIn("S18", scenario_ids)
         self.assertIn("S20", scenario_ids)
+        self.assertIn("S23", scenario_ids)
         self.assertNotIn("S17", scenario_ids)
         self.assertTrue(all(step.tier == "core" for step in chain))
         self.assertFalse(any(step.allow_cloud for step in chain))

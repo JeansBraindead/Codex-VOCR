@@ -16,6 +16,7 @@ The current handoff confirms:
 - Recommended core beta passes.
 - Final staged beta chain passes.
 - Local-live LM Studio checks S21/S22 pass against the already loaded model.
+- S23 guards the Worker Advisor heuristic fallback until measured calibration is available.
 
 Cloud tests are still explicitly opt-in and were not part of the local green
 handoff.

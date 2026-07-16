@@ -70,7 +70,7 @@ Runs the staged deterministic core chain:
 |---|---|
 | Smoke | S00, S01, S04 |
 | Safety | S02, S03, S07, S15, S16 |
-| Workflow/Parallelitaet/Memory | S05, S06, S08, S09, S10, S11, S14, S18, S19, S20 |
+| Workflow/Parallelitaet/Memory | S05, S06, S08, S09, S10, S11, S14, S18, S19, S20, S23 |
 | Local-Assist-Mocks | S12, S13 |
 
 ### Finale Lokale Testsequenz Starten
@@ -119,6 +119,7 @@ running LM Studio OpenAI-compatible API and the repo `.env`.
 | S20 | core | visionary worker plan |
 | S21 | local | LM Studio `/models` live check |
 | S22 | local | LM Studio `/chat/completions` live smoke |
+| S23 | core | advisor calibration fallback |
 
 ## CLI Equivalents
 

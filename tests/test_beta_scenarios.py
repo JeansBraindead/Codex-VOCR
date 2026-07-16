@@ -33,6 +33,27 @@ class BetaScenarioTests(unittest.TestCase):
         self.assertIn("prompt_tokens_saved_pct", result.metrics)
         self.assertGreater(result.metrics["prompt_tokens_saved_pct"], 0)
 
+    def test_s20_reports_worker_advisor_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = run_beta(SCENARIOS.values(), only=["S20"], report_dir=Path(tmp), json_only=True)
+
+        self.assertEqual(run.exit_code, 0)
+        result = run.results[0]
+        self.assertEqual(result.status, "passed")
+        self.assertIn("recommended_workers", result.metrics)
+        self.assertIn("speedup_pct_recommended", result.metrics)
+        self.assertEqual(result.metrics["confidence"], "heuristic")
+
+    def test_s23_locks_advisor_heuristic_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = run_beta(SCENARIOS.values(), only=["S23"], report_dir=Path(tmp), json_only=True)
+
+        self.assertEqual(run.exit_code, 0)
+        result = run.results[0]
+        self.assertEqual(result.status, "passed")
+        self.assertEqual(result.metrics["recommended_workers"], 2.0)
+        self.assertEqual(result.metrics["confidence"], "heuristic")
+
     def test_cli_lists_scenarios(self) -> None:
         result = CliRunner().invoke(app, ["beta", "--list"])
 

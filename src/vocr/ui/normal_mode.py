@@ -130,7 +130,7 @@ def beta_next_test_chain(*, include_cloud: bool = False, include_local_live: boo
             title="3. Workflow: Review, Kontext, Budget, Parallelitaet und Memory",
             purpose="Pruefen, ob VOCR Arbeit vorbereitet, koordiniert, parallelisiert und Projektnotizen sauber persistiert.",
             tier="core",
-            only=("S05", "S06", "S08", "S09", "S10", "S11", "S14", "S18", "S19", "S20"),
+            only=("S05", "S06", "S08", "S09", "S10", "S11", "S14", "S18", "S19", "S20", "S23"),
             tag="chain-03-workflow",
         ),
         BetaTestChainStep(

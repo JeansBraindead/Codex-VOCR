@@ -84,6 +84,15 @@ def render_markdown(payload: dict) -> str:
             f"| {item['id']} {item['title']} | {'ja' if item['hard'] else 'nein'} | "
             f"{item['status']} | {item['duration_s']:.2f}s |"
         )
+    metric_lines: list[str] = []
+    for item in payload["results"]:
+        metrics = item.get("metrics") or {}
+        if not metrics:
+            continue
+        metric_text = ", ".join(f"{key}={value}" for key, value in sorted(metrics.items()))
+        metric_lines.append(f"- {item['id']}: {metric_text}")
+    if metric_lines:
+        lines.extend(["", "## Metrics", *metric_lines])
     if payload.get("trend"):
         lines.extend(["", "## Trend"])
         for key, value in payload["trend"].items():

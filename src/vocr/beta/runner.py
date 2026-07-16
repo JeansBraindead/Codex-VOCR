@@ -27,7 +27,7 @@ class ScenarioResult(BaseModel):
     status: str
     duration_s: float
     steps: list[BetaStep] = Field(default_factory=list)
-    metrics: dict[str, float] = Field(default_factory=dict)
+    metrics: dict[str, float | str] = Field(default_factory=dict)
     notes: list[str] = Field(default_factory=list)
 
 
