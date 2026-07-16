@@ -1566,6 +1566,7 @@ def beta_run(
         max_cloud_tasks=max_cloud_tasks,
         json_only=json_only,
         tag=tag,
+        repo_root=Path.cwd(),
     )
     for item in run.results:
         color = "green" if item.status == "passed" else ("yellow" if item.status == "skipped" else "red")

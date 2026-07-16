@@ -1505,6 +1505,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
                     max_cloud_tasks=max_cloud_tasks,
                     json_only=json_only,
                     tag=tag,
+                    repo_root=controller.repo_root,
                     on_progress=progress,
                 )
                 lines = [
@@ -1604,6 +1605,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
                         max_cloud_tasks=step.max_cloud_tasks,
                         json_only=beta_json_only.get(),
                         tag=step.tag,
+                        repo_root=controller.repo_root,
                         on_progress=progress,
                     )
                     overall_exit_code = max(overall_exit_code, run.exit_code)
@@ -1773,6 +1775,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
                     max_cloud_tasks=3,
                     json_only=beta_json_only.get(),
                     tag="final-all-recommended-core",
+                    repo_root=controller.repo_root,
                     on_progress=beta_progress,
                 )
                 overall_exit_code = max(overall_exit_code, recommended.exit_code)
@@ -1806,6 +1809,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
                         max_cloud_tasks=step.max_cloud_tasks,
                         json_only=beta_json_only.get(),
                         tag=f"final-all-{step.tag}",
+                        repo_root=controller.repo_root,
                         on_progress=beta_progress,
                     )
                     overall_exit_code = max(overall_exit_code, run.exit_code)

@@ -437,8 +437,8 @@ def _s20(scenario: Scenario, ctx: BetaContext):
     return _scenario_result(scenario, steps)
 
 
-def _lmstudio_config() -> tuple[str | None, str | None, str | None]:
-    values = read_env_file(Path.cwd() / ".env")
+def _lmstudio_config(repo_root: Path) -> tuple[str | None, str | None, str | None]:
+    values = read_env_file(repo_root / ".env")
     explicit_base_url = values.get("OPENAI_BASE_URL") or os.getenv("OPENAI_BASE_URL")
     base_url = explicit_base_url or "http://localhost:1234/v1"
     api_key = values.get("LMSTUDIO_API_KEY") or os.getenv("LMSTUDIO_API_KEY")
@@ -448,8 +448,14 @@ def _lmstudio_config() -> tuple[str | None, str | None, str | None]:
     return base_url.rstrip("/"), api_key, configured_model
 
 
-def _lmstudio_json(path: str, *, method: str = "GET", payload: dict[str, object] | None = None) -> tuple[int, dict[str, object] | None, str]:
-    base_url, api_key, _ = _lmstudio_config()
+def _lmstudio_json_for_repo(
+    repo_root: Path,
+    path: str,
+    *,
+    method: str = "GET",
+    payload: dict[str, object] | None = None,
+) -> tuple[int, dict[str, object] | None, str]:
+    base_url, api_key, _ = _lmstudio_config(repo_root)
     if not api_key:
         return 0, None, "LMSTUDIO_API_KEY/OPENAI_API_KEY is not set"
     body = json.dumps(payload).encode("utf-8") if payload is not None else None
@@ -465,33 +471,41 @@ def _lmstudio_json(path: str, *, method: str = "GET", payload: dict[str, object]
     try:
         with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310 - user-configured local OpenAI-compatible endpoint.
             raw = response.read().decode("utf-8")
-            return int(response.status), json.loads(raw), ""
+            try:
+                return int(response.status), json.loads(raw), ""
+            except json.JSONDecodeError:
+                snippet = raw.strip().replace("\n", " ")[:160]
+                return int(response.status), None, f"HTTP {response.status} non-JSON response: {snippet}"
     except urllib.error.HTTPError as exc:
         return int(exc.code), None, exc.reason or exc.__class__.__name__
     except Exception as exc:  # noqa: BLE001 - beta result should carry environment failures.
         return 0, None, exc.__class__.__name__
 
 
-def _lmstudio_models() -> tuple[list[str], str]:
-    status, data, error = _lmstudio_json("/models")
+def _lmstudio_models(repo_root: Path) -> tuple[list[str], str]:
+    status, data, error = _lmstudio_json_for_repo(repo_root, "/models")
     if status == 0:
         return [], error
     if status >= 400:
         return [], f"HTTP {status}: {error}"
     if not isinstance(data, dict):
         return [], "models response is not JSON object"
+    if isinstance(data.get("error"), str):
+        return [], f"models endpoint returned error payload: {str(data['error'])[:160]}"
+    if isinstance(data.get("message"), str):
+        return [], f"models endpoint returned message payload: {str(data['message'])[:160]}"
     items = data.get("data")
     if not isinstance(items, list):
-        return [], "models response has no data list"
+        return [], f"models response has no data list; keys={','.join(sorted(str(key) for key in data.keys()))}"
     models = [str(item.get("id")) for item in items if isinstance(item, dict) and item.get("id")]
     return models, ""
 
 
 def _s21(scenario: Scenario, ctx: BetaContext):
-    _, api_key, configured_model = _lmstudio_config()
+    _, api_key, configured_model = _lmstudio_config(ctx.repo_root)
     if not api_key:
         return _scenario_result(scenario, [BetaStep(name="api key present", status="skipped", details="LM Studio API key not configured.")])
-    models, error = _lmstudio_models()
+    models, error = _lmstudio_models(ctx.repo_root)
     steps = [
         step("models endpoint reachable", bool(models), error or f"{len(models)} model(s) visible"),
     ]
@@ -501,10 +515,10 @@ def _s21(scenario: Scenario, ctx: BetaContext):
 
 
 def _s22(scenario: Scenario, ctx: BetaContext):
-    _, api_key, configured_model = _lmstudio_config()
+    _, api_key, configured_model = _lmstudio_config(ctx.repo_root)
     if not api_key:
         return _scenario_result(scenario, [BetaStep(name="api key present", status="skipped", details="LM Studio API key not configured.")])
-    models, error = _lmstudio_models()
+    models, error = _lmstudio_models(ctx.repo_root)
     if not models:
         return _scenario_result(scenario, [BetaStep(name="loaded model visible", status="skipped", details=error or "No model visible in /models.")])
     model = configured_model if configured_model in models else models[0]
@@ -514,7 +528,7 @@ def _s22(scenario: Scenario, ctx: BetaContext):
         "temperature": 0,
         "max_tokens": 8,
     }
-    status, data, request_error = _lmstudio_json("/chat/completions", method="POST", payload=payload)
+    status, data, request_error = _lmstudio_json_for_repo(ctx.repo_root, "/chat/completions", method="POST", payload=payload)
     content = ""
     if isinstance(data, dict):
         choices = data.get("choices")

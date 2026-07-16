@@ -96,6 +96,60 @@ class BetaScenarioTests(unittest.TestCase):
         self.assertEqual(run.exit_code, 0)
         self.assertEqual([item.status for item in run.results], ["passed", "passed"])
 
+    def test_local_live_models_reports_unexpected_endpoint_payload(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return None
+
+            def read(self) -> bytes:
+                return b'{"error":"Unexpected endpoint or method. Returning 200 anyway"}'
+
+        env = {
+            "LMSTUDIO_API_KEY": "local-key",
+            "OPENAI_BASE_URL": "http://localhost:1234/v1",
+        }
+        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", env, clear=False):
+            with patch("vocr.beta.scenarios.read_env_file", return_value={}):
+                with patch("vocr.beta.scenarios.urllib.request.urlopen", return_value=FakeResponse()):
+                    run = run_beta(SCENARIOS.values(), only=["S21"], report_dir=Path(tmp), json_only=True)
+
+        self.assertEqual(run.exit_code, 2)
+        self.assertEqual(run.results[0].status, "failed")
+        self.assertIn("Unexpected endpoint", run.results[0].steps[0].details)
+
+    def test_local_live_prefers_repo_env_over_process_env(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return None
+
+            def read(self) -> bytes:
+                return b'{"data":[{"id":"repo-model"}]}'
+
+        def fake_urlopen(request, timeout=20):  # noqa: ANN001
+            self.assertEqual(request.headers["Authorization"], "Bearer repo-key")
+            return FakeResponse()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            (root / ".env").write_text("LMSTUDIO_API_KEY=repo-key\nOPENAI_BASE_URL=http://localhost:1234/v1\n", encoding="utf-8")
+            with patch.dict("os.environ", {"LMSTUDIO_API_KEY": "wrong-process-key"}, clear=False):
+                with patch("vocr.beta.scenarios.urllib.request.urlopen", side_effect=fake_urlopen):
+                    run = run_beta(SCENARIOS.values(), only=["S21"], report_dir=Path(tmp) / "reports", json_only=True, repo_root=root)
+
+        self.assertEqual(run.exit_code, 0)
+        self.assertEqual(run.results[0].status, "passed")
+
 
 if __name__ == "__main__":
     unittest.main()

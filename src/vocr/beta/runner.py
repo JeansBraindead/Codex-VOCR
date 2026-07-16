@@ -44,6 +44,7 @@ class Scenario:
 class BetaContext:
     temp_root: Path
     report_dir: Path
+    repo_root: Path
     allow_cloud: bool = False
     max_cloud_tasks: int = 3
 
@@ -94,6 +95,7 @@ def run_beta(
     max_cloud_tasks: int = 3,
     json_only: bool = False,
     tag: str | None = None,
+    repo_root: Path | str | None = None,
     on_progress: BetaProgressCallback | None = None,
 ) -> BetaRun:
     from vocr.beta.report import write_reports
@@ -107,6 +109,7 @@ def run_beta(
         ctx = BetaContext(
             temp_root=Path(tmp),
             report_dir=report_path,
+            repo_root=Path(repo_root).resolve() if repo_root else Path.cwd().resolve(),
             allow_cloud=allow_cloud,
             max_cloud_tasks=max_cloud_tasks,
         )
