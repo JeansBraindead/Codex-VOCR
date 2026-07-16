@@ -12,6 +12,10 @@ The latest green handoff is:
 Use that file as the current local go/no-go source until a newer session file
 replaces it.
 
+The remaining local-live, cloud, and soak cycles are tracked in:
+
+`docs/BETA_TEST_CYCLES_L_C_S.md`
+
 ## Before Testing
 
 Use a test clone, not the active development checkout, when validating the

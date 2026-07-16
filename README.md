@@ -115,6 +115,9 @@ vocr beta --tier all --allow-cloud
 Aktueller gruen verifizierter Handoff:
 [docs/beta/sessions/2026-07-16-jeenz-normalmode.md](docs/beta/sessions/2026-07-16-jeenz-normalmode.md)
 
+Naechste Testzyklen:
+[docs/BETA_TEST_CYCLES_L_C_S.md](docs/BETA_TEST_CYCLES_L_C_S.md)
+
 ## Ablauf
 
 ```mermaid
