@@ -96,6 +96,43 @@ class BetaScenarioTests(unittest.TestCase):
         self.assertEqual(run.exit_code, 0)
         self.assertEqual([item.status for item in run.results], ["passed", "passed"])
 
+    def test_local_live_chat_accepts_reasoning_only_response(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload: bytes) -> None:
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return None
+
+            def read(self) -> bytes:
+                return self.payload
+
+        def fake_urlopen(request, timeout=20):  # noqa: ANN001
+            if request.full_url.endswith("/models"):
+                return FakeResponse(b'{"data":[{"id":"gpt-oss-20b"}]}')
+            return FakeResponse(
+                b'{"choices":[{"message":{"content":"","reasoning":"thinking signal"},"finish_reason":"length"}]}'
+            )
+
+        env = {
+            "LMSTUDIO_API_KEY": "local-key",
+            "OPENAI_BASE_URL": "http://localhost:1234/v1",
+            "OPENAI_MODEL": "gpt-oss-20b",
+        }
+        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", env, clear=False):
+            with patch("vocr.beta.scenarios.read_env_file", return_value={}):
+                with patch("vocr.beta.scenarios.urllib.request.urlopen", side_effect=fake_urlopen):
+                    run = run_beta(SCENARIOS.values(), only=["S22"], report_dir=Path(tmp), json_only=True)
+
+        self.assertEqual(run.exit_code, 0)
+        self.assertEqual(run.results[0].status, "passed")
+        self.assertGreater(run.results[0].metrics["reasoning_chars"], 0)
+
     def test_local_live_models_reports_unexpected_endpoint_payload(self) -> None:
         class FakeResponse:
             status = 200

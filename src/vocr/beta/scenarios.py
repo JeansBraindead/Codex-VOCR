@@ -530,17 +530,28 @@ def _s22(scenario: Scenario, ctx: BetaContext):
     }
     status, data, request_error = _lmstudio_json_for_repo(ctx.repo_root, "/chat/completions", method="POST", payload=payload)
     content = ""
+    reasoning = ""
+    finish_reason = ""
     if isinstance(data, dict):
         choices = data.get("choices")
         if isinstance(choices, list) and choices and isinstance(choices[0], dict):
             message = choices[0].get("message")
+            finish_reason = str(choices[0].get("finish_reason") or "")
             if isinstance(message, dict):
                 content = str(message.get("content") or "").strip()
+                reasoning = str(message.get("reasoning") or "").strip()
+    text_chars = len(content) + len(reasoning)
     steps = [
-        step("chat completion returned", status == 200 and bool(content), request_error or f"model={model}"),
-        step("completion stayed tiny", len(content) <= 80, f"chars={len(content)}"),
+        step("chat completion returned", status == 200 and bool(data), request_error or f"model={model}"),
+        step("assistant signal returned", text_chars > 0, f"content_chars={len(content)}; reasoning_chars={len(reasoning)}; finish={finish_reason or '-'}"),
+        step("completion stayed tiny", text_chars <= 400, f"chars={text_chars}"),
     ]
-    return _scenario_result(scenario, steps, metrics={"completion_chars": float(len(content))}, notes=[f"model={model}"])
+    return _scenario_result(
+        scenario,
+        steps,
+        metrics={"completion_chars": float(len(content)), "reasoning_chars": float(len(reasoning))},
+        notes=[f"model={model}", f"finish_reason={finish_reason or '-'}"],
+    )
 
 
 class _cwd:

@@ -19,6 +19,7 @@ Duration: 01:16-ongoing
 | T14 All-in-One final sequence | pass-pending-fresh-ui-click | Beta tab now includes update, syntax, full unit tests, ChatGPT/Codex login status, LM Studio reachability, recommended core beta and the final staged core chain in one run. S17 stays opt-in via the cloud checkbox. Local implementation validation passed: 127 unit tests, recommended core beta 20 scenarios exit 0, staged core chain 3 + 5 + 10 + 2 scenarios exit 0. |
 | T15 Local-Live LM Studio beta scenarios | implemented-pending-fresh-ui-retest | Added S21 `/models` and S22 `/chat/completions` local-live checks. They use the existing LM Studio API only and do not load models. Unit tests passed with mocked LM Studio. Local smoke in this working repo returned 401 because this process has a non-working LM Studio env key; fresh UI retest should use the saved test-folder `.env` key. |
 | T15.1 Local-Live repo-env precedence | pass | Fixed S21/S22 to receive the active repo root from UI/CLI and prefer that repo `.env` over stale process environment variables. Regression test proves repo key wins over wrong process key. |
+| T15.2 Local-Live reasoning-only response | pass | User retest showed S21 passed and S22 failed with `gpt-oss-20b` because LM Studio returned reasoning text while `message.content` stayed empty. Fixed S22 to accept content or reasoning as a valid assistant signal. Direct test-folder smoke passed: S21 visible models 16, S22 reasoning chars 16, exit 0. |
 
 ## Issues found
 
@@ -73,6 +74,7 @@ Duration: 01:16-ongoing
 - Implementation: Added soft local tier scenarios S21 `/models` and S22 tiny `/chat/completions`; All-in-One Final includes them before cloud.
 - Safety: Reads repo `.env` first, never writes or changes the LM Studio key, and does not start/download/load a model.
 - Status: Implemented; repo-root/env precedence fixed after user showed `/v1/models` succeeded earlier from the UI path. Fresh test clone should retest with the UI-saved LM Studio key.
+- Follow-up fix: S22 now accepts GPT-OSS-style reasoning-only responses when `message.content` is empty and records `finish_reason` plus content/reasoning character counts.
 
 ## Free-form observations
 
