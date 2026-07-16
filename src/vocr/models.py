@@ -62,6 +62,7 @@ class NormalModePhase(str, Enum):
     welcome = "welcome"
     intake = "intake"
     confirmation = "confirmation"
+    worker_confirmation = "worker_confirmation"
     prepared = "prepared"
 
 

@@ -218,6 +218,11 @@ class NormalModeController:
         self.prepared_task_count = 0
         self.prepared_worktree_count = 0
         self.on_activity = on_activity
+        self._pending_worker_tasks: list[VocrTask] | None = None
+        self._pending_worker_prepare_worktrees = False
+        self._pending_worker_message = ""
+        self._pending_worker_slice_id = ""
+        self._pending_worker_recommended = 0
 
     def _activity(self, message: str) -> None:
         if self.on_activity:
@@ -257,6 +262,9 @@ class NormalModeController:
 
         if self.phase == NormalModePhase.confirmation:
             return self._handle_confirmation_gate(text)
+
+        if self.phase == NormalModePhase.worker_confirmation:
+            return self._handle_worker_confirmation(text)
 
         if self.phase == NormalModePhase.prepared:
             return self._response(
@@ -433,13 +441,88 @@ class NormalModeController:
             self._activity(f"Task {task.id} wird gespeichert: {task.title}")
             self.ledger.append(LedgerEventType.task_created, task)
         worker_plan = self._worker_plan_message(tasks)
-
         prepare_worktree_requested = self._should_prepare_worktrees()
+        recommended = WorkerParallelismAdvisor(self.repo_root).recommended_workers(tasks)
+
+        if recommended <= 1:
+            return self._finish_preparation(tasks, prepare_worktree_requested, worker_plan, slice_id=slice_item.id)
+
+        if self.session_permission:
+            self._apply_worker_recommendation(recommended)
+            note = (
+                f"Dangermode aktiv: Empfehlung von {recommended} Workern wurde ohne Rueckfrage als "
+                "Standard uebernommen (VOCR_PARALLEL_WORKERS)."
+            )
+            return self._finish_preparation(
+                tasks, prepare_worktree_requested, worker_plan, slice_id=slice_item.id, worker_note=note
+            )
+
+        self._pending_worker_tasks = tasks
+        self._pending_worker_prepare_worktrees = prepare_worktree_requested
+        self._pending_worker_message = worker_plan
+        self._pending_worker_slice_id = slice_item.id
+        self._pending_worker_recommended = recommended
+        self.phase = NormalModePhase.worker_confirmation
+        question = (
+            f"\n\nUebernehme ich {recommended} Worker als Standard fuer diese Welle (VOCR_PARALLEL_WORKERS)? "
+            "Antworte mit ja, oder nenne eine andere Zahl (z.B. 1 fuer sequenziell)."
+        )
+        return self._response(f"{worker_plan}{question}")
+
+    def _handle_worker_confirmation(self, text: str) -> NormalModeResponse:
+        tasks = self._pending_worker_tasks or []
+        prepare_worktree_requested = self._pending_worker_prepare_worktrees
+        worker_plan = self._pending_worker_message
+        slice_id = self._pending_worker_slice_id
+        recommended = self._pending_worker_recommended
+        stripped = text.strip()
+
+        if self._is_negative_confirmation(stripped) or stripped.lower() in {"1", "sequenziell", "sequentiell"}:
+            applied: int | None = None
+            note = "Ich bleibe bei sequenziell; VOCR_PARALLEL_WORKERS wurde nicht veraendert."
+        elif self._confirms_gate(stripped):
+            applied = recommended
+            note = f"{recommended} Worker als Standard uebernommen (VOCR_PARALLEL_WORKERS)."
+        elif stripped.isdigit():
+            options = WorkerParallelismAdvisor(self.repo_root).options(tasks)
+            max_workers = max((option.workers for option in options), default=1)
+            applied = max(1, min(int(stripped), max_workers))
+            note = f"{applied} Worker als Standard uebernommen (VOCR_PARALLEL_WORKERS)."
+        else:
+            return self._response(
+                f"{worker_plan}\n\nBitte antworte mit ja, nein, oder einer Worker-Zahl "
+                f"(z.B. 1 oder {recommended})."
+            )
+
+        if applied and applied > 1:
+            self._apply_worker_recommendation(applied)
+
+        self._pending_worker_tasks = None
+        self._pending_worker_prepare_worktrees = False
+        self._pending_worker_message = ""
+        self._pending_worker_slice_id = ""
+        self._pending_worker_recommended = 0
+        return self._finish_preparation(
+            tasks, prepare_worktree_requested, worker_plan, slice_id=slice_id, worker_note=note
+        )
+
+    def _apply_worker_recommendation(self, workers: int) -> None:
+        update_env_file({"VOCR_PARALLEL_WORKERS": str(workers)}, self.repo_root / ".env")
+
+    def _finish_preparation(
+        self,
+        tasks: list[VocrTask],
+        prepare_worktree_requested: bool,
+        worker_plan: str,
+        *,
+        slice_id: str,
+        worker_note: str = "",
+    ) -> NormalModeResponse:
         prepared_worktrees = 0
         if prepare_worktree_requested:
             grant = PermissionGrant(
                 mode=PermissionMode.approve_all,
-                scope=slice_item.id,
+                scope=slice_id,
                 reason="User confirmed the normal Visionary flow.",
             )
             self.ledger.append(LedgerEventType.permission_granted, grant)
@@ -449,24 +532,25 @@ class NormalModeController:
         self.phase = NormalModePhase.prepared
         self.prepared_task_count = len(tasks)
         self.prepared_worktree_count = prepared_worktrees
+        plan_text = f"\n\n{worker_plan}\n\n{worker_note}" if worker_note else f"\n\n{worker_plan}"
         if prepared_worktrees:
             message = (
                 "Bestaetigt. Ich habe die Arbeit in kleine, pruefbare Schritte zerlegt und die ersten "
                 "getrennten Arbeitsbereiche vorbereitet. Es wurde nichts veroeffentlicht; die Pruefung bleibt der naechste Halt."
-                f"\n\n{worker_plan}"
+                f"{plan_text}"
             )
         elif prepare_worktree_requested:
             message = (
                 "Bestaetigt. Ich habe die Arbeit in kleine, pruefbare Schritte zerlegt. "
                 "Ein getrennter Arbeitsbereich war gewuenscht, konnte hier aber nicht vorbereitet werden. "
                 "Es wurde nichts veroeffentlicht; Review und Promote bleiben gesperrt."
-                f"\n\n{worker_plan}"
+                f"{plan_text}"
             )
         else:
             message = (
                 "Bestaetigt. Ich habe die Arbeit in kleine, pruefbare Schritte zerlegt. "
                 "Es wurde noch kein Arbeitsbereich erzeugt, weil du nur Planung freigegeben hast."
-                f"\n\n{worker_plan}"
+                f"{plan_text}"
             )
         return self._response(message, prepared_tasks=len(tasks), prepared_worktrees=prepared_worktrees)
 
@@ -956,6 +1040,8 @@ class NormalModeController:
     def _environment_hint(self) -> str:
         if self.phase == NormalModePhase.prepared:
             return "Vorbereitung abgeschlossen. Veroeffentlichung bleibt review-gesteuert."
+        if self.phase == NormalModePhase.worker_confirmation:
+            return "Tasks sind vorbereitet. Ich warte auf deine Bestaetigung zum Worker-Vorschlag."
         if self.phase == NormalModePhase.confirmation:
             return "Bereit fuer deine Freigabe. Noch nichts wurde erzeugt."
         return "Noch im Intake. VOCR erzeugt vor deiner Freigabe keine Tasks oder Arbeitsbereiche."

@@ -639,6 +639,122 @@ class NormalModeTests(unittest.TestCase):
             self.assertLess(recommended.workers, len(options))
             self.assertEqual(options[-1].conflict_risk, "hoch")
 
+    def _drive_to_intake_confirmation(self, controller: NormalModeController) -> None:
+        controller.receive("Ich will eine Startshell fuer VOCR.")
+        controller.receive("ja")
+        controller.receive("ja")
+        controller.receive("ja")
+        controller.receive("ja")
+        controller.receive("nur planen")
+
+    def test_worker_recommendation_waits_for_confirmation_before_setting_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tasks = [self._task("ta1", ["docs/**"]), self._task("ta2", ["src/api/**"])]
+            recommended = WorkerParallelismAdvisor(root).recommended_workers(tasks)
+            self.assertGreater(recommended, 1)
+
+            controller = NormalModeController(root)
+            self._drive_to_intake_confirmation(controller)
+            with patch("vocr.ui.normal_mode.organize_slice", return_value=tasks):
+                gate = controller.receive("Bestaetigen")
+
+            self.assertEqual(gate.phase, NormalModePhase.worker_confirmation)
+            self.assertIn("Worker-Vorschlag des Visionaers", gate.message)
+            self.assertIn(f"Uebernehme ich {recommended} Worker", gate.message)
+            self.assertFalse((root / ".env").exists())
+
+            confirmed = controller.receive("ja")
+
+            self.assertEqual(confirmed.phase, NormalModePhase.prepared)
+            self.assertIn(f"{recommended} Worker als Standard uebernommen", confirmed.message)
+            self.assertIn(f"VOCR_PARALLEL_WORKERS={recommended}", (root / ".env").read_text(encoding="utf-8"))
+
+    def test_worker_recommendation_can_be_overridden_with_a_number(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tasks = [
+                self._task("ta1", ["docs/**"]),
+                self._task("ta2", ["src/api/**"]),
+                self._task("ta3", ["src/cli/**"]),
+                self._task("ta4", ["tests/**"]),
+                self._task("ta5", ["README.md"]),
+            ]
+            recommended = WorkerParallelismAdvisor(root).recommended_workers(tasks)
+            override = next(count for count in (2, 3, 4) if count != recommended)
+
+            controller = NormalModeController(root)
+            self._drive_to_intake_confirmation(controller)
+            with patch("vocr.ui.normal_mode.organize_slice", return_value=tasks):
+                controller.receive("Bestaetigen")
+
+            result = controller.receive(str(override))
+
+            self.assertEqual(result.phase, NormalModePhase.prepared)
+            self.assertIn(f"{override} Worker als Standard uebernommen", result.message)
+            self.assertIn(f"VOCR_PARALLEL_WORKERS={override}", (root / ".env").read_text(encoding="utf-8"))
+
+    def test_worker_recommendation_decline_leaves_default_unset(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tasks = [self._task("ta1", ["docs/**"]), self._task("ta2", ["src/api/**"])]
+
+            controller = NormalModeController(root)
+            self._drive_to_intake_confirmation(controller)
+            with patch("vocr.ui.normal_mode.organize_slice", return_value=tasks):
+                controller.receive("Bestaetigen")
+
+            declined = controller.receive("nein")
+
+            self.assertEqual(declined.phase, NormalModePhase.prepared)
+            self.assertIn("sequenziell", declined.message)
+            self.assertFalse((root / ".env").exists())
+
+    def test_worker_recommendation_reasks_on_unclear_reply(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tasks = [self._task("ta1", ["docs/**"]), self._task("ta2", ["src/api/**"])]
+
+            controller = NormalModeController(root)
+            self._drive_to_intake_confirmation(controller)
+            with patch("vocr.ui.normal_mode.organize_slice", return_value=tasks):
+                controller.receive("Bestaetigen")
+
+            unclear = controller.receive("vielleicht")
+
+            self.assertEqual(unclear.phase, NormalModePhase.worker_confirmation)
+            self.assertIn("Bitte antworte mit ja, nein", unclear.message)
+            self.assertFalse((root / ".env").exists())
+
+    def test_dangermode_applies_worker_recommendation_without_asking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tasks = [self._task("ta1", ["docs/**"]), self._task("ta2", ["src/api/**"])]
+            recommended = WorkerParallelismAdvisor(root).recommended_workers(tasks)
+            self.assertGreater(recommended, 1)
+
+            controller = NormalModeController(
+                root, session_permission=PermissionGrant(mode=PermissionMode.approve_all, scope="global")
+            )
+            self._drive_to_intake_confirmation(controller)
+            with patch("vocr.ui.normal_mode.organize_slice", return_value=tasks):
+                prepared = controller.receive("Bestaetigen")
+
+            self.assertEqual(prepared.phase, NormalModePhase.prepared)
+            self.assertIn("Dangermode aktiv", prepared.message)
+            self.assertIn(f"VOCR_PARALLEL_WORKERS={recommended}", (root / ".env").read_text(encoding="utf-8"))
+
+    def test_single_task_flow_never_touches_worker_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            controller = NormalModeController(root)
+            self._drive_to_intake_confirmation(controller)
+
+            prepared = controller.receive("Bestaetigen")
+
+            self.assertEqual(prepared.phase, NormalModePhase.prepared)
+            self.assertFalse((root / ".env").exists())
+
     def test_new_goal_resets_active_intake(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             controller = NormalModeController(Path(tmp))
