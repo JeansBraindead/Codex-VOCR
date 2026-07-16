@@ -115,14 +115,14 @@ def _init_repo(repo: Path) -> None:
 
 
 def _run_cloud_task(ctx: BetaContext, repo: Path, task: VocrTask, *, prompt_mode: str | None = None, max_retries: int = 0) -> CloudRunResult:
-    from vocr.cli.app import run_worker
+    from vocr.cli.app import execute_worker
 
     vocr_home = repo / ".vocr"
     ledger = MemoryLedger(vocr_home)
     ledger.append(LedgerEventType.task_created, task)
     with _env({"VOCR_HOME": str(vocr_home), "VOCR_PROMPT_MODE": prompt_mode}):
         dispatched = dispatch_task(ledger, GitWorktreeManager(repo), task.id)
-        run_worker(dispatched.id, auto_fix=max_retries > 0, max_retries=max_retries, workers=None)
+        execute_worker(dispatched.id, auto_fix=max_retries > 0, max_retries=max_retries, workers=None)
         review = review_task(ledger, dispatched.id, decision=ReviewDecision.accepted)
         promoted = review.decision == ReviewDecision.accepted
         if promoted:

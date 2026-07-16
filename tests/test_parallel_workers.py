@@ -47,7 +47,7 @@ class ParallelWorkerTests(unittest.TestCase):
             def fake_run_worker(task_id: str, **_: object) -> None:
                 calls.append(task_id)
 
-            with patch("vocr.cli.app.run_worker", side_effect=fake_run_worker), patch(
+            with patch("vocr.cli.app.execute_worker", side_effect=fake_run_worker), patch(
                 "vocr.cli.app.time.sleep", side_effect=AssertionError("serial path must not stagger")
             ):
                 result = CliRunner().invoke(
@@ -90,7 +90,7 @@ class ParallelWorkerTests(unittest.TestCase):
                     starts[task_id] = time.perf_counter()
                 time.sleep(0.05)
 
-            with patch("vocr.cli.app.run_worker", side_effect=fake_run_worker), patch(
+            with patch("vocr.cli.app.execute_worker", side_effect=fake_run_worker), patch(
                 "vocr.cli.app.WARMUP_STAGGER_SECONDS", 0.0
             ):
                 result = CliRunner().invoke(
@@ -126,7 +126,7 @@ class ParallelWorkerTests(unittest.TestCase):
             def fake_run_worker(task_id: str, **_: object) -> None:
                 calls.append(task_id)
 
-            with patch("vocr.cli.app.run_worker", side_effect=fake_run_worker), patch(
+            with patch("vocr.cli.app.execute_worker", side_effect=fake_run_worker), patch(
                 "vocr.cli.app.WARMUP_STAGGER_SECONDS", 0.0
             ):
                 result = CliRunner().invoke(
@@ -151,7 +151,7 @@ class ParallelWorkerTests(unittest.TestCase):
             def fake_run_worker(task_id: str, **_: object) -> None:
                 calls.append(task_id)
 
-            with patch("vocr.cli.app.run_worker", side_effect=fake_run_worker), patch(
+            with patch("vocr.cli.app.execute_worker", side_effect=fake_run_worker), patch(
                 "vocr.cli.app.time.sleep", side_effect=AssertionError("explicit serial override must not stagger")
             ):
                 result = CliRunner().invoke(
@@ -175,7 +175,7 @@ class ParallelWorkerTests(unittest.TestCase):
             def fake_run_worker(task_id: str, **_: object) -> None:
                 calls.append(task_id)
 
-            with patch("vocr.cli.app.run_worker", side_effect=fake_run_worker), patch(
+            with patch("vocr.cli.app.execute_worker", side_effect=fake_run_worker), patch(
                 "vocr.cli.app.WARMUP_STAGGER_SECONDS", 0.0
             ):
                 result = CliRunner().invoke(
@@ -204,7 +204,7 @@ class ParallelWorkerTests(unittest.TestCase):
                 if task_id == "ta1":
                     raise RuntimeError("boom")
 
-            with patch("vocr.cli.app.run_worker", side_effect=fake_run_worker), patch(
+            with patch("vocr.cli.app.execute_worker", side_effect=fake_run_worker), patch(
                 "vocr.cli.app.WARMUP_STAGGER_SECONDS", 0.0
             ):
                 result = CliRunner().invoke(
@@ -230,7 +230,7 @@ class ParallelWorkerTests(unittest.TestCase):
             def fake_sleep(seconds: float) -> None:
                 sleeps.append(seconds)
 
-            with patch("vocr.cli.app.run_worker", return_value=None), patch(
+            with patch("vocr.cli.app.execute_worker", return_value=None), patch(
                 "vocr.cli.app.time.sleep", side_effect=fake_sleep
             ):
                 result = CliRunner().invoke(

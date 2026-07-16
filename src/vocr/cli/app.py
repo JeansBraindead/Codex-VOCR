@@ -995,14 +995,14 @@ def dispatch_ready(limit: int = typer.Option(10, "--limit", help="Maximum ready 
     console.print(f"[green]Ready dispatch complete[/green] dispatched={dispatched}")
 
 
-@app.command("run")
-def run_worker(
+def execute_worker(
     task_id: str,
-    timeout_seconds: int = typer.Option(3600, "--timeout", help="Worker timeout in seconds."),
-    commit: bool = typer.Option(True, "--commit/--no-commit", help="Commit worker changes on success."),
-    auto_fix: bool = typer.Option(False, "--fix", help="Retry bounded fixes until review_ready."),
-    max_retries: int = typer.Option(2, "--max-retries", min=0, max=3, help="Bounded worker retry count."),
-    workers: str | None = typer.Option(None, "--workers", help="Accepted for CLI parity; single-task runs always use one worker."),
+    *,
+    timeout_seconds: int = 3600,
+    commit: bool = True,
+    auto_fix: bool = False,
+    max_retries: int = 2,
+    workers: str | None = None,
 ) -> None:
     if workers:
         console.print("[yellow]--workers gilt fuer work-ready-Wellen; dieser einzelne Task laeuft mit 1 Worker.[/yellow]")
@@ -1084,6 +1084,25 @@ def run_worker(
         console.print(f"[yellow]{safe_text(result.stderr[-2000:])}[/yellow]")
 
 
+@app.command("run")
+def run_worker(
+    task_id: str,
+    timeout_seconds: int = typer.Option(3600, "--timeout", help="Worker timeout in seconds."),
+    commit: bool = typer.Option(True, "--commit/--no-commit", help="Commit worker changes on success."),
+    auto_fix: bool = typer.Option(False, "--fix", help="Retry bounded fixes until review_ready."),
+    max_retries: int = typer.Option(2, "--max-retries", min=0, max=3, help="Bounded worker retry count."),
+    workers: str | None = typer.Option(None, "--workers", help="Accepted for CLI parity; single-task runs always use one worker."),
+) -> None:
+    execute_worker(
+        task_id,
+        timeout_seconds=timeout_seconds,
+        commit=commit,
+        auto_fix=auto_fix,
+        max_retries=max_retries,
+        workers=workers,
+    )
+
+
 app.command("work")(run_worker)
 
 
@@ -1122,7 +1141,7 @@ def run_parallel_work_wave(
     def submit_task(pool: concurrent.futures.ThreadPoolExecutor, task: VocrTask):
         console.print(f"[cyan][T-{safe_text(task.id)}] Worker starting[/cyan]")
         return pool.submit(
-            run_worker,
+            execute_worker,
             task.id,
             timeout_seconds=timeout_seconds,
             commit=True,
@@ -1186,7 +1205,7 @@ def work_ready(
     worked = 0
     wave_started = time.perf_counter()
     for task in tasks:
-        run_worker(task.id, timeout_seconds=timeout_seconds, commit=True, auto_fix=auto_fix, max_retries=2)
+        execute_worker(task.id, timeout_seconds=timeout_seconds, commit=True, auto_fix=auto_fix, max_retries=2)
         worked += 1
     if tasks:
         store.append(
