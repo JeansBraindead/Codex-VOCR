@@ -47,6 +47,7 @@ class BetaContext:
     repo_root: Path
     allow_cloud: bool = False
     max_cloud_tasks: int = 3
+    cloud_tasks_used: int = 0
 
     @contextmanager
     def env(self, values: dict[str, str | None]):
@@ -215,7 +216,7 @@ def result(
     scenario: Scenario,
     steps: list[BetaStep],
     *,
-    metrics: dict[str, float] | None = None,
+    metrics: dict[str, float | str] | None = None,
     notes: list[str] | None = None,
 ) -> ScenarioResult:
     failed = any(item.status == "failed" for item in steps)

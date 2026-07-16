@@ -88,9 +88,11 @@ It runs:
 - recommended core beta
 - staged core beta chain
 - local-live LM Studio checks S21/S22
+- optional hard cloud E2E gates C00, C01, C02, C03, C05, C06 when Cloud is explicitly enabled
 
 S21/S22 do not load, start, or download any model. They only use the already
-running LM Studio OpenAI-compatible API and the repo `.env`.
+running LM Studio OpenAI-compatible API and the repo `.env`. With key/server
+available they pass live; without key/server they skip cleanly.
 
 ## Scenario Catalog
 
@@ -113,13 +115,20 @@ running LM Studio OpenAI-compatible API and the repo `.env`.
 | S14 | core | incremental review |
 | S15 | core | ledger integrity |
 | S16 | core | robustness inputs |
-| S17 | cloud | opt-in cloud smoke |
 | S18 | core | parallel claims |
 | S19 | core | project memory |
 | S20 | core | visionary worker plan |
 | S21 | local | LM Studio `/models` live check |
 | S22 | local | LM Studio `/chat/completions` live smoke |
 | S23 | core | advisor calibration fallback |
+| C00 | cloud | cloud guard without flag |
+| C01 | cloud | real Codex E2E red-to-green |
+| C02 | cloud | live ScopeGuard gate |
+| C03 | cloud | live Secret Scan gate |
+| C04 | cloud | manual prompt A/B measurement |
+| C05 | cloud | live retry economy |
+| C06 | cloud | live baseline objective |
+| C07 | cloud | manual Advisor live calibration |
 
 ## CLI Equivalents
 
@@ -127,6 +136,7 @@ running LM Studio OpenAI-compatible API and the repo `.env`.
 vocr beta
 vocr beta --only S03,S07
 vocr beta --only S21,S22 --tier local
+vocr beta --only C00,C01,C02,C03,C05,C06 --allow-cloud --max-cloud-tasks 6
 vocr beta --tier all --allow-cloud
 ```
 
@@ -162,3 +172,21 @@ Cloud remains opt-in.
 Only enable the Cloud checkbox, or run `--allow-cloud`, when the user has
 explicitly decided to spend cloud quota. The current local green handoff did not
 run cloud.
+
+Chainable hard gates:
+
+```powershell
+vocr beta --only C00,C01,C02,C03,C05,C06 --allow-cloud --max-cloud-tasks 6 --tag cloud-gates
+```
+
+Manual measurement cases:
+
+```powershell
+vocr beta --only C04 --allow-cloud --max-cloud-tasks 2 --tag cloud-ab
+vocr beta --only C07 --allow-cloud --max-cloud-tasks 2 --tag cloud-advisor
+```
+
+C04 compares real legacy versus contract token use against the S11 estimate of
+41.3%. C07 compares Advisor estimates against live worker timing/overhead.
+Run these near the start of a fresh quota window and keep both halves of each
+measurement; a half A/B is not comparable.

@@ -154,13 +154,13 @@ def beta_next_test_chain(*, include_cloud: bool = False, include_local_live: boo
     if include_cloud:
         steps.append(
             BetaTestChainStep(
-                title="6. Cloud-Smoke: opt-in Codex-Cloud-Pfad",
-                purpose="Minimaler Cloud-Abschluss. Laeuft nur bewusst mit Cloud-Freigabe und bleibt auf wenige Tasks begrenzt.",
+                title="6. Cloud-E2E: opt-in Codex-Gates",
+                purpose="Harte Cloud-Gates fuer echten Codex-Worker, ScopeGuard, Secret-Scan, Retry und Baseline. Messfaelle C04/C07 bleiben manuell.",
                 tier="cloud",
-                only=("S17",),
+                only=("C00", "C01", "C02", "C03", "C05", "C06"),
                 tag="chain-06-cloud",
                 allow_cloud=True,
-                max_cloud_tasks=3,
+                max_cloud_tasks=6,
             )
         )
     return tuple(steps)
@@ -194,7 +194,7 @@ def final_all_in_one_labels(*, include_cloud: bool = False) -> tuple[str, ...]:
         "Finale gestaffelte Core-Beta-Kette",
     ]
     if include_cloud:
-        labels.append("Optionaler Cloud-Smoke S17")
+        labels.append("Optionaler Cloud-E2E C00-C03, C05, C06")
     return tuple(labels)
 
 
@@ -1262,7 +1262,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
         beta_chain,
         text=(
             "All-in-One Final vor Cloud-Tests: Update, lokale Gates, Login-/LM-Studio-Status, Local-Live-Smoke, "
-            "empfohlener Core-Lauf und komplette gestaffelte Core-Kette. Mit Cloud-Checkbox kommt S17 als opt-in Abschluss dazu."
+            "empfohlener Core-Lauf und komplette gestaffelte Core-Kette. Mit Cloud-Checkbox kommen die harten C00-C03/C05/C06 Cloud-E2E-Gates dazu."
         ),
         wraplength=620,
     ).grid(row=1, column=0, sticky="ew", pady=(4, 8))
@@ -1552,7 +1552,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
                 [
                     "Naechste Beta-Testkette laeuft...",
                     "Diese Kette trennt Smoke, Safety, Workflow/Parallelitaet/Memory und Local-Assist-Mocks.",
-                    "Cloud-Smoke ist nur enthalten, wenn die Cloud-Checkbox aktiv ist.",
+                    "Cloud-E2E-Gates sind nur enthalten, wenn die Cloud-Checkbox aktiv ist.",
                     "",
                     f"Schritte: {len(steps)}",
                     f"Cloud enthalten: {'ja' if include_cloud else 'nein'}",
@@ -1634,7 +1634,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
                     f"Hoechster Exit-Code: {overall_exit_code}",
                     "",
                     "Naechste Entscheidung:",
-                    "- Gruen: Core-Beta ist in dieser Kette belastbar; naechster sinnvoller Test ist manuelle UI-Nutzung oder optionaler Cloud-Smoke.",
+                    "- Gruen: Core-Beta ist in dieser Kette belastbar; naechster sinnvoller Test ist manuelle UI-Nutzung oder optionaler Cloud-E2E.",
                     "- Gelb: Soft-Hinweise im Report pruefen, aber kein harter Blocker.",
                     "- Rot: Beim ersten roten Kettenschritt anfangen und nur die betroffenen Szenarien wiederholen.",
                     "",
@@ -1698,7 +1698,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
                     "Dieser Lauf ist fuer den Claude-Handoff gedacht.",
                     "Er enthaelt alle bisher sinnvoll automatisierbaren Checks in einem Rutsch.",
                     "",
-                    f"Cloud enthalten: {'ja - S17 opt-in' if include_cloud else 'nein - lokaler Final vor Cloud'}",
+                    f"Cloud enthalten: {'ja - C00/C01/C02/C03/C05/C06 opt-in' if include_cloud else 'nein - lokaler Final vor Cloud'}",
                     f"Report-Ordner: {report_dir}",
                     "",
                     *[f"- {label}" for label in labels],

@@ -35,21 +35,21 @@ Pflege:
 - Wenn ein echter Lauf eine neue Fehlerklasse zeigt, als neues Beta-Szenario
   ergaenzen.
 
-## M1 - Cloud-Smoke
+## M1 - Cloud-E2E
 
-Ziel: minimaler opt-in Cloud-Nachweis nach lokal gruenem Stand.
+Ziel: opt-in Cloud-Nachweis nach lokal gruenem Stand.
 
 Vorgehen:
 
 1. In Normalmode Cloud-Checkbox bewusst aktivieren.
-2. Finale Testsequenz oder gezielt S17 starten.
+2. Finale Testsequenz oder gezielt C00/C01/C02/C03/C05/C06 starten.
 3. Token-/Kostenhinweise dokumentieren.
 4. Ergebnis in `docs/beta/sessions/` als neuen Handoff oder Nachtrag erfassen.
 
 Akzeptanz:
 
 - Lokaler Teil bleibt gruen.
-- S17 liefert klare Aussage: pass, skip mit Begruendung oder fail mit Diagnose.
+- C00-C06 liefern klare Aussage: pass, skip mit Begruendung oder fail mit Diagnose.
 - Keine Cloud-Ausfuehrung ohne explizites Opt-in.
 
 ## M2 - Erster Echter VOCR-Lauf

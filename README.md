@@ -98,10 +98,12 @@ Die finale lokale Testsequenz umfasst:
 - empfohlenen Core-Beta-Lauf
 - finale gestaffelte Core-Kette
 - Local-Live-Szenarien S21/S22 gegen das bereits laufende LM Studio
+- optional harte Cloud-E2E-Gates C00/C01/C02/C03/C05/C06
 
 S21/S22 laden, starten oder downloaden kein Modell. Sie pruefen nur `/models`
 und eine kleine `/chat/completions`-Anfrage gegen ein bereits sichtbares Modell.
-Cloud bleibt opt-in ueber die Cloud-Checkbox.
+Cloud bleibt opt-in ueber die Cloud-Checkbox. Messfaelle C04/C07 laufen bewusst
+einzeln, weil sie Kontingent verbrauchen und Zahlen liefern.
 
 CLI:
 
@@ -109,6 +111,7 @@ CLI:
 vocr beta
 vocr beta --only S03,S07
 vocr beta --only S21,S22 --tier local
+vocr beta --only C00,C01,C02,C03,C05,C06 --allow-cloud --max-cloud-tasks 6
 vocr beta --tier all --allow-cloud
 ```
 

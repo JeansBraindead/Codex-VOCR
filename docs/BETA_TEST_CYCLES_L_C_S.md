@@ -14,14 +14,16 @@ Current verified baseline from July 16, 2026:
   model.
 - S23 locks the Worker Advisor heuristic fallback until calibration data exists.
 - S21/S22 skip cleanly when key or server is unavailable; skip is not fail.
-- S17 cloud remains skipped unless `--allow-cloud` is explicit.
+- Cloud C00-C07 remain skipped unless `--allow-cloud` is explicit.
 
 Covered today: deterministic logic on throwaway fixtures, including guards,
 claim coordination, Project Memory, worker-plan recommendation, and LM Studio
 live smoke checks.
 
-Still missing: longer local model qualification, real Codex cloud worker E2E,
-and durability testing under repeated or interrupted runs.
+Still missing after the local baseline: longer local model qualification,
+manual cloud measurement runs C04/C07, and durability testing under repeated or
+interrupted runs. The hard cloud gates C00, C01, C02, C03, C05, and C06 are
+chainable when cloud is explicitly enabled.
 
 ## Rules For All Phases
 
@@ -118,31 +120,28 @@ Cost: Codex quota. Start near the beginning of a fresh usage window.
 
 ### Cycle
 
-1. C1: cloud guard negative control
-   - Run `vocr beta --tier cloud` without `--allow-cloud`.
-   - Expected: S17 skipped, no Codex call.
+1. C00: cloud guard negative control
+   - Run cloud tier without `--allow-cloud`.
+   - Expected: skipped, no Codex call.
 
-2. C2: minimal real E2E
-   - Run one trivial deterministic task with `--allow-cloud` and a small cloud
-     task cap.
-   - Verify worker execution, ScopeGuard, Secret Scan, Review, and review-gated
-     promotion on a real diff.
+2. C01: minimal real E2E
+   - Red-to-green fixture, real Codex worker, check green, review-gated promote,
+     test file unchanged.
 
-3. C3: prompt-mode A/B
-   - Run the same small task once in legacy mode and once in contract mode.
-   - Compare real Codex token use against the S11 estimate.
+3. C02/C03: live guard gates
+   - ScopeGuard and Secret Scan pass if the worker behaves or the gate blocks.
+   - They fail only if a scope breach or secret-like value is promoted.
 
-4. C4: retry reality
-   - Run one intentionally harder task with a strict cap.
-   - Verify retry summaries, delta-diff context, and budget behavior.
+4. C05/C06: workflow gates
+   - Retry economy and baseline objective under real worker conditions.
 
-5. C-Adv: advisor token calibration
-   - Record the Advisor recommendation before the real wave starts:
-     `recommended_workers`, estimated speedup, and estimated token/context
-     overhead.
-   - Compare the recommendation with the real Codex outcome.
-   - Purpose: calibrate the token-overhead part with actual Codex numbers, not
-     only local heuristics.
+5. C04: manual prompt-mode A/B
+   - Run separately with `--max-cloud-tasks 2`.
+   - Compare real legacy versus contract token use against S11's 41.3%.
+
+6. C07: manual advisor live calibration
+   - Run separately with `--max-cloud-tasks 2`.
+   - Compare Advisor predicted speedup/overhead with live results.
 
 ### Hard Stops
 
@@ -158,7 +157,7 @@ Include:
 - retries
 - review outcome
 - guard evidence
-- deviation from S11 prompt-token estimate
+- deviation from S11 prompt-token estimate for C04
 - Advisor recommendation versus real token and wall-time outcome
 - final decision: ready or not ready for first real project trial
 

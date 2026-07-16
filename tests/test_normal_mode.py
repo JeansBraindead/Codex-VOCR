@@ -328,6 +328,7 @@ class NormalModeTests(unittest.TestCase):
         self.assertIn("S20", scenario_ids)
         self.assertIn("S23", scenario_ids)
         self.assertNotIn("S17", scenario_ids)
+        self.assertNotIn("C00", scenario_ids)
         self.assertTrue(all(step.tier == "core" for step in chain))
         self.assertFalse(any(step.allow_cloud for step in chain))
 
@@ -335,10 +336,12 @@ class NormalModeTests(unittest.TestCase):
         chain = beta_next_test_chain(include_cloud=True)
         cloud_step = chain[-1]
 
-        self.assertEqual(cloud_step.only, ("S17",))
+        self.assertEqual(cloud_step.only, ("C00", "C01", "C02", "C03", "C05", "C06"))
         self.assertEqual(cloud_step.tier, "cloud")
         self.assertTrue(cloud_step.allow_cloud)
-        self.assertEqual(cloud_step.max_cloud_tasks, 3)
+        self.assertEqual(cloud_step.max_cloud_tasks, 6)
+        self.assertNotIn("C04", cloud_step.only)
+        self.assertNotIn("C07", cloud_step.only)
 
     def test_beta_next_test_chain_adds_local_live_only_when_requested(self) -> None:
         chain = beta_next_test_chain(include_local_live=True)
@@ -370,7 +373,9 @@ class NormalModeTests(unittest.TestCase):
         self.assertIn("Core-Beta", labels)
         self.assertIn("Core-Beta-Kette", labels)
         self.assertNotIn("S17", labels)
-        self.assertIn("S17", cloud_labels)
+        self.assertIn("C00-C03", cloud_labels)
+        self.assertIn("C06", cloud_labels)
+        self.assertNotIn("S17", cloud_labels)
         self.assertTrue(any("-m compileall src tests" in command for command in gate_commands))
         self.assertTrue(any("-m unittest discover -s tests" in command for command in gate_commands))
 

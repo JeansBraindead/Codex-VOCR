@@ -8,6 +8,7 @@ import urllib.request
 from pathlib import Path
 from unittest.mock import patch
 
+from vocr.beta.cloud_scenarios import CLOUD_SCENARIOS
 from vocr.cli.app import estimate_tokens
 from vocr.beta.fixtures import INJECTION_MARKER, make_repo
 from vocr.beta.runner import BetaContext, BetaStep, Scenario, result, step
@@ -380,12 +381,6 @@ def _s16(scenario: Scenario, ctx: BetaContext):
     return _scenario_result(scenario, [step("robust paths", not issues)])
 
 
-def _s17(scenario: Scenario, ctx: BetaContext):
-    if not ctx.allow_cloud:
-        return _scenario_result(scenario, [BetaStep(name="allow-cloud", status="skipped", details="Cloud tier disabled.")])
-    return _scenario_result(scenario, [BetaStep(name="cloud-cap", status="skipped", details="Live Codex cloud smoke is reserved for manual runs.")])
-
-
 def _s18(scenario: Scenario, ctx: BetaContext):
     ledger = MemoryLedger(ctx.temp_root / "s18-vocr")
     repo = make_repo(ctx.temp_root / "s18-repo")
@@ -641,6 +636,11 @@ def _wrap(identifier: str, title: str, tier: str, hard: bool, fn):
     return scenario
 
 
+def _cloud_wrap(identifier: str, title: str, hard: bool, fn):
+    scenario = Scenario(identifier, title, "cloud", hard, lambda ctx: fn(scenario, ctx))
+    return scenario
+
+
 SCENARIOS: dict[str, Scenario] = {
     scenario.id: scenario
     for scenario in [
@@ -661,12 +661,15 @@ SCENARIOS: dict[str, Scenario] = {
         _wrap("S14", "incremental-review", "core", True, _s14),
         _wrap("S15", "ledger-integrity", "core", True, _s15),
         _wrap("S16", "robustness-inputs", "core", True, _s16),
-        _wrap("S17", "e2e-codex-cloud", "cloud", False, _s17),
         _wrap("S18", "parallel-claims", "core", True, _s18),
         _wrap("S19", "project-memory", "core", True, _s19),
         _wrap("S20", "visionary-worker-plan", "core", True, _s20),
         _wrap("S21", "lmstudio-models-live", "local", False, _s21),
         _wrap("S22", "lmstudio-chat-live", "local", False, _s22),
         _wrap("S23", "advisor-calibration-fallback", "core", True, _s23),
+        *[
+            _cloud_wrap(identifier, title, hard, fn)
+            for identifier, (title, hard, fn) in CLOUD_SCENARIOS.items()
+        ],
     ]
 }
