@@ -1,85 +1,118 @@
-# Beta Session - 2026-07-16 - jeenz
+# VOCR Beta Results - Claude Handoff - 2026-07-16
 
-Environment: Windows, PowerShell, fresh test clone under Desktop test folder
-VOCR commit: 6e05d4c plus follow-up UI fixes
-Duration: 01:16-ongoing
+Status: **GREEN - local final passed**
 
-## Tests run
+This file is the cleaned final handoff for the successful Normalmode beta run.
+It replaces the earlier running notes with the user-verified final results.
 
-| Test | Result | Notes |
+## Environment
+
+- OS/surface: Windows, Normalmode UI
+- Test clone: `C:\Users\jeenz\Desktop\Neuer Ordner (2)\Codex-VOCR-test`
+- Branch: `main`
+- Verified commit: `51774cd fix(beta): accept lm studio reasoning responses`
+- Cloud tests: not run yet
+- Local LM Studio: reachable at `http://localhost:1234/v1`
+- Loaded/visible LM Studio models: 16
+- Local-live model used by S22: `gpt-oss-20b`
+- Codex auth: logged in via ChatGPT/Codex
+
+## Final Run Summary
+
+Run window: **02:26:24-02:27:35 Europe/Berlin**
+
+| Area | Result | Evidence |
 |---|---|---|
-| T1 fresh install | pass | Fresh separate folder install completed: `Bootstrap complete. Start with: vocr start`; installer reported `[VOCR] Installation fertig`. Working repo was not used for this test. |
-| T2 normal-mode startup | pass | `.\start-vocr.ps1` opened Normalmode; activity log showed `[01:39:50] Normalmode gestartet.` |
-| T12.1 no forced login on start | pass | No startup login prompt reported after user-initiated-login patch. |
-| T12.2 ChatGPT/Codex login via Optionen | pass | User manually started login from Optionen; UI reported `[01:40:25] ChatGPT/Codex: eingeloggt via ChatGPT (Jeenz Chris / jeenzchris@gmail.com)`. |
-| T12.3 LM Studio key save feedback | pass | Retest showed visible status line after key save: `LM Studio: Key gesetzt, http://localhost:1234/v1`. A duplicate status line was observed and fixed in follow-up. |
-| T12.4 LM Studio reachability ampel | pass | User first clicked reachability before entering the key; the ampel correctly showed `gelb - kein API-Key gesetzt`. After key save, the check returned `gruen - erreichbar, 16 Modell(e)`. |
-| T12.5 Beta standard test from UI | pass | Normalmode Beta log showed 20 selected scenarios, all passed: S00-S16, S18, S19, S20. |
-| T13 Beta next-test chain design | pass-pending-fresh-ui-click | Beta tab now offers a multi-step next-test chain: Smoke, Safety, Workflow/Parallelitaet/Memory, Local-Assist-Mocks, plus optional Cloud-Smoke only when cloud is explicitly enabled. Local chain smoke passed: 3 + 5 + 10 + 2 scenarios, all exit 0. |
-| T14 All-in-One final sequence | pass-pending-fresh-ui-click | Beta tab now includes update, syntax, full unit tests, ChatGPT/Codex login status, LM Studio reachability, recommended core beta and the final staged core chain in one run. S17 stays opt-in via the cloud checkbox. Local implementation validation passed: 127 unit tests, recommended core beta 20 scenarios exit 0, staged core chain 3 + 5 + 10 + 2 scenarios exit 0. |
-| T15 Local-Live LM Studio beta scenarios | implemented-pending-fresh-ui-retest | Added S21 `/models` and S22 `/chat/completions` local-live checks. They use the existing LM Studio API only and do not load models. Unit tests passed with mocked LM Studio. Local smoke in this working repo returned 401 because this process has a non-working LM Studio env key; fresh UI retest should use the saved test-folder `.env` key. |
-| T15.1 Local-Live repo-env precedence | pass | Fixed S21/S22 to receive the active repo root from UI/CLI and prefer that repo `.env` over stale process environment variables. Regression test proves repo key wins over wrong process key. |
-| T15.2 Local-Live reasoning-only response | pass | User retest showed S21 passed and S22 failed with `gpt-oss-20b` because LM Studio returned reasoning text while `message.content` stayed empty. Fixed S22 to accept content or reasoning as a valid assistant signal. Direct test-folder smoke passed: S21 visible models 16, S22 reasoning chars 16, exit 0. |
+| Normalmode startup | PASS | `[02:26:24] Normalmode gestartet.` |
+| LM Studio key/status | PASS | key saved, reachability green, 16 models visible |
+| ChatGPT/Codex login | PASS | login manually started from Optionen, status confirmed logged in |
+| Update from Git | PASS | `git pull --ff-only`, editable install, bootstrap/start scripts all passed |
+| Syntax check | PASS | All-in-One Final logged `PASS: Syntax-Check` |
+| Unit tests | PASS | All-in-One Final logged `PASS: Unit-Tests` |
+| Recommended core beta | PASS | S00-S16, S18, S19, S20 all passed |
+| Final staged beta chain | PASS | Smoke, Safety, Workflow, Local-Assist-Mocks, Local-Live all passed |
+| Local-live LM Studio | PASS | S21 `/models` passed, S22 `/chat/completions` passed |
 
-## Issues found
+## Scenario Coverage
 
-### Issue: LM Studio key save had no clear visual confirmation
+### Recommended Core Beta
 
-- Severity: Minor
-- Test case: T12.3
-- VOCR commit: observed before `bcb3b50`
-- Steps to reproduce:
-  1. Open Normalmode.
-  2. Use Optionen to enter LM Studio API key.
-  3. Observe UI after save.
-- Expected: Visible status/confirmation in the normal status surface.
-- Actual: No clear visual confirmation was visible.
-- Status: Fixed in `bcb3b50`; verified in fresh test clone at 01:51.
+All core scenarios passed:
 
-### Issue: LM Studio status confirmation was logged twice
+- S00 `pure-cloud-reference`
+- S01 `happy-path-gates`
+- S02 `injection-containment`
+- S03 `scope-breach`
+- S04 `secrets-gate`
+- S05 `retry-economy`
+- S06 `review-contract`
+- S07 `ratchet-matrix`
+- S08 `baseline-objective`
+- S09 `budget-gate`
+- S10 `context-quality`
+- S11 `prompt-constancy-a-b`
+- S12 `embeddings-matrix`
+- S13 `local-assist-quadrant`
+- S14 `incremental-review`
+- S15 `ledger-integrity`
+- S16 `robustness-inputs`
+- S18 `parallel-claims`
+- S19 `project-memory`
+- S20 `visionary-worker-plan`
 
-- Severity: Cosmetic
-- Test case: T12.3/T12.4
-- VOCR commit: observed after `6e05d4c`
-- Steps to reproduce:
-  1. Open Normalmode.
-  2. Use Optionen to enter LM Studio API key.
-  3. Observe the activity log after save.
-- Expected: One visible status confirmation for the saved LM Studio key.
-- Actual: The status line `LM Studio: Key gesetzt, http://localhost:1234/v1` appeared twice.
-- Status: Fixed in follow-up patch after this session entry.
+### Final Chain
 
-### Follow-up: Beta tab needed a guided next-test chain
+| Chain step | Scenarios | Result |
+|---|---|---|
+| 1. Smoke: Installation und Grundpfad | S00, S01, S04 | PASS |
+| 2. Safety: Prompt-, Scope-, Secrets- und Ledger-Schutz | S02, S03, S07, S15, S16 | PASS |
+| 3. Workflow: Review, Kontext, Budget, Parallelitaet und Memory | S05, S06, S08, S09, S10, S11, S14, S18, S19, S20 | PASS |
+| 4. Local-Assist-Mocks: Embeddings und lokale Assistenz-Matrix | S12, S13 | PASS |
+| 5. Local-Live: LM Studio API und Chat-Smoke | S21, S22 | PASS |
 
-- Severity: UX/Testability
-- Test case: T13
-- Request: The Beta tab should not leave the user guessing which test to run next.
-- Implementation: Added `Naechste Testkette starten` with staged deterministic core checks and an opt-in cloud ending.
-- Status: Implemented and locally validated; needs fresh-clone UI click retest after pull/reinstall.
+## Local-Live Details
 
-### Follow-up: Claude handoff needs one all-in-one final button
+S21 and S22 are intentionally local-only and do not load, download, or start any model.
+They use the already running LM Studio OpenAI-compatible API and the repo `.env`.
 
-- Severity: UX/Testability
-- Test case: T14
-- Request: The user needs one final run that includes all previous automated checks before starting cloud tests.
-- Implementation: Added `Finale lokale Testsequenz starten` and `Update aus Git holen` in the Beta tab.
-- Scope: Update/install refresh, compileall, full unittest, Codex login status, LM Studio reachability, recommended core beta, staged final core chain; optional S17 only with cloud checkbox.
-- Status: Implemented and locally validated; needs fresh-clone UI click retest after pull/reinstall.
+- S21 `lmstudio-models-live`: PASS, 16 models visible.
+- S22 `lmstudio-chat-live`: PASS against `gpt-oss-20b`.
+- S22 accepts GPT-OSS-style reasoning-only responses when `message.content` is empty.
 
-### Follow-up: Local-Live LM Studio checks before cloud
+## Final Report Files
 
-- Severity: Beta coverage
-- Test case: T15
-- Request: Add local LLM tests because LM Studio is running and a model is loaded; do not auto-load anything.
-- Implementation: Added soft local tier scenarios S21 `/models` and S22 tiny `/chat/completions`; All-in-One Final includes them before cloud.
-- Safety: Reads repo `.env` first, never writes or changes the LM Studio key, and does not start/download/load a model.
-- Status: Implemented; repo-root/env precedence fixed after user showed `/v1/models` succeeded earlier from the UI path. Fresh test clone should retest with the UI-saved LM Studio key.
-- Follow-up fix: S22 now accepts GPT-OSS-style reasoning-only responses when `message.content` is empty and records `finish_reason` plus content/reasoning character counts.
+Generated under:
 
-## Free-form observations
+`C:\Users\jeenz\Desktop\Neuer Ordner (2)\Codex-VOCR-test\beta_reports`
 
-- Normalmode activity logging is now visible and useful during Beta.
-- ChatGPT/Codex login should remain user-initiated from Optionen, not prompted at startup.
-- LM Studio key must not be overwritten by future patches unless the user explicitly changes it.
-- LM Studio reachability now gives a useful before/after signal: yellow before key, green with model count after key.
-- The next manual retest should use `Update aus Git holen`, restart VOCR if the UI changed, then run `Finale lokale Testsequenz starten` once without cloud. Expected: local core reports plus S21/S22 Local-Live reports under `beta_reports/`; S21/S22 should pass if the test-folder `.env` key matches the running LM Studio server and a model is already loaded.
+- `beta_report_final-all-recommended-core_20260716T002726Z.json`
+- `beta_report_final-all-chain-01-smoke_20260716T002727Z.json`
+- `beta_report_final-all-chain-02-safety_20260716T002728Z.json`
+- `beta_report_final-all-chain-03-workflow_20260716T002729Z.json`
+- `beta_report_final-all-chain-04-local-mocks_20260716T002729Z.json`
+- `beta_report_final-all-chain-05-local-live_20260716T002735Z.json`
+
+Markdown companions exist with the same timestamps.
+
+## Current Interpretation
+
+The local VOCR beta surface is ready for the next phase:
+
+- Normalmode works and gives visible activity/status feedback.
+- Update-from-UI works for the test clone.
+- Core safety/workflow/project-memory/parallel-claims gates pass.
+- Visionary worker-plan recommendation scenario passes.
+- Local LM Studio connectivity and a minimal chat-completion smoke pass.
+- The local path is green before cloud testing.
+
+## Next Step For Claude
+
+Proceed with **cloud tests only after explicitly enabling cloud**.
+
+Recommended next command/path:
+
+- In Normalmode, keep LM Studio as-is.
+- Enable the Cloud checkbox only if the cloud smoke should run.
+- Run the final sequence with cloud enabled, or run the targeted cloud scenario S17.
+
+Cloud remains opt-in by design; no cloud path was executed in this green local handoff.
