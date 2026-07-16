@@ -165,6 +165,25 @@ log. Include:
 - report file names
 - remaining cloud/non-cloud distinction
 
+## Automatisiert vs. Manuell
+
+**Automatisiert:** Core + Local-Live + harte Cloud-Gates laufen ueber den
+All-in-One-Button (`start_final_all_in_one`) bzw. die gestaffelte Kette
+(`beta_next_test_chain`): S00-S20, S23 as Core, S21/S22 conditionally when
+Local-Live is requested, and with the Cloud checkbox enabled the hard gates
+C00, C01, C02, C03, C05, C06. None of this needs a per-step human judgment
+call, so it is safe to chain.
+
+**Manuell:** These cases stay out of the automated chain on purpose, because
+they either spend real Codex quota or hand back a number a human has to
+interpret instead of a clean pass/fail:
+
+- C04 (Prompt-A/B) and C07 (Advisor-live calibration) — see "Cloud Tests"
+  below for the exact invocation.
+- Phase S: Soak/Chaos (long unattended runs, crash-recovery, parallel-load) —
+  see `docs/BETA_TEST_CYCLES_L_C_S.md`. This phase is fire-and-forget by
+  design and is driven from that guide, not auto-chained.
+
 ## Cloud Tests
 
 Cloud remains opt-in.

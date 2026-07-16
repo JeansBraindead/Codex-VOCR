@@ -166,6 +166,13 @@ Include:
 Purpose: prove durability over repeated and interrupted runs. This phase is
 mostly local and mock-driven, with optional small cloud slices after C passes.
 
+This phase is manual, not chainable: runs are long, unattended, and
+fire-and-forget (repeated waves, deliberate interruption), and the outcome is
+read by a human, not a pass/fail gate. It is driven from this guide instead of
+`beta_next_test_chain`/the All-in-One button — see
+`docs/BETA_TESTING.md` ("Automatisiert vs. Manuell") for how this phase
+relates to the automated Core/Local-Live/hard-Cloud-gate chain.
+
 ### Entry
 
 - Phase C has at least one clean E2E run.
