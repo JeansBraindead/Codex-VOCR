@@ -17,6 +17,7 @@ Duration: 01:16-ongoing
 | T12.5 Beta standard test from UI | pass | Normalmode Beta log showed 20 selected scenarios, all passed: S00-S16, S18, S19, S20. |
 | T13 Beta next-test chain design | pass-pending-fresh-ui-click | Beta tab now offers a multi-step next-test chain: Smoke, Safety, Workflow/Parallelitaet/Memory, Local-Assist-Mocks, plus optional Cloud-Smoke only when cloud is explicitly enabled. Local chain smoke passed: 3 + 5 + 10 + 2 scenarios, all exit 0. |
 | T14 All-in-One final sequence | pass-pending-fresh-ui-click | Beta tab now includes update, syntax, full unit tests, ChatGPT/Codex login status, LM Studio reachability, recommended core beta and the final staged core chain in one run. S17 stays opt-in via the cloud checkbox. Local implementation validation passed: 127 unit tests, recommended core beta 20 scenarios exit 0, staged core chain 3 + 5 + 10 + 2 scenarios exit 0. |
+| T15 Local-Live LM Studio beta scenarios | implemented-pending-fresh-ui-retest | Added S21 `/models` and S22 `/chat/completions` local-live checks. They use the existing LM Studio API only and do not load models. Unit tests passed with mocked LM Studio. Local smoke in this working repo returned 401 because this process has a non-working LM Studio env key; fresh UI retest should use the saved test-folder `.env` key. |
 
 ## Issues found
 
@@ -63,10 +64,19 @@ Duration: 01:16-ongoing
 - Scope: Update/install refresh, compileall, full unittest, Codex login status, LM Studio reachability, recommended core beta, staged final core chain; optional S17 only with cloud checkbox.
 - Status: Implemented and locally validated; needs fresh-clone UI click retest after pull/reinstall.
 
+### Follow-up: Local-Live LM Studio checks before cloud
+
+- Severity: Beta coverage
+- Test case: T15
+- Request: Add local LLM tests because LM Studio is running and a model is loaded; do not auto-load anything.
+- Implementation: Added soft local tier scenarios S21 `/models` and S22 tiny `/chat/completions`; All-in-One Final includes them before cloud.
+- Safety: Reads repo `.env` first, never writes or changes the LM Studio key, and does not start/download/load a model.
+- Status: Implemented; fresh test clone should retest with the UI-saved LM Studio key.
+
 ## Free-form observations
 
 - Normalmode activity logging is now visible and useful during Beta.
 - ChatGPT/Codex login should remain user-initiated from Optionen, not prompted at startup.
 - LM Studio key must not be overwritten by future patches unless the user explicitly changes it.
 - LM Studio reachability now gives a useful before/after signal: yellow before key, green with model count after key.
-- The next manual retest should use `Update aus Git holen`, restart VOCR if the UI changed, then run `Finale lokale Testsequenz starten` once without cloud and verify the final reports under `beta_reports/`.
+- The next manual retest should use `Update aus Git holen`, restart VOCR if the UI changed, then run `Finale lokale Testsequenz starten` once without cloud. Expected: local core reports plus S21/S22 Local-Live reports under `beta_reports/`; S21/S22 should pass if the test-folder `.env` key matches the running LM Studio server and a model is already loaded.

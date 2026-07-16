@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -45,6 +46,55 @@ class BetaScenarioTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("S00 pure-cloud-reference: passed", result.output)
+
+    def test_local_live_scenarios_skip_without_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"LMSTUDIO_API_KEY": "", "OPENAI_API_KEY": ""}, clear=False):
+            with patch("vocr.beta.scenarios.read_env_file", return_value={}):
+                run = run_beta(SCENARIOS.values(), only=["S21", "S22"], report_dir=Path(tmp), json_only=True)
+
+        self.assertEqual(run.exit_code, 0)
+        self.assertEqual([item.status for item in run.results], ["skipped", "skipped"])
+
+    def test_local_live_chat_uses_existing_model_without_loading(self) -> None:
+        class FakeResponse:
+            def __init__(self, payload: bytes, status: int = 200) -> None:
+                self.payload = payload
+                self.status = status
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return None
+
+            def read(self) -> bytes:
+                return self.payload
+
+        def fake_urlopen(request, timeout=20):  # noqa: ANN001
+            self.assertEqual(timeout, 20)
+            self.assertEqual(request.headers["Authorization"], "Bearer local-key")
+            url = request.full_url
+            if url.endswith("/models"):
+                return FakeResponse(b'{"data":[{"id":"gpt-loaded"}]}')
+            if url.endswith("/chat/completions"):
+                body = request.data.decode("utf-8")
+                self.assertIn('"model": "gpt-loaded"', body)
+                self.assertIn('"max_tokens": 8', body)
+                return FakeResponse(b'{"choices":[{"message":{"content":"vocr-local-ok"}}]}')
+            raise AssertionError(url)
+
+        env = {
+            "LMSTUDIO_API_KEY": "local-key",
+            "OPENAI_BASE_URL": "http://localhost:1234/v1",
+            "OPENAI_MODEL": "gpt-loaded",
+        }
+        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", env, clear=False):
+            with patch("vocr.beta.scenarios.read_env_file", return_value={}):
+                with patch("vocr.beta.scenarios.urllib.request.urlopen", side_effect=fake_urlopen):
+                    run = run_beta(SCENARIOS.values(), only=["S21", "S22"], report_dir=Path(tmp), json_only=True)
+
+        self.assertEqual(run.exit_code, 0)
+        self.assertEqual([item.status for item in run.results], ["passed", "passed"])
 
 
 if __name__ == "__main__":

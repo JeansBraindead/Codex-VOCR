@@ -110,7 +110,7 @@ class NormalModeUiError(RuntimeError):
     """Raised when the local dialog window cannot be opened."""
 
 
-def beta_next_test_chain(*, include_cloud: bool = False) -> tuple[BetaTestChainStep, ...]:
+def beta_next_test_chain(*, include_cloud: bool = False, include_local_live: bool = False) -> tuple[BetaTestChainStep, ...]:
     steps = [
         BetaTestChainStep(
             title="1. Smoke: Installation und Grundpfad",
@@ -141,14 +141,24 @@ def beta_next_test_chain(*, include_cloud: bool = False) -> tuple[BetaTestChainS
             tag="chain-04-local-mocks",
         ),
     ]
+    if include_local_live:
+        steps.append(
+            BetaTestChainStep(
+                title="5. Local-Live: LM Studio API und Chat-Smoke",
+                purpose="Prueft das bereits laufende LM Studio ueber /models und eine winzige Chat-Anfrage. VOCR laedt kein Modell selbst.",
+                tier="local",
+                only=("S21", "S22"),
+                tag="chain-05-local-live",
+            )
+        )
     if include_cloud:
         steps.append(
             BetaTestChainStep(
-                title="5. Cloud-Smoke: opt-in Codex-Cloud-Pfad",
+                title="6. Cloud-Smoke: opt-in Codex-Cloud-Pfad",
                 purpose="Minimaler Cloud-Abschluss. Laeuft nur bewusst mit Cloud-Freigabe und bleibt auf wenige Tasks begrenzt.",
                 tier="cloud",
                 only=("S17",),
-                tag="chain-05-cloud",
+                tag="chain-06-cloud",
                 allow_cloud=True,
                 max_cloud_tasks=3,
             )
@@ -179,6 +189,7 @@ def final_all_in_one_labels(*, include_cloud: bool = False) -> tuple[str, ...]:
         "Komplette Unit-Tests",
         "ChatGPT/Codex Login-Status",
         "LM Studio Erreichbarkeit",
+        "LM Studio Local-Live S21/S22",
         "Empfohlener Core-Beta-Standardtest",
         "Finale gestaffelte Core-Beta-Kette",
     ]
@@ -1250,8 +1261,8 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     ttk.Label(
         beta_chain,
         text=(
-            "All-in-One Final vor Cloud-Tests: Update, lokale Gates, Login-/LM-Studio-Status, empfohlener Core-Lauf "
-            "und komplette gestaffelte Core-Kette. Mit Cloud-Checkbox kommt S17 als opt-in Abschluss dazu."
+            "All-in-One Final vor Cloud-Tests: Update, lokale Gates, Login-/LM-Studio-Status, Local-Live-Smoke, "
+            "empfohlener Core-Lauf und komplette gestaffelte Core-Kette. Mit Cloud-Checkbox kommt S17 als opt-in Abschluss dazu."
         ),
         wraplength=620,
     ).grid(row=1, column=0, sticky="ew", pady=(4, 8))
@@ -1783,7 +1794,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
                     raise RuntimeError("Empfohlener Core-Beta-Lauf fehlgeschlagen")
 
                 final_lines.extend(["## Finale gestaffelte Beta-Kette", ""])
-                for index, step in enumerate(beta_next_test_chain(include_cloud=include_cloud), start=1):
+                for index, step in enumerate(beta_next_test_chain(include_cloud=include_cloud, include_local_live=True), start=1):
                     root.after(0, lambda step=step: beta_append(f"== Final {step.title} =="))
                     root.after(0, lambda step=step: log_activity(f"Finaler Kettenschritt gestartet: {step.title}."))
                     run = run_beta(

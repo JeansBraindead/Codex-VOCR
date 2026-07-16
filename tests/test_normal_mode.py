@@ -329,6 +329,14 @@ class NormalModeTests(unittest.TestCase):
         self.assertTrue(cloud_step.allow_cloud)
         self.assertEqual(cloud_step.max_cloud_tasks, 3)
 
+    def test_beta_next_test_chain_adds_local_live_only_when_requested(self) -> None:
+        chain = beta_next_test_chain(include_local_live=True)
+        local_step = chain[-1]
+
+        self.assertEqual(local_step.only, ("S21", "S22"))
+        self.assertEqual(local_step.tier, "local")
+        self.assertFalse(local_step.allow_cloud)
+
     def test_update_button_plan_uses_fast_forward_pull_and_refreshes_install(self) -> None:
         plan = normal_mode_update_command_plan()
         flattened = [" ".join(command) for _, command in plan]
@@ -347,6 +355,7 @@ class NormalModeTests(unittest.TestCase):
         self.assertIn("Unit-Tests", labels)
         self.assertIn("ChatGPT/Codex", labels)
         self.assertIn("LM Studio", labels)
+        self.assertIn("S21/S22", labels)
         self.assertIn("Core-Beta", labels)
         self.assertIn("Core-Beta-Kette", labels)
         self.assertNotIn("S17", labels)
