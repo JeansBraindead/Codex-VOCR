@@ -1291,6 +1291,30 @@ def format_all_scenarios_overview() -> str:
     return "\n".join(lines).rstrip()
 
 
+BETA_MODE_CHAIN = "chain"
+BETA_MODE_SINGLE = "single"
+
+
+class BetaAborted(Exception):
+    """Raised from the beta on_progress callback to abort cleanly at a scenario boundary."""
+
+    def __init__(self, last_scenario: str | None = None) -> None:
+        super().__init__("beta run aborted by user")
+        self.last_scenario = last_scenario
+
+
+def scenario_controls_enabled_for_mode(mode: str) -> bool:
+    """Whether the scenario dropdown / free-text field should be interactive.
+
+    They only matter in single-scenario mode; the whole-chain mode ignores them.
+    """
+    return mode == BETA_MODE_SINGLE
+
+
+def format_beta_abort_message(scenario_label: str | None) -> str:
+    return f"Lauf gestoppt nach Szenario {scenario_label or '?'}."
+
+
 def launch_normal_mode(repo_root: str | Path = ".", session_permission: PermissionGrant | None = None) -> None:
     try:
         import tkinter as tk
@@ -1316,6 +1340,8 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
         style.theme_use("clam")
         style.configure("TButton", padding=(12, 8))
         style.configure("TLabel", font=("Segoe UI", 10))
+        style.configure("Secondary.TButton", padding=(8, 5), font=("Segoe UI", 8))
+        style.configure("Primary.TButton", padding=(16, 10), font=("Segoe UI", 10, "bold"))
     except tk.TclError:
         pass
 
@@ -1348,7 +1374,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     # visible height. All widgets below are parented to beta_content, not beta_tab.
     beta_content = ttk.Frame(beta_canvas, padding=(12, 12))
     beta_content.columnconfigure(0, weight=1)
-    beta_content.rowconfigure(7, weight=1)
+    beta_content.rowconfigure(6, weight=1)
     beta_content_window = beta_canvas.create_window((0, 0), window=beta_content, anchor="nw")
 
     def _on_beta_content_configure(event: object) -> None:
@@ -1409,66 +1435,59 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     beta_report_dir = tk.StringVar(value="beta_reports")
     beta_tag = tk.StringVar(value="")
     beta_max_cloud_tasks = tk.IntVar(value=3)
+    beta_mode = tk.StringVar(value=BETA_MODE_CHAIN)
+    beta_step_mode = tk.BooleanVar(value=False)
 
     ttk.Label(beta_content, text="VOCR Beta-Pruefstand", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, sticky="w")
     ttk.Label(
         beta_content,
         text=(
-            "Normaler sinnvollster Lauf: empfohlener Standardtest. "
-            "Er nutzt Tier core, ist netzfrei, kostet kein Kontingent und prueft die zentralen VOCR-Sicherheits- und Workflow-Gates."
+            "Standardpfad: unten 'Ganze Testkette' (vorausgewaehlt) mit Tier core starten -- "
+            "netzfrei, kostet kein Kontingent, prueft die zentralen VOCR-Sicherheits- und Workflow-Gates. "
+            "Fuer gezielte Pruefungen auf 'Einzelnes Szenario / Auswahl' wechseln."
         ),
         wraplength=620,
     ).grid(row=1, column=0, sticky="ew", pady=(6, 12))
 
-    beta_recommended = ttk.Frame(beta_content, padding=(10, 10))
-    beta_recommended.grid(row=2, column=0, sticky="ew", pady=(0, 10))
-    beta_recommended.columnconfigure(0, weight=1)
-    ttk.Label(beta_recommended, text="Empfohlen", font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w")
-    ttk.Label(
-        beta_recommended,
-        text=(
-            "Fuehre diesen Test nach Installation, Updates oder eigenen Aenderungen aus. "
-            "Nur wenn er rot ist oder du gezielt etwas pruefen willst, nutze die erweiterten Optionen darunter."
-        ),
-        wraplength=620,
-    ).grid(row=1, column=0, sticky="ew", pady=(4, 8))
-    beta_recommended_button = ttk.Button(beta_recommended, text="Empfohlenen Standardtest starten")
-    beta_recommended_button.grid(row=2, column=0, sticky="w")
-
-    beta_chain = ttk.Frame(beta_content, padding=(10, 10))
-    beta_chain.grid(row=3, column=0, sticky="ew", pady=(0, 10))
-    beta_chain.columnconfigure(0, weight=1)
-    ttk.Label(beta_chain, text="Naechste Testkette", font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w")
-    ttk.Label(
-        beta_chain,
-        text=(
-            "All-in-One Final vor Cloud-Tests: Update, lokale Gates, Login-/LM-Studio-Status, Local-Live-Smoke, "
-            "empfohlener Core-Lauf und komplette gestaffelte Core-Kette. Mit Cloud-Checkbox kommen die harten C00-C03/C05/C06 Cloud-E2E-Gates dazu."
-        ),
-        wraplength=620,
-    ).grid(row=1, column=0, sticky="ew", pady=(4, 8))
+    beta_mode_frame = ttk.Frame(beta_content, padding=(10, 10))
+    beta_mode_frame.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+    beta_mode_frame.columnconfigure(0, weight=1)
+    ttk.Label(beta_mode_frame, text="Was testen?", font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w")
+    ttk.Radiobutton(
+        beta_mode_frame,
+        text="Ganze Testkette (gestaffelter Core-Lauf)",
+        variable=beta_mode,
+        value=BETA_MODE_CHAIN,
+    ).grid(row=1, column=0, sticky="w", pady=(6, 0))
+    ttk.Radiobutton(
+        beta_mode_frame,
+        text="Einzelnes Szenario / Auswahl (Dropdown oder Szenarien-Feld unten)",
+        variable=beta_mode,
+        value=BETA_MODE_SINGLE,
+    ).grid(row=2, column=0, sticky="w")
     beta_chain_lines = [f"{step.title}: {', '.join(step.only)}" for step in beta_next_test_chain(include_cloud=False)]
-    ttk.Label(beta_chain, text="\n".join(beta_chain_lines), wraplength=620).grid(row=2, column=0, sticky="ew", pady=(0, 8))
-    beta_chain_buttons = ttk.Frame(beta_chain)
-    beta_chain_buttons.grid(row=3, column=0, sticky="ew")
-    beta_update_button = ttk.Button(beta_chain_buttons, text="Update aus Git holen")
-    beta_update_button.grid(row=0, column=0, sticky="w")
-    beta_final_button = ttk.Button(beta_chain_buttons, text="Finale lokale Testsequenz starten")
-    beta_final_button.grid(row=0, column=1, sticky="w", padx=(8, 0))
-    beta_chain_button = ttk.Button(beta_chain_buttons, text="Nur Beta-Testkette starten")
-    beta_chain_button.grid(row=0, column=2, sticky="w", padx=(8, 0))
+    ttk.Label(
+        beta_mode_frame,
+        text="Testkette trennt Smoke, Safety, Workflow/Parallelitaet/Memory und Local-Assist-Mocks:\n" + "\n".join(beta_chain_lines),
+        wraplength=620,
+    ).grid(row=3, column=0, sticky="ew", pady=(8, 0))
 
-    beta_controls = ttk.Frame(beta_content)
-    beta_controls.grid(row=4, column=0, sticky="ew")
+    beta_controls = ttk.Frame(beta_content, padding=(10, 10))
+    beta_controls.grid(row=3, column=0, sticky="ew", pady=(0, 10))
     beta_controls.columnconfigure(1, weight=1)
-    ttk.Label(beta_controls, text="Tier").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
-    ttk.Combobox(beta_controls, textvariable=beta_tier, values=("core", "local", "cloud", "all"), state="readonly", width=12).grid(row=0, column=1, sticky="w", pady=4)
-    ttk.Label(beta_controls, text="Szenarien").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=4)
-    ttk.Entry(beta_controls, textvariable=beta_only).grid(row=1, column=1, sticky="ew", pady=4)
-    ttk.Label(beta_controls, text="z.B. S03,S07; leer = Tier-Auswahl").grid(row=1, column=2, sticky="w", padx=(8, 0), pady=4)
+    ttk.Label(beta_controls, text="Wie ausfuehren?", font=("Segoe UI", 10, "bold")).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+    ttk.Checkbutton(
+        beta_controls, text="Stopp zwischen Szenarien (wartet auf 'Weiter')", variable=beta_step_mode
+    ).grid(row=1, column=0, columnspan=3, sticky="w", pady=4)
+    ttk.Label(beta_controls, text="Tier").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=4)
+    ttk.Combobox(beta_controls, textvariable=beta_tier, values=("core", "local", "cloud", "all"), state="readonly", width=12).grid(row=2, column=1, sticky="w", pady=4)
+    ttk.Label(beta_controls, text="Szenarien").grid(row=3, column=0, sticky="w", padx=(0, 8), pady=4)
+    beta_only_entry = ttk.Entry(beta_controls, textvariable=beta_only)
+    beta_only_entry.grid(row=3, column=1, sticky="ew", pady=4)
+    ttk.Label(beta_controls, text="z.B. S03,S07; leer = Tier-Auswahl").grid(row=3, column=2, sticky="w", padx=(8, 0), pady=4)
 
     scenario_choice = tk.StringVar(value="")
-    ttk.Label(beta_controls, text="Szenario waehlen").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=4)
+    ttk.Label(beta_controls, text="Szenario waehlen").grid(row=4, column=0, sticky="w", padx=(0, 8), pady=4)
     scenario_combo = ttk.Combobox(
         beta_controls,
         textvariable=scenario_choice,
@@ -1476,7 +1495,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
         state="readonly",
         width=40,
     )
-    scenario_combo.grid(row=2, column=1, sticky="ew", pady=4)
+    scenario_combo.grid(row=4, column=1, sticky="ew", pady=4)
 
     scenario_info_header = tk.StringVar()
     scenario_info_meta = tk.StringVar()
@@ -1485,7 +1504,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     scenario_info_benefit = tk.StringVar()
 
     scenario_info_frame = ttk.Frame(beta_controls, padding=(0, 4, 0, 4))
-    scenario_info_frame.grid(row=3, column=0, columnspan=3, sticky="ew")
+    scenario_info_frame.grid(row=5, column=0, columnspan=3, sticky="ew")
     scenario_info_frame.columnconfigure(0, weight=1)
     ttk.Label(scenario_info_frame, textvariable=scenario_info_header, font=("Segoe UI", 9, "bold"), wraplength=620).grid(
         row=0, column=0, sticky="w"
@@ -1516,32 +1535,52 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     scenario_choice.trace_add("write", update_scenario_info)
     update_scenario_info()
 
-    ttk.Label(beta_controls, text="Report-Ordner").grid(row=4, column=0, sticky="w", padx=(0, 8), pady=4)
-    ttk.Entry(beta_controls, textvariable=beta_report_dir).grid(row=4, column=1, sticky="ew", pady=4)
-    ttk.Label(beta_controls, text="Tag").grid(row=5, column=0, sticky="w", padx=(0, 8), pady=4)
-    ttk.Entry(beta_controls, textvariable=beta_tag).grid(row=5, column=1, sticky="ew", pady=4)
-    ttk.Label(beta_controls, text="Max Cloud Tasks").grid(row=6, column=0, sticky="w", padx=(0, 8), pady=4)
-    ttk.Spinbox(beta_controls, from_=1, to=20, textvariable=beta_max_cloud_tasks, width=6).grid(row=6, column=1, sticky="w", pady=4)
+    ttk.Label(beta_controls, text="Report-Ordner").grid(row=6, column=0, sticky="w", padx=(0, 8), pady=4)
+    ttk.Entry(beta_controls, textvariable=beta_report_dir).grid(row=6, column=1, sticky="ew", pady=4)
+    ttk.Label(beta_controls, text="Tag").grid(row=7, column=0, sticky="w", padx=(0, 8), pady=4)
+    ttk.Entry(beta_controls, textvariable=beta_tag).grid(row=7, column=1, sticky="ew", pady=4)
+    ttk.Label(beta_controls, text="Max Cloud Tasks").grid(row=8, column=0, sticky="w", padx=(0, 8), pady=4)
+    ttk.Spinbox(beta_controls, from_=1, to=20, textvariable=beta_max_cloud_tasks, width=6).grid(row=8, column=1, sticky="w", pady=4)
 
-    beta_checks = ttk.Frame(beta_content)
-    beta_checks.grid(row=5, column=0, sticky="ew", pady=(8, 0))
-    ttk.Checkbutton(beta_checks, text="Cloud-Szenarien erlauben (kann Kontingent kosten)", variable=beta_allow_cloud).grid(row=0, column=0, sticky="w")
-    ttk.Checkbutton(beta_checks, text="Nur JSON-Report schreiben", variable=beta_json_only).grid(row=1, column=0, sticky="w")
-    ttk.Checkbutton(beta_checks, text="Debug-Details anzeigen", variable=beta_debug).grid(row=2, column=0, sticky="w")
+    ttk.Checkbutton(beta_controls, text="Cloud-Szenarien erlauben (kann Kontingent kosten)", variable=beta_allow_cloud).grid(
+        row=9, column=0, columnspan=3, sticky="w", pady=(10, 0)
+    )
+    ttk.Checkbutton(beta_controls, text="Nur JSON-Report schreiben", variable=beta_json_only).grid(row=10, column=0, columnspan=3, sticky="w")
+    ttk.Checkbutton(beta_controls, text="Debug-Details anzeigen", variable=beta_debug).grid(row=11, column=0, columnspan=3, sticky="w")
     ttk.Checkbutton(
-        beta_checks,
+        beta_controls,
         text="Codex ohne Sandbox ausfuehren (Windows-Fix; nur fuer vertrauenswuerdige Repos)",
         variable=beta_unsandboxed,
-    ).grid(row=3, column=0, sticky="w")
+    ).grid(row=12, column=0, columnspan=3, sticky="w")
 
-    beta_buttons = ttk.Frame(beta_content)
-    beta_buttons.grid(row=6, column=0, sticky="ew", pady=(10, 8))
-    beta_start_button = ttk.Button(beta_buttons, text="Erweiterten Beta-Test starten")
-    beta_start_button.grid(row=0, column=0, sticky="w")
-    beta_list_button = ttk.Button(beta_buttons, text="Szenarien anzeigen")
-    beta_list_button.grid(row=0, column=1, sticky="w", padx=(8, 0))
-    beta_explain_button = ttk.Button(beta_buttons, text="Szenarien erklaeren")
-    beta_explain_button.grid(row=0, column=2, sticky="w", padx=(8, 0))
+    def _update_mode_controls(*_: object) -> None:
+        enabled = scenario_controls_enabled_for_mode(beta_mode.get())
+        scenario_combo.configure(state="readonly" if enabled else tk.DISABLED)
+        beta_only_entry.configure(state=tk.NORMAL if enabled else tk.DISABLED)
+
+    beta_mode.trace_add("write", _update_mode_controls)
+    _update_mode_controls()
+
+    beta_primary_buttons = ttk.Frame(beta_content, padding=(0, 4, 0, 4))
+    beta_primary_buttons.grid(row=4, column=0, sticky="w", pady=(4, 10))
+    beta_start_primary = ttk.Button(beta_primary_buttons, text="▶ Start", style="Primary.TButton")
+    beta_start_primary.grid(row=0, column=0, sticky="w")
+    beta_continue_button = ttk.Button(beta_primary_buttons, text="⏭ Weiter", style="Primary.TButton", state=tk.DISABLED)
+    beta_continue_button.grid(row=0, column=1, sticky="w", padx=(8, 0))
+    beta_stop_button = ttk.Button(beta_primary_buttons, text="⏹ Stop", style="Primary.TButton", state=tk.DISABLED)
+    beta_stop_button.grid(row=0, column=2, sticky="w", padx=(8, 0))
+
+    beta_secondary_buttons = ttk.Frame(beta_content, padding=(0, 4, 0, 0))
+    beta_secondary_buttons.grid(row=5, column=0, sticky="w", pady=(0, 8))
+    ttk.Label(beta_secondary_buttons, text="Weitere Funktionen", font=("Segoe UI", 8)).grid(row=0, column=0, columnspan=4, sticky="w")
+    beta_update_button = ttk.Button(beta_secondary_buttons, text="Update aus Git holen", style="Secondary.TButton")
+    beta_update_button.grid(row=1, column=0, sticky="w", pady=(2, 0))
+    beta_final_button = ttk.Button(beta_secondary_buttons, text="Finale lokale Testsequenz starten", style="Secondary.TButton")
+    beta_final_button.grid(row=1, column=1, sticky="w", padx=(6, 0), pady=(2, 0))
+    beta_list_button = ttk.Button(beta_secondary_buttons, text="Szenarien anzeigen", style="Secondary.TButton")
+    beta_list_button.grid(row=1, column=2, sticky="w", padx=(6, 0), pady=(2, 0))
+    beta_explain_button = ttk.Button(beta_secondary_buttons, text="Szenarien erklaeren", style="Secondary.TButton")
+    beta_explain_button.grid(row=1, column=3, sticky="w", padx=(6, 0), pady=(2, 0))
 
     beta_result = scrolledtext.ScrolledText(beta_content, wrap=tk.WORD, height=14, padx=8, pady=8, state=tk.DISABLED)
     beta_result.grid(row=7, column=0, sticky="nsew", pady=(8, 0))
@@ -1624,10 +1663,51 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
         beta_result.see(tk.END)
         beta_result.configure(state=tk.DISABLED)
 
-    def set_beta_buttons_enabled(enabled: bool) -> None:
-        state = tk.NORMAL if enabled else tk.DISABLED
-        for button in (beta_update_button, beta_final_button, beta_chain_button, beta_start_button, beta_recommended_button, beta_list_button):
-            button.configure(state=state)
+    beta_stop_event = threading.Event()
+    beta_continue_event = threading.Event()
+
+    def _set_continue_enabled(enabled: bool) -> None:
+        beta_continue_button.configure(state=tk.NORMAL if enabled else tk.DISABLED)
+
+    def _set_beta_running(active: bool, *, stoppable: bool = False) -> None:
+        """Central switch for beta-tab button states. Called from the main
+        thread only (workers reach this via root.after)."""
+        beta_start_primary.configure(state=tk.DISABLED if active else tk.NORMAL)
+        beta_stop_button.configure(state=(tk.NORMAL if active and stoppable else tk.DISABLED))
+        for button in (beta_update_button, beta_final_button, beta_list_button, beta_explain_button):
+            button.configure(state=tk.DISABLED if active else tk.NORMAL)
+        if active:
+            scenario_combo.configure(state=tk.DISABLED)
+            beta_only_entry.configure(state=tk.DISABLED)
+        else:
+            _set_continue_enabled(False)
+            _update_mode_controls()
+
+    def _handle_step_and_stop(scenario_label: str) -> None:
+        """Called after each scenario finishes (from the worker thread).
+        Aborts cleanly if Stop was pressed, or blocks until 'Weiter' when
+        step mode is on. All GUI updates go through root.after."""
+        if beta_stop_event.is_set():
+            raise BetaAborted(scenario_label)
+        if beta_step_mode.get():
+            root.after(0, lambda: _set_continue_enabled(True))
+            root.after(0, lambda: log_activity(f"Schrittmodus: pausiert nach {scenario_label}. 'Weiter' klicken zum Fortsetzen."))
+            beta_continue_event.wait()
+            beta_continue_event.clear()
+            root.after(0, lambda: _set_continue_enabled(False))
+            if beta_stop_event.is_set():
+                raise BetaAborted(scenario_label)
+
+    def continue_beta_run() -> None:
+        beta_continue_event.set()
+
+    def stop_beta_run() -> None:
+        if beta_stop_event.is_set():
+            return
+        beta_stop_event.set()
+        beta_continue_event.set()  # unblock a paused step-mode wait so the worker can see the stop
+        log_activity("Stop angefordert: Abbruch nach dem aktuellen Szenario.")
+        beta_stop_button.configure(state=tk.DISABLED)
 
     def run_command_plan(plan: tuple[tuple[str, tuple[str, ...]], ...], *, stop_on_failure: bool) -> tuple[int, list[str]]:
         exit_code = 0
@@ -1683,39 +1763,37 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
         overview_text.insert(tk.END, format_all_scenarios_overview())
         overview_text.configure(state=tk.DISABLED)
 
-    def start_beta_run(*, recommended: bool = False) -> None:
-        tier = "core" if recommended else beta_tier.get()
-        only = [] if recommended else [item.strip().upper() for item in beta_only.get().split(",") if item.strip()]
-        allow_cloud = False if recommended else beta_allow_cloud.get()
-        json_only = False if recommended else beta_json_only.get()
+    def start_beta_run() -> None:
+        tier = beta_tier.get()
+        only = [item.strip().upper() for item in beta_only.get().split(",") if item.strip()]
+        allow_cloud = beta_allow_cloud.get()
+        json_only = beta_json_only.get()
         show_debug = beta_debug.get()
-        report_dir = "beta_reports" if recommended else (beta_report_dir.get().strip() or "beta_reports")
-        tag = "recommended-core" if recommended else (beta_tag.get().strip() or None)
-        max_cloud_tasks = 3
-        if not recommended:
-            try:
-                max_cloud_tasks = max(1, int(beta_max_cloud_tasks.get()))
-            except Exception:
-                max_cloud_tasks = 3
+        report_dir = beta_report_dir.get().strip() or "beta_reports"
+        tag = beta_tag.get().strip() or None
+        try:
+            max_cloud_tasks = max(1, int(beta_max_cloud_tasks.get()))
+        except Exception:
+            max_cloud_tasks = 3
         if tier in {"cloud", "all"} and not allow_cloud:
             messagebox.showwarning(
                 "Beta-Test",
                 "Cloud-Szenarien sind nicht erlaubt. Aktiviere die Checkbox, wenn du Cloud-Pfade wirklich laufen lassen willst.",
             )
             return
-        set_beta_buttons_enabled(False)
+        beta_stop_event.clear()
+        beta_continue_event.clear()
+        _set_beta_running(True, stoppable=True)
         set_activity("Beta-Test startet", busy=True)
         log_activity("Beta-Test gestartet.")
         beta_append(
             "\n".join(
                 [
-                    "Empfohlener Standardtest laeuft..." if recommended else "Beta-Test laeuft...",
-                    "Dieser Lauf ist der normale sinnvolle Check: Tier core, keine Cloud, alle Core-Szenarien.",
-                    "Wenn er gruen ist, ist der lokale VOCR-Kernzustand in Ordnung." if recommended else "Erweiterte Optionen sind aktiv.",
-                    "",
+                    "Beta-Test laeuft (Einzelnes Szenario / Auswahl) ...",
                     f"Tier: {tier}",
                     f"Szenarien: {','.join(only) if only else 'alle fuer Tier'}",
                     f"Cloud erlaubt: {'ja' if allow_cloud else 'nein'}",
+                    f"Schrittmodus: {'an' if beta_step_mode.get() else 'aus'}",
                     f"Codex-Sandbox: {'aus' if beta_unsandboxed.get() else 'an'}",
                     "",
                 ]
@@ -1745,6 +1823,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
                         label = f"{item.id} {item.title}: {item.status} ({item.duration_s}s)"  # type: ignore[attr-defined]
                         root.after(0, lambda label=label: beta_append(f"Fertig {label}"))
                         root.after(0, lambda label=label: log_activity(f"Szenario fertig: {label}."))
+                        _handle_step_and_stop(label)
                     elif event == "report":
                         root.after(0, lambda: log_activity("Beta-Reports werden geschrieben."))
 
@@ -1784,31 +1863,37 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
                     lines.extend(["", f"JSON-Report: {run.report_json}"])
                 if run.report_markdown:
                     lines.append(f"Markdown-Report: {run.report_markdown}")
+            except BetaAborted as exc:
+                lines = [format_beta_abort_message(exc.last_scenario)]
+                root.after(0, lambda exc=exc: log_activity(format_beta_abort_message(exc.last_scenario)))
             except Exception as exc:  # noqa: BLE001 - UI should surface failures.
                 lines = ["Beta-Test konnte nicht abgeschlossen werden:", str(exc)]
                 root.after(0, lambda exc=exc: log_activity(f"Beta-Test fehlgeschlagen: {exc}"))
             root.after(0, lambda: beta_append("\n".join(lines), replace=True))
             root.after(0, lambda: set_activity("Beta-Test abgeschlossen", busy=False))
             root.after(0, lambda: log_activity("Beta-Test abgeschlossen."))
-            root.after(0, lambda: set_beta_buttons_enabled(True))
+            root.after(0, lambda: _set_beta_running(False))
 
         threading.Thread(target=worker, daemon=True).start()
 
     def start_beta_chain() -> None:
         include_cloud = beta_allow_cloud.get()
         steps = beta_next_test_chain(include_cloud=include_cloud)
-        set_beta_buttons_enabled(False)
+        beta_stop_event.clear()
+        beta_continue_event.clear()
+        _set_beta_running(True, stoppable=True)
         set_activity("Beta-Testkette startet", busy=True)
         log_activity("Beta-Testkette gestartet.")
         beta_append(
             "\n".join(
                 [
-                    "Naechste Beta-Testkette laeuft...",
+                    "Ganze Testkette laeuft...",
                     "Diese Kette trennt Smoke, Safety, Workflow/Parallelitaet/Memory und Local-Assist-Mocks.",
                     "Cloud-E2E-Gates sind nur enthalten, wenn die Cloud-Checkbox aktiv ist.",
                     "",
                     f"Schritte: {len(steps)}",
                     f"Cloud enthalten: {'ja' if include_cloud else 'nein'}",
+                    f"Schrittmodus: {'an' if beta_step_mode.get() else 'aus'}",
                     "",
                     *[f"- {step.title}: {', '.join(step.only)}" for step in steps],
                     "",
@@ -1846,6 +1931,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
                             label = f"{item.id} {item.title}: {item.status} ({item.duration_s}s)"  # type: ignore[attr-defined]
                             root.after(0, lambda label=label: beta_append(f"Fertig {label}"))
                             root.after(0, lambda label=label: log_activity(f"Szenario fertig: {label}."))
+                            _handle_step_and_stop(label)
                         elif event == "report":
                             root.after(0, lambda step=step: log_activity(f"Beta-Kettenreport wird geschrieben: {step.tag}."))
 
@@ -1896,18 +1982,34 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
                     "",
                     *all_lines,
                 ]
+            except BetaAborted as exc:
+                all_lines.append(format_beta_abort_message(exc.last_scenario))
+                lines = [
+                    "Testketten-Verdikt: GESTOPPT",
+                    "",
+                    "Kettenprotokoll (bis zum Abbruch):",
+                    "",
+                    *all_lines,
+                ]
+                root.after(0, lambda exc=exc: log_activity(f"Beta-Testkette: {format_beta_abort_message(exc.last_scenario)}"))
             except Exception as exc:  # noqa: BLE001 - UI should surface failures.
                 lines = ["Beta-Testkette konnte nicht abgeschlossen werden:", str(exc)]
                 root.after(0, lambda exc=exc: log_activity(f"Beta-Testkette fehlgeschlagen: {exc}"))
             root.after(0, lambda: beta_append("\n".join(lines), replace=True))
             root.after(0, lambda: set_activity("Beta-Testkette abgeschlossen", busy=False))
             root.after(0, lambda: log_activity("Beta-Testkette abgeschlossen."))
-            root.after(0, lambda: set_beta_buttons_enabled(True))
+            root.after(0, lambda: _set_beta_running(False))
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def start_beta_primary() -> None:
+        if beta_mode.get() == BETA_MODE_SINGLE:
+            start_beta_run()
+        else:
+            start_beta_chain()
+
     def start_update_from_git() -> None:
-        set_beta_buttons_enabled(False)
+        _set_beta_running(True, stoppable=False)
         set_activity("Update startet", busy=True)
         log_activity("Update aus Git gestartet.")
         beta_append(
@@ -1934,7 +2036,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
             root.after(0, lambda: beta_append("\n".join(lines), replace=True))
             root.after(0, lambda: set_activity("Update abgeschlossen", busy=False))
             root.after(0, lambda: log_activity("Update aus Git abgeschlossen."))
-            root.after(0, lambda: set_beta_buttons_enabled(True))
+            root.after(0, lambda: _set_beta_running(False))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1942,7 +2044,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
         include_cloud = beta_allow_cloud.get()
         labels = final_all_in_one_labels(include_cloud=include_cloud)
         report_dir = beta_report_dir.get().strip() or "beta_reports"
-        set_beta_buttons_enabled(False)
+        _set_beta_running(True, stoppable=False)
         set_activity("Finale Testsequenz startet", busy=True)
         log_activity("All-in-One Final gestartet.")
         beta_append(
@@ -2110,7 +2212,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
             root.after(0, lambda: beta_append("\n".join(lines), replace=True))
             root.after(0, lambda: set_activity("Finale Testsequenz abgeschlossen", busy=False))
             root.after(0, lambda: log_activity("All-in-One Final abgeschlossen."))
-            root.after(0, lambda: set_beta_buttons_enabled(True))
+            root.after(0, lambda: _set_beta_running(False))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -2216,9 +2318,9 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     user_input.bind("<Control-Return>", send)
     beta_update_button.configure(command=start_update_from_git)
     beta_final_button.configure(command=start_final_all_in_one)
-    beta_recommended_button.configure(command=lambda: start_beta_run(recommended=True))
-    beta_start_button.configure(command=start_beta_run)
-    beta_chain_button.configure(command=start_beta_chain)
+    beta_start_primary.configure(command=start_beta_primary)
+    beta_continue_button.configure(command=continue_beta_run)
+    beta_stop_button.configure(command=stop_beta_run)
     beta_list_button.configure(command=show_beta_scenarios)
     beta_explain_button.configure(command=show_scenario_catalog_window)
 

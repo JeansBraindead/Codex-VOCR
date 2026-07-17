@@ -28,6 +28,9 @@ from vocr.models import (
 )
 from vocr.orchestration.worker_advisor import WorkerParallelismAdvisor
 from vocr.ui.normal_mode import (
+    BETA_MODE_CHAIN,
+    BETA_MODE_SINGLE,
+    BetaAborted,
     NormalModeController,
     SCENARIO_DROPDOWN_HINT,
     beta_next_test_chain,
@@ -35,6 +38,7 @@ from vocr.ui.normal_mode import (
     final_all_in_one_labels,
     final_local_test_command_plan,
     format_all_scenarios_overview,
+    format_beta_abort_message,
     launch_console_mode,
     launch_normal_mode,
     lmstudio_reachability_status,
@@ -44,6 +48,7 @@ from vocr.ui.normal_mode import (
     open_codex_login_shell,
     open_expert_shell,
     scenario_code_from_choice,
+    scenario_controls_enabled_for_mode,
     scenario_dropdown_choices,
     scenario_info_lines,
 )
@@ -403,6 +408,27 @@ class NormalModeTests(unittest.TestCase):
         for info in CATALOG:
             self.assertIn(info.code, overview)
             self.assertIn(info.what, overview)
+
+    def test_scenario_controls_enabled_only_in_single_mode(self) -> None:
+        self.assertFalse(scenario_controls_enabled_for_mode(BETA_MODE_CHAIN))
+        self.assertTrue(scenario_controls_enabled_for_mode(BETA_MODE_SINGLE))
+
+    def test_format_beta_abort_message_includes_scenario_label(self) -> None:
+        self.assertEqual(format_beta_abort_message("S03 scope-breach"), "Lauf gestoppt nach Szenario S03 scope-breach.")
+
+    def test_format_beta_abort_message_falls_back_without_label(self) -> None:
+        self.assertEqual(format_beta_abort_message(None), "Lauf gestoppt nach Szenario ?.")
+
+    def test_beta_aborted_carries_last_scenario_label(self) -> None:
+        exc = BetaAborted("S07 ratchet-matrix: passed (0.1s)")
+
+        self.assertEqual(exc.last_scenario, "S07 ratchet-matrix: passed (0.1s)")
+        self.assertIsInstance(exc, Exception)
+
+    def test_beta_aborted_defaults_last_scenario_to_none(self) -> None:
+        exc = BetaAborted()
+
+        self.assertIsNone(exc.last_scenario)
 
     def test_update_button_plan_uses_fast_forward_pull_and_refreshes_install(self) -> None:
         plan = normal_mode_update_command_plan()
