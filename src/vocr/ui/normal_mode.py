@@ -1136,6 +1136,8 @@ def codex_login_status(auth_path: Path | None = None) -> str:
         completed = subprocess.run(
             ["codex", "login", "status"],
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             timeout=8,
             check=False,
@@ -1514,6 +1516,8 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
                 list(command),
                 cwd=str(controller.repo_root),
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 capture_output=True,
                 check=False,
                 timeout=900,

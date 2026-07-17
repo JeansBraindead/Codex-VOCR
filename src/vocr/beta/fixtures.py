@@ -41,7 +41,9 @@ def make_repo(root: Path) -> Path:
 
 
 def _git(root: Path, *args: str) -> str:
-    result = subprocess.run(["git", *args], cwd=root, text=True, capture_output=True, check=False)
+    result = subprocess.run(
+        ["git", *args], cwd=root, text=True, encoding="utf-8", errors="replace", capture_output=True, check=False
+    )
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip())
     return result.stdout.strip()

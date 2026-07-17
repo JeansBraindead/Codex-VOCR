@@ -107,11 +107,19 @@ def _fixture_two_checks(root: Path) -> Path:
 
 
 def _init_repo(repo: Path) -> None:
-    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
     subprocess.run(["git", "config", "user.email", "beta@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "VOCR Beta"], cwd=repo, check=True)
     subprocess.run(["git", "add", "--all"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-m", "initial cloud fixture"], cwd=repo, check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "commit", "-m", "initial cloud fixture"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
 
 
 def _run_cloud_task(ctx: BetaContext, repo: Path, task: VocrTask, *, prompt_mode: str | None = None, max_retries: int = 0) -> CloudRunResult:
