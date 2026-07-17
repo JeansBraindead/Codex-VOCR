@@ -419,9 +419,12 @@ def review_task(
             issues.append("Worktree has uncommitted changes; commit or discard them before accepted review.")
 
     test_results = run_task_checks(task)
-    failed_checks = [result for result in test_results if result.status == "failed"]
+    failed_checks = [result for result in test_results if result.status in {"failed", "timeout"}]
     if failed_checks:
-        issues.extend(f"Check failed: {result.command}" for result in failed_checks)
+        issues.extend(
+            f"Check {result.status}: {result.command}" if result.status == "timeout" else f"Check failed: {result.command}"
+            for result in failed_checks
+        )
     check_coverage_issues = _acceptance_coverage_issues(task)
     if _require_checks_mode() == "warn":
         warning_risks.extend(check_coverage_issues)
@@ -618,14 +621,33 @@ def run_task_checks(task: VocrTask) -> list[TestRunResult]:
                 )
             )
             continue
-        completed = subprocess.run(
-            command,
-            cwd=cwd,
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=300,
-        )
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=cwd,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=300,
+            )
+        except subprocess.TimeoutExpired as exc:
+            results.append(
+                TestRunResult(
+                    command=" ".join(command),
+                    status="timeout",
+                    output=f"Check timed out after {exc.timeout}s.",
+                )
+            )
+            continue
+        except OSError as exc:
+            results.append(
+                TestRunResult(
+                    command=" ".join(command),
+                    status="failed",
+                    output=f"Check could not be started: {exc}",
+                )
+            )
+            continue
         output = "\n".join(part for part in [completed.stdout.strip(), completed.stderr.strip()] if part)
         results.append(
             TestRunResult(

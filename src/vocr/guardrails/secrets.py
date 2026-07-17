@@ -60,14 +60,23 @@ def scan_diff_for_secrets(diff_text: str, *, repo_root: Path | str | None = None
 def run_gitleaks_scan(repo_root: Path) -> list[SecretFinding] | None:
     if which("gitleaks") is None:
         return None
-    result = subprocess.run(
-        _gitleaks_command(repo_root),
-        cwd=repo_root,
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=120,
-    )
+    try:
+        result = subprocess.run(
+            _gitleaks_command(repo_root),
+            cwd=repo_root,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return [
+            SecretFinding(
+                rule_id="gitleaks_timeout",
+                summary=f"gitleaks did not complete cleanly ({exc}); review scanner output locally.",
+                severity="medium",
+            )
+        ]
     output = result.stdout.strip()
     if result.returncode == 0:
         return []

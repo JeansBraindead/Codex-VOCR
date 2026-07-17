@@ -1277,6 +1277,64 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(exists)
         self.assertEqual(removed, 0)
 
+    def test_run_task_checks_survives_subprocess_timeout(self) -> None:
+        from vocr.orchestration.workflow import run_task_checks
+
+        task = VocrTask(
+            slice_id="slice-timeout",
+            title="Timeout task",
+            summary="Runs a check that hangs",
+            scope=["src"],
+            acceptance_criteria=[AcceptanceCriterion(text="passes")],
+            tests=["pytest"],
+        )
+
+        with patch(
+            "vocr.orchestration.workflow.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd=["pytest"], timeout=300),
+        ):
+            results = run_task_checks(task)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].status, "timeout")
+        self.assertIn("timed out", results[0].output)
+
+    def test_review_task_reports_needs_changes_on_check_timeout_without_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = MemoryLedger(Path(tmp) / ".vocr")
+            task = VocrTask(
+                slice_id="slice-timeout",
+                title="Timeout task",
+                summary="Runs a check that hangs",
+                scope=["src"],
+                acceptance_criteria=[AcceptanceCriterion(text="passes")],
+                tests=["pytest"],
+                status=TaskStatus.dispatched,
+            )
+            ledger.append(LedgerEventType.task_created, task)
+
+            with patch(
+                "vocr.orchestration.workflow.subprocess.run",
+                side_effect=subprocess.TimeoutExpired(cmd=["pytest"], timeout=300),
+            ):
+                review = review_task(ledger, task.id, decision=ReviewDecision.accepted)
+
+        self.assertEqual(review.decision, ReviewDecision.needs_changes)
+        self.assertTrue(any("timeout" in issue.lower() for issue in review.required_changes))
+
+    def test_gitleaks_scan_survives_subprocess_timeout(self) -> None:
+        from vocr.guardrails.secrets import run_gitleaks_scan
+
+        with patch("vocr.guardrails.secrets.which", return_value="/usr/bin/gitleaks"), patch(
+            "vocr.guardrails.secrets.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd=["gitleaks"], timeout=120),
+        ):
+            findings = run_gitleaks_scan(Path("."))
+
+        self.assertIsNotNone(findings)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].rule_id, "gitleaks_timeout")
+
 
 if __name__ == "__main__":
     unittest.main()
