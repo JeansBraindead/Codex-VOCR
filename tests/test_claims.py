@@ -33,6 +33,41 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(claim_root("src/**/models.py"), "src")
         self.assertEqual(claim_root("mod*.py"), ".")
 
+    def test_claim_root_treats_bare_extension_glob_as_filetype_not_whole_repo(self) -> None:
+        self.assertEqual(claim_root("*.md"), "filetype:*.md")
+        self.assertEqual(claim_root("*.py"), "filetype:*.py")
+        # Genuine whole-repo globs must still resolve to the repo root.
+        self.assertEqual(claim_root("**/*"), ".")
+        self.assertEqual(claim_root("**"), ".")
+
+    def test_extension_glob_claim_does_not_collide_with_unrelated_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docs").mkdir()
+            (root / "docs" / "guide.md").write_text("# guide\n", encoding="utf-8")
+            (root / "README.md").write_text("# readme\n", encoding="utf-8")
+            (root / "src").mkdir()
+            (root / "src" / "main.py").write_text("x = 1\n", encoding="utf-8")
+
+            docs_task = make_task("ta-docs", ["docs"])
+            code_task = make_task("ta-code", ["src/**"])
+            docs_claim = build_scope_claim(docs_task, root)
+            code_claim = build_scope_claim(code_task, root)
+
+        self.assertFalse(claims_conflict(docs_claim, code_claim))
+
+    def test_two_extension_glob_claims_still_collide(self) -> None:
+        first = ScopeClaim(task_id="ta1", globs=["*.md"], roots=[claim_root("*.md")], expanded_paths=[])
+        second = ScopeClaim(task_id="ta2", globs=["*.md"], roots=[claim_root("*.md")], expanded_paths=[])
+
+        self.assertTrue(claims_conflict(first, second))
+
+    def test_extension_glob_claim_still_collides_with_explicit_whole_repo_claim(self) -> None:
+        markdown = ScopeClaim(task_id="ta1", globs=["*.md"], roots=[claim_root("*.md")], expanded_paths=[])
+        whole_repo = ScopeClaim(task_id="ta2", globs=["**/*"], roots=[claim_root("**/*")], expanded_paths=[])
+
+        self.assertTrue(claims_conflict(markdown, whole_repo))
+
     def test_claim_conflict_distinguishes_disjoint_roots_and_exact_files(self) -> None:
         api = ScopeClaim(task_id="ta1", globs=["src/api/**"], roots=[claim_root("src/api/**")], expanded_paths=[])
         cli = ScopeClaim(task_id="ta2", globs=["src/cli/**"], roots=[claim_root("src/cli/**")], expanded_paths=[])

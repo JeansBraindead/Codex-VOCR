@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from vocr.guardrails.scope_guard import ScopeGuard, _looks_like_path
 from vocr.models import ClaimConflict, ScopeClaim, VocrTask
 
 
+_EXTENSION_GLOB_RE = re.compile(r"^\*\.[A-Za-z0-9]+$")
+
+
 def claim_root(glob: str) -> str:
     normalized = glob.strip().replace("\\", "/").lstrip("./")
+    if _EXTENSION_GLOB_RE.match(normalized):
+        # A bare extension glob like "*.md" has no path prefix at all; it is
+        # not a whole-repo claim and must not collide with every other root.
+        return f"filetype:{normalized.lower()}"
     wildcard_positions = [pos for pos in (normalized.find(char) for char in "*?[") if pos >= 0]
     if not wildcard_positions:
         return normalized.rstrip("/") or "."
@@ -65,6 +73,10 @@ def claim_conflicts(candidate: ScopeClaim, active: list[ScopeClaim]) -> list[Cla
 def _roots_overlap(left: str, right: str) -> bool:
     left = left.replace("\\", "/").strip("/") or "."
     right = right.replace("\\", "/").strip("/") or "."
+    if left.startswith("filetype:") or right.startswith("filetype:"):
+        # Filetype claims only collide with an identical filetype or with an
+        # explicit whole-repo root, never with an unrelated directory root.
+        return left == right or left == "." or right == "."
     if left == "." or right == ".":
         return True
     return left == right or left.startswith(f"{right}/") or right.startswith(f"{left}/")
