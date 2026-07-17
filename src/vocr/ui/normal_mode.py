@@ -1332,10 +1332,40 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     dialog_tab.rowconfigure(0, weight=1)
     notebook.add(dialog_tab, text="Dialog")
 
-    beta_tab = ttk.Frame(notebook, padding=(12, 12))
-    beta_tab.columnconfigure(0, weight=1)
-    beta_tab.rowconfigure(7, weight=1)
+    beta_tab = ttk.Frame(notebook)
     notebook.add(beta_tab, text="Beta-Test")
+    beta_tab.rowconfigure(0, weight=1)
+    beta_tab.columnconfigure(0, weight=1)
+
+    beta_canvas = tk.Canvas(beta_tab, highlightthickness=0)
+    beta_scrollbar = ttk.Scrollbar(beta_tab, orient="vertical", command=beta_canvas.yview)
+    beta_canvas.configure(yscrollcommand=beta_scrollbar.set)
+    beta_canvas.grid(row=0, column=0, sticky="nsew")
+    beta_scrollbar.grid(row=0, column=1, sticky="ns")
+
+    # Content lives in a frame embedded in the canvas so the whole beta tab can
+    # scroll vertically once the scenario dropdown/info panel push it past the
+    # visible height. All widgets below are parented to beta_content, not beta_tab.
+    beta_content = ttk.Frame(beta_canvas, padding=(12, 12))
+    beta_content.columnconfigure(0, weight=1)
+    beta_content.rowconfigure(7, weight=1)
+    beta_content_window = beta_canvas.create_window((0, 0), window=beta_content, anchor="nw")
+
+    def _on_beta_content_configure(event: object) -> None:
+        beta_canvas.configure(scrollregion=beta_canvas.bbox("all"))
+
+    beta_content.bind("<Configure>", _on_beta_content_configure)
+
+    def _on_beta_canvas_configure(event) -> None:
+        beta_canvas.itemconfigure(beta_content_window, width=event.width)
+
+    beta_canvas.bind("<Configure>", _on_beta_canvas_configure)
+
+    def _on_beta_mousewheel(event) -> None:
+        beta_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    beta_canvas.bind("<Enter>", lambda e: beta_canvas.bind_all("<MouseWheel>", _on_beta_mousewheel))
+    beta_canvas.bind("<Leave>", lambda e: beta_canvas.unbind_all("<MouseWheel>"))
 
     transcript = scrolledtext.ScrolledText(dialog_tab, wrap=tk.WORD, padx=12, pady=12, state=tk.DISABLED)
     transcript.grid(row=0, column=0, sticky="nsew")
@@ -1380,9 +1410,9 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     beta_tag = tk.StringVar(value="")
     beta_max_cloud_tasks = tk.IntVar(value=3)
 
-    ttk.Label(beta_tab, text="VOCR Beta-Pruefstand", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, sticky="w")
+    ttk.Label(beta_content, text="VOCR Beta-Pruefstand", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, sticky="w")
     ttk.Label(
-        beta_tab,
+        beta_content,
         text=(
             "Normaler sinnvollster Lauf: empfohlener Standardtest. "
             "Er nutzt Tier core, ist netzfrei, kostet kein Kontingent und prueft die zentralen VOCR-Sicherheits- und Workflow-Gates."
@@ -1390,7 +1420,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
         wraplength=620,
     ).grid(row=1, column=0, sticky="ew", pady=(6, 12))
 
-    beta_recommended = ttk.Frame(beta_tab, padding=(10, 10))
+    beta_recommended = ttk.Frame(beta_content, padding=(10, 10))
     beta_recommended.grid(row=2, column=0, sticky="ew", pady=(0, 10))
     beta_recommended.columnconfigure(0, weight=1)
     ttk.Label(beta_recommended, text="Empfohlen", font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w")
@@ -1405,7 +1435,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     beta_recommended_button = ttk.Button(beta_recommended, text="Empfohlenen Standardtest starten")
     beta_recommended_button.grid(row=2, column=0, sticky="w")
 
-    beta_chain = ttk.Frame(beta_tab, padding=(10, 10))
+    beta_chain = ttk.Frame(beta_content, padding=(10, 10))
     beta_chain.grid(row=3, column=0, sticky="ew", pady=(0, 10))
     beta_chain.columnconfigure(0, weight=1)
     ttk.Label(beta_chain, text="Naechste Testkette", font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w")
@@ -1428,7 +1458,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     beta_chain_button = ttk.Button(beta_chain_buttons, text="Nur Beta-Testkette starten")
     beta_chain_button.grid(row=0, column=2, sticky="w", padx=(8, 0))
 
-    beta_controls = ttk.Frame(beta_tab)
+    beta_controls = ttk.Frame(beta_content)
     beta_controls.grid(row=4, column=0, sticky="ew")
     beta_controls.columnconfigure(1, weight=1)
     ttk.Label(beta_controls, text="Tier").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
@@ -1493,7 +1523,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     ttk.Label(beta_controls, text="Max Cloud Tasks").grid(row=6, column=0, sticky="w", padx=(0, 8), pady=4)
     ttk.Spinbox(beta_controls, from_=1, to=20, textvariable=beta_max_cloud_tasks, width=6).grid(row=6, column=1, sticky="w", pady=4)
 
-    beta_checks = ttk.Frame(beta_tab)
+    beta_checks = ttk.Frame(beta_content)
     beta_checks.grid(row=5, column=0, sticky="ew", pady=(8, 0))
     ttk.Checkbutton(beta_checks, text="Cloud-Szenarien erlauben (kann Kontingent kosten)", variable=beta_allow_cloud).grid(row=0, column=0, sticky="w")
     ttk.Checkbutton(beta_checks, text="Nur JSON-Report schreiben", variable=beta_json_only).grid(row=1, column=0, sticky="w")
@@ -1504,7 +1534,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
         variable=beta_unsandboxed,
     ).grid(row=3, column=0, sticky="w")
 
-    beta_buttons = ttk.Frame(beta_tab)
+    beta_buttons = ttk.Frame(beta_content)
     beta_buttons.grid(row=6, column=0, sticky="ew", pady=(10, 8))
     beta_start_button = ttk.Button(beta_buttons, text="Erweiterten Beta-Test starten")
     beta_start_button.grid(row=0, column=0, sticky="w")
@@ -1513,7 +1543,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     beta_explain_button = ttk.Button(beta_buttons, text="Szenarien erklaeren")
     beta_explain_button.grid(row=0, column=2, sticky="w", padx=(8, 0))
 
-    beta_result = scrolledtext.ScrolledText(beta_tab, wrap=tk.WORD, height=14, padx=8, pady=8, state=tk.DISABLED)
+    beta_result = scrolledtext.ScrolledText(beta_content, wrap=tk.WORD, height=14, padx=8, pady=8, state=tk.DISABLED)
     beta_result.grid(row=7, column=0, sticky="nsew", pady=(8, 0))
 
     def append(sender: str, message: str) -> None:
