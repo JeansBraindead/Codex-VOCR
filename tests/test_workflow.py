@@ -12,7 +12,7 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from vocr.agents.runtime import diagnose_live_agent_error
-from vocr.cli.app import app, clean_artifacts, latest_open_clarification, write_review_artifact
+from vocr.cli.app import app, clean_artifacts, latest_open_clarification, parse_codex_token_usage, record_worker_telemetry, write_review_artifact
 from vocr.codex.mcp_client import CodexMcpClient
 from vocr.graph.graphify import EmbeddingUnavailable, GraphStore, RepoGraphBuilder
 from vocr.config.env_file import provider_from_env, read_env_file, redact_env, update_env_file
@@ -1296,6 +1296,73 @@ class WorkflowTests(unittest.TestCase):
             prediction = LearningStore(root).predict_task_tokens(task)
 
         self.assertEqual(prediction, 30)
+
+    def test_parse_codex_token_usage_extracts_real_usage_from_json_line(self) -> None:
+        stdout = "some log line\n" + json.dumps(
+            {"usage": {"input_tokens": 120, "output_tokens": 40, "total_tokens": 160}}
+        ) + "\nmore log output\n"
+
+        usage = parse_codex_token_usage(stdout, "")
+
+        self.assertEqual(usage.prompt_tokens, 120)
+        self.assertEqual(usage.completion_tokens, 40)
+        self.assertEqual(usage.total_tokens, 160)
+
+    def test_parse_codex_token_usage_returns_none_without_usage_json(self) -> None:
+        usage = parse_codex_token_usage("plain worker output\nno json here\n", "")
+
+        self.assertIsNone(usage)
+
+    def test_record_worker_telemetry_prefers_real_usage_over_estimate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = MemoryLedger(Path(tmp) / ".vocr")
+            task = VocrTask(
+                slice_id="slice-telemetry",
+                title="Telemetry task",
+                summary="s",
+                scope=["src"],
+                acceptance_criteria=[AcceptanceCriterion(text="passes")],
+                tests=["Syntax-Check"],
+            )
+            ledger.append(LedgerEventType.task_created, task)
+            result = CodexRunResult(
+                task_id=task.id,
+                command=["codex"],
+                exit_code=0,
+                stdout=json.dumps({"usage": {"input_tokens": 50, "output_tokens": 10, "total_tokens": 60}}),
+            )
+
+            total = record_worker_telemetry(ledger, task.id, result, "short prompt")
+
+            telemetry = ledger.telemetry()[-1]
+
+        self.assertEqual(total, 60)
+        self.assertEqual(telemetry.token_usage.prompt_tokens, 50)
+        self.assertEqual(telemetry.token_usage.completion_tokens, 10)
+        self.assertIsNone(telemetry.token_usage.prompt_tokens_estimate)
+
+    def test_record_worker_telemetry_contract_mode_estimate_includes_contract_and_pack(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = MemoryLedger(Path(tmp) / ".vocr")
+            task = VocrTask(
+                slice_id="slice-telemetry",
+                title="Telemetry task",
+                summary="s",
+                scope=["src"],
+                acceptance_criteria=[AcceptanceCriterion(text="passes")],
+                tests=["Syntax-Check"],
+                context_pack="x" * 2000,
+            )
+            ledger.append(LedgerEventType.task_created, task)
+            result = CodexRunResult(task_id=task.id, command=["codex"], exit_code=0, stdout="plain output, no usage json")
+            short_prompt = "contract prompt prefix"
+
+            with patch.dict(os.environ, {"VOCR_PROMPT_MODE": "contract"}):
+                total_contract_mode = record_worker_telemetry(ledger, task.id, result, short_prompt)
+            with patch.dict(os.environ, {"VOCR_PROMPT_MODE": "legacy"}):
+                total_legacy_mode = record_worker_telemetry(ledger, task.id, result, short_prompt)
+
+        self.assertGreater(total_contract_mode, total_legacy_mode)
 
     def test_token_budget_warn_records_message_but_keeps_auto_retry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

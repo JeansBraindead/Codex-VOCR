@@ -49,6 +49,7 @@ from vocr.models import (
     ReviewDecision,
     ReviewResult,
     RunTelemetry,
+    TaskContract,
     TaskStatus,
     TokenUsage,
     VocrTask,
@@ -176,6 +177,47 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4) if text else 0
 
 
+def _contract_mode_extra_prompt_text(task: VocrTask) -> str:
+    """Contract-mode text the worker actually reads from disk beyond the
+    stable prompt prefix: the task contract JSON and the context pack."""
+    contract_json = TaskContract.from_task(task).model_dump_json()
+    return contract_json + (task.context_pack or "")
+
+
+def parse_codex_token_usage(*texts: str) -> TokenUsage | None:
+    """Best-effort parse of real token usage from Codex CLI output.
+
+    Codex CLI does not guarantee a stable usage format across versions, so
+    this only activates when it recognizes a JSON object containing a
+    usage/token_usage block; otherwise callers fall back to estimation.
+    """
+    for text in texts:
+        if not text:
+            continue
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not (stripped.startswith("{") and stripped.endswith("}")):
+                continue
+            try:
+                payload = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+            usage = payload.get("usage") or payload.get("token_usage")
+            if not isinstance(usage, dict):
+                continue
+            prompt = usage.get("input_tokens", usage.get("prompt_tokens"))
+            completion = usage.get("output_tokens", usage.get("completion_tokens"))
+            total = usage.get("total_tokens")
+            if prompt is None and completion is None and total is None:
+                continue
+            return TokenUsage(
+                prompt_tokens=prompt,
+                completion_tokens=completion,
+                total_tokens=total if total is not None else (int(prompt or 0) + int(completion or 0)),
+            )
+    return None
+
+
 def record_worker_telemetry(
     store: MemoryLedger,
     task_id: str,
@@ -185,6 +227,18 @@ def record_worker_telemetry(
 ) -> int:
     task = store.get_task(task_id)
     config = live_model_config()
+    token_usage = parse_codex_token_usage(result.stdout or "", result.stderr or "")
+    if token_usage is None:
+        estimated_prompt_text = prompt_text
+        if task is not None and os.getenv("VOCR_PROMPT_MODE", "legacy").lower() == "contract":
+            estimated_prompt_text += _contract_mode_extra_prompt_text(task)
+        token_usage = TokenUsage(
+            prompt_tokens_estimate=estimate_tokens(estimated_prompt_text),
+            completion_tokens_estimate=estimate_tokens((result.stdout or "") + (result.stderr or "")),
+        )
+        token_usage.total_tokens = (token_usage.prompt_tokens_estimate or 0) + (
+            token_usage.completion_tokens_estimate or 0
+        )
     telemetry = RunTelemetry(
         provider="codex-cli",
         model=config["model"],
@@ -194,17 +248,10 @@ def record_worker_telemetry(
         agent="codex-worker",
         command=result.command,
         duration_seconds=duration_seconds,
-        token_usage=TokenUsage(
-            prompt_tokens_estimate=estimate_tokens(prompt_text),
-            completion_tokens_estimate=estimate_tokens((result.stdout or "") + (result.stderr or "")),
-        ),
+        token_usage=token_usage,
     )
-    total = (telemetry.token_usage.prompt_tokens_estimate or 0) + (
-        telemetry.token_usage.completion_tokens_estimate or 0
-    )
-    telemetry.token_usage.total_tokens = total
     store.append(LedgerEventType.telemetry_recorded, telemetry)
-    return total
+    return telemetry.token_usage.total_tokens or 0
 
 
 def token_budget_mode() -> str:
