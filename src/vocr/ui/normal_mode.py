@@ -1315,6 +1315,39 @@ def format_beta_abort_message(scenario_label: str | None) -> str:
     return f"Lauf gestoppt nach Szenario {scenario_label or '?'}."
 
 
+BETA_PAUSE_NEVER = "nie"
+BETA_PAUSE_CLOUD = "cloud"
+BETA_PAUSE_ALL = "alle"
+
+
+def should_pause_for_scenario(pause_mode: str, tier: str | None) -> bool:
+    """Whether the run should pause and wait for 'Weiter' after a scenario.
+
+    'nie' never pauses (the old default-off behavior); 'cloud' only pauses
+    after real Codex/quota-costing scenarios (tier == "cloud"), where a look
+    before continuing is actually worth something; 'alle' pauses after every
+    scenario, useful for debugging a single core case step by step.
+    """
+    if pause_mode == BETA_PAUSE_ALL:
+        return True
+    if pause_mode == BETA_PAUSE_CLOUD:
+        return tier == "cloud"
+    return False
+
+
+def scenario_code_from_label(label: str) -> str:
+    """Extract the leading scenario code from a 'CODE title: status (Ns)' label."""
+    return label.split(" ", 1)[0]
+
+
+def format_pause_mode_label(pause_mode: str) -> str:
+    return {
+        BETA_PAUSE_NEVER: "nie",
+        BETA_PAUSE_CLOUD: "nur bei Cloud-Szenarien",
+        BETA_PAUSE_ALL: "nach jedem Szenario",
+    }.get(pause_mode, pause_mode)
+
+
 def launch_normal_mode(repo_root: str | Path = ".", session_permission: PermissionGrant | None = None) -> None:
     try:
         import tkinter as tk
@@ -1436,7 +1469,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     beta_tag = tk.StringVar(value="")
     beta_max_cloud_tasks = tk.IntVar(value=3)
     beta_mode = tk.StringVar(value=BETA_MODE_CHAIN)
-    beta_step_mode = tk.BooleanVar(value=False)
+    beta_pause_mode = tk.StringVar(value=BETA_PAUSE_NEVER)
 
     ttk.Label(beta_content, text="VOCR Beta-Pruefstand", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, sticky="w")
     ttk.Label(
@@ -1476,9 +1509,18 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     beta_controls.grid(row=3, column=0, sticky="ew", pady=(0, 10))
     beta_controls.columnconfigure(1, weight=1)
     ttk.Label(beta_controls, text="Wie ausfuehren?", font=("Segoe UI", 10, "bold")).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
-    ttk.Checkbutton(
-        beta_controls, text="Stopp zwischen Szenarien (wartet auf 'Weiter')", variable=beta_step_mode
-    ).grid(row=1, column=0, columnspan=3, sticky="w", pady=4)
+    ttk.Label(beta_controls, text="Pause-Verhalten").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=4)
+    beta_pause_frame = ttk.Frame(beta_controls)
+    beta_pause_frame.grid(row=1, column=1, columnspan=2, sticky="w", pady=4)
+    ttk.Radiobutton(beta_pause_frame, text="Nie (durchlaufen)", variable=beta_pause_mode, value=BETA_PAUSE_NEVER).grid(
+        row=0, column=0, sticky="w"
+    )
+    ttk.Radiobutton(
+        beta_pause_frame, text="Nur bei Cloud-Szenarien", variable=beta_pause_mode, value=BETA_PAUSE_CLOUD
+    ).grid(row=0, column=1, sticky="w", padx=(10, 0))
+    ttk.Radiobutton(beta_pause_frame, text="Nach jedem Szenario", variable=beta_pause_mode, value=BETA_PAUSE_ALL).grid(
+        row=0, column=2, sticky="w", padx=(10, 0)
+    )
     ttk.Label(beta_controls, text="Tier").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=4)
     ttk.Combobox(beta_controls, textvariable=beta_tier, values=("core", "local", "cloud", "all"), state="readonly", width=12).grid(row=2, column=1, sticky="w", pady=4)
     ttk.Label(beta_controls, text="Szenarien").grid(row=3, column=0, sticky="w", padx=(0, 8), pady=4)
@@ -1666,8 +1708,9 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     beta_stop_event = threading.Event()
     beta_continue_event = threading.Event()
 
-    def _set_continue_enabled(enabled: bool) -> None:
+    def _set_continue_enabled(enabled: bool, next_hint: str | None = None) -> None:
         beta_continue_button.configure(state=tk.NORMAL if enabled else tk.DISABLED)
+        beta_continue_button.configure(text=f"⏭ Weiter (nach {next_hint})" if enabled and next_hint else "⏭ Weiter")
 
     def _set_beta_running(active: bool, *, stoppable: bool = False) -> None:
         """Central switch for beta-tab button states. Called from the main
@@ -1683,15 +1726,17 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
             _set_continue_enabled(False)
             _update_mode_controls()
 
-    def _handle_step_and_stop(scenario_label: str) -> None:
+    def _handle_step_and_stop(scenario_label: str, tier: str | None) -> None:
         """Called after each scenario finishes (from the worker thread).
-        Aborts cleanly if Stop was pressed, or blocks until 'Weiter' when
-        step mode is on. All GUI updates go through root.after."""
+        Aborts cleanly if Stop was pressed, or blocks until 'Weiter' when the
+        current pause mode wants a pause after this scenario's tier. All GUI
+        updates go through root.after."""
         if beta_stop_event.is_set():
             raise BetaAborted(scenario_label)
-        if beta_step_mode.get():
-            root.after(0, lambda: _set_continue_enabled(True))
-            root.after(0, lambda: log_activity(f"Schrittmodus: pausiert nach {scenario_label}. 'Weiter' klicken zum Fortsetzen."))
+        if should_pause_for_scenario(beta_pause_mode.get(), tier):
+            code = scenario_code_from_label(scenario_label)
+            root.after(0, lambda: _set_continue_enabled(True, code))
+            root.after(0, lambda: log_activity(f"Pause nach {scenario_label}. 'Weiter' klicken zum Fortsetzen."))
             beta_continue_event.wait()
             beta_continue_event.clear()
             root.after(0, lambda: _set_continue_enabled(False))
@@ -1793,7 +1838,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
                     f"Tier: {tier}",
                     f"Szenarien: {','.join(only) if only else 'alle fuer Tier'}",
                     f"Cloud erlaubt: {'ja' if allow_cloud else 'nein'}",
-                    f"Schrittmodus: {'an' if beta_step_mode.get() else 'aus'}",
+                    f"Pause-Verhalten: {format_pause_mode_label(beta_pause_mode.get())}",
                     f"Codex-Sandbox: {'aus' if beta_unsandboxed.get() else 'an'}",
                     "",
                 ]
@@ -1823,7 +1868,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
                         label = f"{item.id} {item.title}: {item.status} ({item.duration_s}s)"  # type: ignore[attr-defined]
                         root.after(0, lambda label=label: beta_append(f"Fertig {label}"))
                         root.after(0, lambda label=label: log_activity(f"Szenario fertig: {label}."))
-                        _handle_step_and_stop(label)
+                        _handle_step_and_stop(label, item.tier)  # type: ignore[attr-defined]
                     elif event == "report":
                         root.after(0, lambda: log_activity("Beta-Reports werden geschrieben."))
 
@@ -1893,7 +1938,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
                     "",
                     f"Schritte: {len(steps)}",
                     f"Cloud enthalten: {'ja' if include_cloud else 'nein'}",
-                    f"Schrittmodus: {'an' if beta_step_mode.get() else 'aus'}",
+                    f"Pause-Verhalten: {format_pause_mode_label(beta_pause_mode.get())}",
                     "",
                     *[f"- {step.title}: {', '.join(step.only)}" for step in steps],
                     "",
@@ -1931,7 +1976,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
                             label = f"{item.id} {item.title}: {item.status} ({item.duration_s}s)"  # type: ignore[attr-defined]
                             root.after(0, lambda label=label: beta_append(f"Fertig {label}"))
                             root.after(0, lambda label=label: log_activity(f"Szenario fertig: {label}."))
-                            _handle_step_and_stop(label)
+                            _handle_step_and_stop(label, item.tier)  # type: ignore[attr-defined]
                         elif event == "report":
                             root.after(0, lambda step=step: log_activity(f"Beta-Kettenreport wird geschrieben: {step.tag}."))
 

@@ -30,6 +30,9 @@ from vocr.orchestration.worker_advisor import WorkerParallelismAdvisor
 from vocr.ui.normal_mode import (
     BETA_MODE_CHAIN,
     BETA_MODE_SINGLE,
+    BETA_PAUSE_ALL,
+    BETA_PAUSE_CLOUD,
+    BETA_PAUSE_NEVER,
     BetaAborted,
     NormalModeController,
     SCENARIO_DROPDOWN_HINT,
@@ -39,6 +42,7 @@ from vocr.ui.normal_mode import (
     final_local_test_command_plan,
     format_all_scenarios_overview,
     format_beta_abort_message,
+    format_pause_mode_label,
     launch_console_mode,
     launch_normal_mode,
     lmstudio_reachability_status,
@@ -48,9 +52,11 @@ from vocr.ui.normal_mode import (
     open_codex_login_shell,
     open_expert_shell,
     scenario_code_from_choice,
+    scenario_code_from_label,
     scenario_controls_enabled_for_mode,
     scenario_dropdown_choices,
     scenario_info_lines,
+    should_pause_for_scenario,
 )
 
 
@@ -429,6 +435,32 @@ class NormalModeTests(unittest.TestCase):
         exc = BetaAborted()
 
         self.assertIsNone(exc.last_scenario)
+
+    def test_should_pause_for_scenario_never_mode_never_pauses(self) -> None:
+        self.assertFalse(should_pause_for_scenario(BETA_PAUSE_NEVER, "cloud"))
+        self.assertFalse(should_pause_for_scenario(BETA_PAUSE_NEVER, "core"))
+        self.assertFalse(should_pause_for_scenario(BETA_PAUSE_NEVER, None))
+
+    def test_should_pause_for_scenario_cloud_mode_only_pauses_on_cloud_tier(self) -> None:
+        self.assertTrue(should_pause_for_scenario(BETA_PAUSE_CLOUD, "cloud"))
+        self.assertFalse(should_pause_for_scenario(BETA_PAUSE_CLOUD, "core"))
+        self.assertFalse(should_pause_for_scenario(BETA_PAUSE_CLOUD, "local"))
+        self.assertFalse(should_pause_for_scenario(BETA_PAUSE_CLOUD, None))
+
+    def test_should_pause_for_scenario_all_mode_always_pauses(self) -> None:
+        self.assertTrue(should_pause_for_scenario(BETA_PAUSE_ALL, "cloud"))
+        self.assertTrue(should_pause_for_scenario(BETA_PAUSE_ALL, "core"))
+        self.assertTrue(should_pause_for_scenario(BETA_PAUSE_ALL, "local"))
+        self.assertTrue(should_pause_for_scenario(BETA_PAUSE_ALL, None))
+
+    def test_scenario_code_from_label_extracts_leading_code(self) -> None:
+        self.assertEqual(scenario_code_from_label("C01 cloud-e2e-red-to-green: passed (1.23s)"), "C01")
+        self.assertEqual(scenario_code_from_label("S03 scope-breach: failed (0.01s)"), "S03")
+
+    def test_format_pause_mode_label_covers_all_modes(self) -> None:
+        self.assertEqual(format_pause_mode_label(BETA_PAUSE_NEVER), "nie")
+        self.assertEqual(format_pause_mode_label(BETA_PAUSE_CLOUD), "nur bei Cloud-Szenarien")
+        self.assertEqual(format_pause_mode_label(BETA_PAUSE_ALL), "nach jedem Szenario")
 
     def test_update_button_plan_uses_fast_forward_pull_and_refreshes_install(self) -> None:
         plan = normal_mode_update_command_plan()
