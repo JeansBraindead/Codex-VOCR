@@ -53,7 +53,7 @@ class GraphStore:
     def exists(self) -> bool:
         return self.path.exists()
 
-    def context_pack(self, query: str | None = None, limit: int = 20) -> str:
+    def context_pack(self, query: str | None = None, limit: int = 20, span_token_budget: int = 900) -> str:
         boosts: dict[str, float] | None = None
         learning = LearningStore(self.vocr_home)
         if learning.exists():
@@ -62,15 +62,18 @@ class GraphStore:
         if _embedding_retrieval_enabled() and query:
             try:
                 ranked_nodes = self._embedding_fused_rank(graph, query, learning_boosts=boosts)
-                return graph.context_brief(limit=limit, query=query, ranked_nodes=ranked_nodes)
+                return graph.context_brief(
+                    limit=limit, query=query, ranked_nodes=ranked_nodes, span_token_budget=span_token_budget
+                )
             except EmbeddingUnavailable:
                 return graph.context_brief(
                     limit=limit,
                     query=query,
                     learning_boosts=boosts,
                     note="embedding retrieval unavailable, lexical only",
+                    span_token_budget=span_token_budget,
                 )
-        return graph.context_brief(limit=limit, query=query, learning_boosts=boosts)
+        return graph.context_brief(limit=limit, query=query, learning_boosts=boosts, span_token_budget=span_token_budget)
 
     def refresh_embeddings(self, graph: RepoGraph) -> None:
         cache = self._load_embedding_cache()

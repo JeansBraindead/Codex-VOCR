@@ -196,6 +196,60 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("def alpha@L3-4", brief)
         self.assertIn("class Beta@L6-8", brief)
 
+    def test_context_brief_includes_real_span_lines_for_seed_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            module = root / "sample.py"
+            module.write_text(
+                "\n".join(
+                    [
+                        "def alpha():",
+                        "    return 1",
+                        "",
+                        "def beta():",
+                        "    value = 2",
+                        "    return value",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            graph = RepoGraphBuilder(root).build()
+            brief = graph.context_brief(query="alpha", limit=1)
+
+        # The worker should see actual source lines, not just the filename.
+        self.assertIn("1: def alpha():", brief)
+        self.assertIn("2:     return 1", brief)
+
+    def test_context_brief_span_lines_respect_token_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            module = root / "sample.py"
+            module.write_text(
+                "\n".join(f"def fn_{i}():\n    return {i}" for i in range(10)) + "\n",
+                encoding="utf-8",
+            )
+
+            graph = RepoGraphBuilder(root).build()
+            capped = graph.context_brief(query="fn", limit=1, span_token_budget=1)
+            uncapped = graph.context_brief(query="fn", limit=1, span_token_budget=900)
+
+        self.assertLess(len(capped), len(uncapped))
+        self.assertNotIn("def fn_9():", capped)
+        self.assertIn("def fn_9():", uncapped)
+
+    def test_context_brief_falls_back_to_filename_when_no_symbol_spans(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "notes.md").write_text("# notes about alpha\n", encoding="utf-8")
+
+            graph = RepoGraphBuilder(root).build()
+            brief = graph.context_brief(query="alpha", limit=1)
+
+        self.assertIn("notes.md", brief)
+        self.assertNotIn("1: #", brief)
+
     def test_old_graph_json_without_symbol_spans_still_loads(self) -> None:
         graph = RepoGraph.model_validate(
             {
@@ -569,7 +623,7 @@ class WorkflowTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmp:
             store = GraphStore(Path(tmp) / ".vocr")
-            store.save(RepoGraphBuilder(".").build())
+            store.save(RepoGraph(root=tmp, nodes=[]))
             vision = create_vision(request)
             tasks = organize_slice(vision, vocr_home=str(Path(tmp) / ".vocr"))
 

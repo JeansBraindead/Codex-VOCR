@@ -431,6 +431,7 @@ class RepoGraph(BaseModel):
         learning_boosts: dict[str, float] | None = None,
         ranked_nodes: list[GraphNode] | None = None,
         note: str | None = None,
+        span_token_budget: int = 900,
     ) -> str:
         nodes = self.nodes
         ranked_paths: list[str] = []
@@ -447,12 +448,24 @@ class RepoGraph(BaseModel):
             lines.append(f"Query: {query}")
         if note:
             lines.append(f"Note: {note}")
+        span_chars_remaining = max(0, span_token_budget) * 4
         for node in nodes[:limit]:
             symbol_text = _symbol_text(node)
             marker = ""
+            is_seed = False
             if query:
-                marker = " (seed)" if node.path in ranked_paths[:limit] else " (1-hop)"
+                is_seed = node.path in ranked_paths[:limit]
+                marker = " (seed)" if is_seed else " (1-hop)"
             lines.append(f"- {node.path}{marker}: {node.summary} ({symbol_text})")
+            if is_seed and span_chars_remaining > 0:
+                span_lines = _read_symbol_span_lines(self.root, node)
+                if span_lines:
+                    block = "\n".join(f"    {line}" for line in span_lines)
+                    if len(block) > span_chars_remaining:
+                        block = block[:span_chars_remaining]
+                    if block:
+                        lines.append(block)
+                        span_chars_remaining -= len(block)
         if len(nodes) > limit:
             lines.append(f"- ... {len(nodes) - limit} more matching files omitted")
         if not nodes:
@@ -521,3 +534,29 @@ def _symbol_text(node: GraphNode) -> str:
     if node.symbol_spans:
         return ", ".join(f"{span.name}@L{span.start}-{span.end}" for span in node.symbol_spans[:6])
     return ", ".join(node.symbols[:6]) or "no symbols"
+
+
+def _read_symbol_span_lines(root: str, node: GraphNode, *, max_lines: int = 60) -> list[str] | None:
+    """Read the real source lines for a node's top-level symbol spans, so a
+    context pack seed carries actual code instead of only a filename and
+    summary line -- the worker then often needs zero of its own file reads."""
+    if not node.symbol_spans:
+        return None
+    try:
+        text = (Path(root) / node.path).read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    file_lines = text.splitlines()
+    collected: list[str] = []
+    seen: set[int] = set()
+    for span in node.symbol_spans:
+        if len(collected) >= max_lines:
+            break
+        for line_no in range(span.start, span.end + 1):
+            if len(collected) >= max_lines:
+                break
+            if line_no in seen or not (1 <= line_no <= len(file_lines)):
+                continue
+            seen.add(line_no)
+            collected.append(f"{line_no}: {file_lines[line_no - 1]}")
+    return collected or None
