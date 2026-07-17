@@ -1202,6 +1202,38 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(len(remaining), 20)
         self.assertIsNotNone(result.archive_path)
 
+    def test_ledger_compact_keeps_active_claim_and_task_reachable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = MemoryLedger(Path(tmp) / ".vocr")
+            task = VocrTask(
+                slice_id="slice-compact",
+                title="Long lived task",
+                summary="Still in progress when the ledger compacts",
+                scope=["src"],
+                acceptance_criteria=[AcceptanceCriterion(text="passes")],
+                tests=["Syntax-Check"],
+            )
+            ledger.append(LedgerEventType.task_created, task)
+            ledger.acquire_claims([task])
+            for index in range(30):
+                ledger.append(LedgerEventType.message, {"message": f"filler {index}"})
+
+            result = ledger.compact(keep_last=20)
+
+            tasks_after = ledger.tasks()
+            claims_after = ledger.active_claims()
+
+            # Once the task reaches a terminal status, its stale claim must
+            # still be releasable even though the ledger already compacted.
+            ledger.append(LedgerEventType.task_promoted, {"task_id": task.id, "branch_name": "task-branch"})
+            released = ledger.reconcile_stale_claims()
+
+        self.assertEqual(result.kept_events, 22)
+        self.assertEqual(result.archived_events, 10)
+        self.assertTrue(any(item.id == task.id for item in tasks_after))
+        self.assertTrue(any(claim.task_id == task.id for claim in claims_after))
+        self.assertEqual(released, [task.id])
+
     def test_learning_boosts_graph_context_ranking(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

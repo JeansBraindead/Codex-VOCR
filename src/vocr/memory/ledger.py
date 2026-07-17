@@ -106,8 +106,11 @@ class MemoryLedger:
         ]
 
     def tasks(self) -> list[VocrTask]:
+        return self._tasks_from_events(list(self.events()))
+
+    def _tasks_from_events(self, events: Iterable[LedgerEvent]) -> list[VocrTask]:
         task_map: dict[str, VocrTask] = {}
-        for event in self.events():
+        for event in events:
             if event.type == LedgerEventType.task_created:
                 task = VocrTask.model_validate(event.payload)
                 task_map[task.id] = task
@@ -192,9 +195,12 @@ class MemoryLedger:
         return candidates[-1] if candidates else None
 
     def active_claims(self) -> list[ScopeClaim]:
+        return self._active_claims_from_events(list(self.events()))
+
+    def _active_claims_from_events(self, events: Iterable[LedgerEvent]) -> list[ScopeClaim]:
         claims: dict[str, ScopeClaim] = {}
         released: set[str] = set()
-        for event in self.events():
+        for event in events:
             if event.type == LedgerEventType.claim_acquired:
                 claim = ScopeClaim.model_validate(event.payload)
                 claims[claim.task_id] = claim
@@ -280,8 +286,15 @@ class MemoryLedger:
         archive_dir = self.root / "archive"
         archive_dir.mkdir(parents=True, exist_ok=True)
         archive_path = archive_dir / f"ledger-{events[0].created_at.strftime('%Y%m%d%H%M%S')}-{events[-keep_last - 1].created_at.strftime('%Y%m%d%H%M%S')}.jsonl"
-        archived = events[:-keep_last]
-        kept = events[-keep_last:]
+
+        tail = events[-keep_last:]
+        head = events[:-keep_last]
+        forwarded_ids = self._essential_forwarding_ids(events)
+
+        forwarded = [event for event in head if event.id in forwarded_ids]
+        archived = [event for event in head if event.id not in forwarded_ids]
+        kept = forwarded + tail
+
         with archive_path.open("w", encoding="utf-8") as handle:
             for event in archived:
                 handle.write(event.model_dump_json() + "\n")
@@ -294,3 +307,39 @@ class MemoryLedger:
             archived_events=len(archived),
             archive_path=str(archive_path),
         )
+
+    def _essential_forwarding_ids(self, events: list[LedgerEvent]) -> set[str]:
+        """Event ids that must survive compaction so non-terminal tasks and
+        active claims stay reachable via tasks()/active_claims(), even if the
+        events that created them fall outside the keep_last window."""
+        terminal_statuses = {
+            TaskStatus.accepted,
+            TaskStatus.blocked,
+            TaskStatus.aborted,
+            TaskStatus.promoted,
+        }
+        active_claim_task_ids = {claim.task_id for claim in self._active_claims_from_events(events)}
+        live_task_ids = {
+            task.id
+            for task in self._tasks_from_events(events)
+            if task.status not in terminal_statuses
+        }
+        forward_task_ids = live_task_ids | active_claim_task_ids
+
+        latest_claim_event_id: dict[str, str] = {}
+        for event in events:
+            if event.type == LedgerEventType.claim_acquired:
+                task_id = event.payload.get("task_id")
+                if task_id:
+                    latest_claim_event_id[task_id] = event.id
+
+        forwarded_ids: set[str] = set()
+        for event in events:
+            if event.type == LedgerEventType.task_created:
+                if event.payload.get("id") in forward_task_ids:
+                    forwarded_ids.add(event.id)
+            elif event.type == LedgerEventType.claim_acquired:
+                task_id = event.payload.get("task_id")
+                if task_id in active_claim_task_ids and latest_claim_event_id.get(task_id) == event.id:
+                    forwarded_ids.add(event.id)
+        return forwarded_ids
