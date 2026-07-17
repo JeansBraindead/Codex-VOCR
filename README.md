@@ -159,9 +159,31 @@ Die Empfehlung ist nicht hardcoded. Bewertet werden:
 - Reviewlast
 - geschaetzter Token-/Kontext-Overhead
 
+Der Organizer gibt Tasks in einer Gruppe nicht mehr pauschal denselben
+Arbeitsbereich. Ein Task kann im Tasks-Abschnitt einen expliziten Scope
+bekommen (`Task-Titel @ pfad/glob`); ohne diese Syntax matcht der Organizer
+Titel-Tokens gegen den Arbeitsbereich und die Graph-Pfade und weist die
+passende Teilmenge zu. Kein Match faellt zurueck auf den vollen
+Arbeitsbereich. Ueberlappende Tasks in derselben Gruppe werden anschliessend
+per Claim-Konflikt-Pruefung in getrennte Sub-Wellen sortiert, damit nur echte
+disjunkte Tasks als parallel bereit gelten.
+
 Im Expertpfad fuehrt `vocr work-ready` claim-disjunkte Wellen parallel aus,
 wenn `VOCR_PARALLEL_WORKERS>1` gesetzt ist. Claims sind Koordination, kein
 Security-Feature.
+
+## Context-Pack Und Telemetrie
+
+Context-Packs zeigen fuer Top-Treffer nicht nur Dateiname und Summary,
+sondern (gedeckelt, budgetiert) die echten Symbol-Zeilen aus der Datei --
+Worker brauchen dadurch bei kleinen Tasks oft keinen eigenen File-Read mehr.
+Die Query-Suche filtert deutsche/englische Fuellwoerter und bevorzugt
+Identifier- und Pfad-Tokens gegenueber generischen Prosawoertern.
+
+Telemetrie nutzt echte Token-Usage aus der Codex-CLI-Ausgabe, wenn verfuegbar;
+sonst faellt sie auf eine Schaetzung zurueck, die im Contract-Modus auch
+Contract-JSON und Context-Pack mitzaehlt (das, was der Worker tatsaechlich
+von Platte liest).
 
 ## Sicherheit
 
@@ -172,6 +194,9 @@ Security-Feature.
 - Review entscheidet `accepted`, `needs_changes` oder `blocked`.
 - Promote/Ship bleibt review-gated.
 - Local Assist verarbeitet nur trusted Titel/Ziele und bleibt nicht-autoritativ.
+- Untrusted Repo-Content kann den `<VOCR_UNTRUSTED_CONTEXT>`-Marker nicht
+  durch einen eingebetteten Schluss-Marker verlassen; Repo-Inhalte im Pack
+  werden vor dem Einbetten neutralisiert.
 
 Mehr dazu: [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)
 
