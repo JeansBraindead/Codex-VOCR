@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 import subprocess
 import sys
 import threading
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -196,6 +198,23 @@ def final_all_in_one_labels(*, include_cloud: bool = False) -> tuple[str, ...]:
     if include_cloud:
         labels.append("Optionaler Cloud-E2E C00-C03, C05, C06")
     return tuple(labels)
+
+
+@contextmanager
+def _codex_sandbox_env(unsandboxed: bool):
+    key = "VOCR_CODEX_UNSANDBOXED"
+    prev = os.environ.get(key)
+    if unsandboxed:
+        os.environ[key] = "1"
+    else:
+        os.environ.pop(key, None)
+    try:
+        yield
+    finally:
+        if prev is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = prev
 
 
 class NormalModeController:
@@ -1311,6 +1330,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     beta_allow_cloud = tk.BooleanVar(value=False)
     beta_json_only = tk.BooleanVar(value=False)
     beta_debug = tk.BooleanVar(value=False)
+    beta_unsandboxed = tk.BooleanVar(value=False)
     beta_report_dir = tk.StringVar(value="beta_reports")
     beta_tag = tk.StringVar(value="")
     beta_max_cloud_tasks = tk.IntVar(value=3)
@@ -1383,6 +1403,11 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     ttk.Checkbutton(beta_checks, text="Cloud-Szenarien erlauben (kann Kontingent kosten)", variable=beta_allow_cloud).grid(row=0, column=0, sticky="w")
     ttk.Checkbutton(beta_checks, text="Nur JSON-Report schreiben", variable=beta_json_only).grid(row=1, column=0, sticky="w")
     ttk.Checkbutton(beta_checks, text="Debug-Details anzeigen", variable=beta_debug).grid(row=2, column=0, sticky="w")
+    ttk.Checkbutton(
+        beta_checks,
+        text="Codex ohne Sandbox ausfuehren (Windows-Fix; nur fuer vertrauenswuerdige Repos)",
+        variable=beta_unsandboxed,
+    ).grid(row=3, column=0, sticky="w")
 
     beta_buttons = ttk.Frame(beta_tab)
     beta_buttons.grid(row=6, column=0, sticky="ew", pady=(10, 8))
@@ -1551,6 +1576,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
                     f"Tier: {tier}",
                     f"Szenarien: {','.join(only) if only else 'alle fuer Tier'}",
                     f"Cloud erlaubt: {'ja' if allow_cloud else 'nein'}",
+                    f"Codex-Sandbox: {'aus' if beta_unsandboxed.get() else 'an'}",
                     "",
                 ]
             ),
@@ -1582,18 +1608,19 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
                     elif event == "report":
                         root.after(0, lambda: log_activity("Beta-Reports werden geschrieben."))
 
-                run = run_beta(
-                    SCENARIOS.values(),
-                    tier=tier,
-                    only=only or None,
-                    report_dir=controller.repo_root / report_dir,
-                    allow_cloud=allow_cloud,
-                    max_cloud_tasks=max_cloud_tasks,
-                    json_only=json_only,
-                    tag=tag,
-                    repo_root=controller.repo_root,
-                    on_progress=progress,
-                )
+                with _codex_sandbox_env(beta_unsandboxed.get()):
+                    run = run_beta(
+                        SCENARIOS.values(),
+                        tier=tier,
+                        only=only or None,
+                        report_dir=controller.repo_root / report_dir,
+                        allow_cloud=allow_cloud,
+                        max_cloud_tasks=max_cloud_tasks,
+                        json_only=json_only,
+                        tag=tag,
+                        repo_root=controller.repo_root,
+                        on_progress=progress,
+                    )
                 lines = [
                     f"Verdikt: {run.status.upper()}",
                     f"Exit-Code: {run.exit_code}",
@@ -1682,18 +1709,19 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
                         elif event == "report":
                             root.after(0, lambda step=step: log_activity(f"Beta-Kettenreport wird geschrieben: {step.tag}."))
 
-                    run = run_beta(
-                        SCENARIOS.values(),
-                        tier=step.tier,
-                        only=list(step.only),
-                        report_dir=controller.repo_root / (beta_report_dir.get().strip() or "beta_reports"),
-                        allow_cloud=step.allow_cloud,
-                        max_cloud_tasks=step.max_cloud_tasks,
-                        json_only=beta_json_only.get(),
-                        tag=step.tag,
-                        repo_root=controller.repo_root,
-                        on_progress=progress,
-                    )
+                    with _codex_sandbox_env(beta_unsandboxed.get()):
+                        run = run_beta(
+                            SCENARIOS.values(),
+                            tier=step.tier,
+                            only=list(step.only),
+                            report_dir=controller.repo_root / (beta_report_dir.get().strip() or "beta_reports"),
+                            allow_cloud=step.allow_cloud,
+                            max_cloud_tasks=step.max_cloud_tasks,
+                            json_only=beta_json_only.get(),
+                            tag=step.tag,
+                            repo_root=controller.repo_root,
+                            on_progress=progress,
+                        )
                     overall_exit_code = max(overall_exit_code, run.exit_code)
                     all_lines.extend(
                         [
@@ -1852,18 +1880,19 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
                     elif event == "report":
                         root.after(0, lambda: log_activity("Beta-Report wird geschrieben."))
 
-                recommended = run_beta(
-                    SCENARIOS.values(),
-                    tier="core",
-                    only=None,
-                    report_dir=controller.repo_root / report_dir,
-                    allow_cloud=False,
-                    max_cloud_tasks=3,
-                    json_only=beta_json_only.get(),
-                    tag="final-all-recommended-core",
-                    repo_root=controller.repo_root,
-                    on_progress=beta_progress,
-                )
+                with _codex_sandbox_env(beta_unsandboxed.get()):
+                    recommended = run_beta(
+                        SCENARIOS.values(),
+                        tier="core",
+                        only=None,
+                        report_dir=controller.repo_root / report_dir,
+                        allow_cloud=False,
+                        max_cloud_tasks=3,
+                        json_only=beta_json_only.get(),
+                        tag="final-all-recommended-core",
+                        repo_root=controller.repo_root,
+                        on_progress=beta_progress,
+                    )
                 overall_exit_code = max(overall_exit_code, recommended.exit_code)
                 final_lines.extend(
                     [
@@ -1886,18 +1915,19 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
                 for index, step in enumerate(beta_next_test_chain(include_cloud=include_cloud, include_local_live=True), start=1):
                     root.after(0, lambda step=step: beta_append(f"== Final {step.title} =="))
                     root.after(0, lambda step=step: log_activity(f"Finaler Kettenschritt gestartet: {step.title}."))
-                    run = run_beta(
-                        SCENARIOS.values(),
-                        tier=step.tier,
-                        only=list(step.only),
-                        report_dir=controller.repo_root / report_dir,
-                        allow_cloud=step.allow_cloud,
-                        max_cloud_tasks=step.max_cloud_tasks,
-                        json_only=beta_json_only.get(),
-                        tag=f"final-all-{step.tag}",
-                        repo_root=controller.repo_root,
-                        on_progress=beta_progress,
-                    )
+                    with _codex_sandbox_env(beta_unsandboxed.get()):
+                        run = run_beta(
+                            SCENARIOS.values(),
+                            tier=step.tier,
+                            only=list(step.only),
+                            report_dir=controller.repo_root / report_dir,
+                            allow_cloud=step.allow_cloud,
+                            max_cloud_tasks=step.max_cloud_tasks,
+                            json_only=beta_json_only.get(),
+                            tag=f"final-all-{step.tag}",
+                            repo_root=controller.repo_root,
+                            on_progress=beta_progress,
+                        )
                     overall_exit_code = max(overall_exit_code, run.exit_code)
                     final_lines.extend(
                         [
