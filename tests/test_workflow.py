@@ -1617,6 +1617,44 @@ class WorkflowTests(unittest.TestCase):
                 with ledger._ledger_lock(timeout_seconds=0.2):
                     pass
 
+    def test_ledger_events_cache_avoids_reparsing_unchanged_file(self) -> None:
+        from vocr.memory.ledger import LedgerEvent
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = MemoryLedger(Path(tmp) / ".vocr")
+            task = VocrTask(
+                slice_id="slice-cache",
+                title="Cache task",
+                summary="s",
+                scope=["src"],
+                acceptance_criteria=[AcceptanceCriterion(text="passes")],
+                tests=["Syntax-Check"],
+            )
+            ledger.append(LedgerEventType.task_created, task)
+
+            original = LedgerEvent.model_validate_json
+            call_count = {"n": 0}
+
+            def counting(*args: object, **kwargs: object) -> LedgerEvent:
+                call_count["n"] += 1
+                return original(*args, **kwargs)
+
+            with patch.object(LedgerEvent, "model_validate_json", side_effect=counting):
+                ledger.get_task(task.id)
+                first_calls = call_count["n"]
+                ledger.get_task(task.id)
+                ledger.tasks()
+                ledger.active_claims()
+                second_calls = call_count["n"]
+
+                ledger.append(LedgerEventType.message, {"message": "new event"})
+                ledger.get_task(task.id)
+                third_calls = call_count["n"]
+
+        self.assertGreater(first_calls, 0)
+        self.assertEqual(second_calls, first_calls)
+        self.assertEqual(third_calls, second_calls)
+
     def test_learning_boosts_graph_context_ranking(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

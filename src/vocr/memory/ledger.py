@@ -72,6 +72,8 @@ class MemoryLedger:
         self.root = Path(root)
         self.path = self.root / "ledger.jsonl"
         self.lock_path = self.root / "ledger.jsonl.lock"
+        self._events_cache: list[LedgerEvent] | None = None
+        self._events_cache_key: tuple[int, int] | None = None
 
     def init(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -88,17 +90,34 @@ class MemoryLedger:
         event = LedgerEvent(type=event_type, payload=data)
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(event.model_dump_json() + "\n")
+        if self._events_cache is not None:
+            self._events_cache = self._events_cache + [event]
+            self._events_cache_key = self._current_cache_key()
         return event
 
-    def events(self) -> Iterable[LedgerEvent]:
+    def _current_cache_key(self) -> tuple[int, int] | None:
+        try:
+            stat = self.path.stat()
+        except FileNotFoundError:
+            return None
+        return (stat.st_mtime_ns, stat.st_size)
+
+    def events(self) -> list[LedgerEvent]:
         if not self.path.exists():
+            self._events_cache = None
+            self._events_cache_key = None
             return []
+        cache_key = self._current_cache_key()
+        if self._events_cache is not None and cache_key == self._events_cache_key:
+            return list(self._events_cache)
         items: list[LedgerEvent] = []
         with self.path.open("r", encoding="utf-8") as handle:
             for line in handle:
                 if line.strip():
                     items.append(LedgerEvent.model_validate_json(line))
-        return items
+        self._events_cache = items
+        self._events_cache_key = cache_key
+        return list(items)
 
     def slices(self) -> list[VisionSlice]:
         return [
@@ -328,6 +347,8 @@ class MemoryLedger:
         with self.path.open("w", encoding="utf-8") as handle:
             for event in kept:
                 handle.write(event.model_dump_json() + "\n")
+        self._events_cache = kept
+        self._events_cache_key = self._current_cache_key()
         return CompactResult(
             original_events=len(events),
             kept_events=len(kept),
