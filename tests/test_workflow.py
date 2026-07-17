@@ -1247,6 +1247,65 @@ class WorkflowTests(unittest.TestCase):
         self.assertIsNone(captured["base_ref"])
         self.assertEqual(review.reviewed_ref, "new-review-sha")
 
+    def test_review_task_skips_codex_round_trip_when_hard_gate_issues_exist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = MemoryLedger(Path(tmp) / ".vocr")
+            task = VocrTask(
+                slice_id="slice-shortcircuit",
+                title="Scope-less task",
+                summary="Missing scope should short-circuit review.",
+                scope=[],
+                acceptance_criteria=[AcceptanceCriterion(text="passes")],
+                tests=["Syntax-Check"],
+                status=TaskStatus.dispatched,
+            )
+            ledger.append(LedgerEventType.task_created, task)
+
+            with patch(
+                "vocr.orchestration.workflow.run_codex_review_with_notes",
+                side_effect=AssertionError("codex review must not run when hard gates fail"),
+            ):
+                review = review_task(ledger, task.id, decision=ReviewDecision.accepted, codex_review=True)
+
+        self.assertEqual(review.decision, ReviewDecision.needs_changes)
+        self.assertIn("Task has no scope.", review.required_changes)
+
+    def test_review_task_runs_codex_round_trip_when_hard_gates_clean(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = MemoryLedger(Path(tmp) / ".vocr")
+            task = VocrTask(
+                slice_id="slice-shortcircuit-clean",
+                title="Clean task",
+                summary="Clean hard gates should still run codex review.",
+                scope=["docs"],
+                acceptance_criteria=[AcceptanceCriterion(text="passes")],
+                tests=["manual review"],
+                status=TaskStatus.dispatched,
+            )
+            ledger.append(LedgerEventType.task_created, task)
+            calls: list[str] = []
+
+            def fake_codex_review(_: VocrTask, base_ref: str | None = None) -> tuple[list, list]:
+                calls.append("called")
+                return [], []
+
+            with patch("vocr.orchestration.workflow.run_codex_review_with_notes", side_effect=fake_codex_review):
+                review_task(ledger, task.id, decision=ReviewDecision.accepted, codex_review=True)
+
+        self.assertEqual(calls, ["called"])
+
+    def test_diff_review_comments_aggregate_instead_of_per_file_boilerplate(self) -> None:
+        from vocr.orchestration.workflow import _diff_review_comments
+
+        changed_files = [f"src/file_{i}.py" for i in range(25)]
+
+        comments = _diff_review_comments(changed_files, [], "")
+
+        aggregate = [comment for comment in comments if comment.source == "vocr-review"]
+        self.assertEqual(len(aggregate), 1)
+        self.assertIn("25 file(s) changed", aggregate[0].body)
+        self.assertIn("+5 more", aggregate[0].body)
+
     def test_learning_store_aggregates_reviews_without_raw_diff(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / ".vocr"

@@ -597,6 +597,11 @@ def review_task(
     else:
         issues.extend(check_coverage_issues)
 
+    # Scope/secret/check hard gates are decided at this point; a missing
+    # explicit decision below doesn't reflect a defect in the change itself,
+    # so it must not suppress the Codex review round trip.
+    hard_gates_clean = not issues
+
     if decision is None:
         decision = ReviewDecision.needs_changes
         issues.append("Manual review decision is required before a task can be accepted.")
@@ -608,7 +613,7 @@ def review_task(
     pending_memory_notes = list(memory_notes or [])
     if task.worktree_path:
         comments.extend(_diff_review_comments(changed_files, issues, full_diff))
-    if codex_review:
+    if codex_review and hard_gates_clean:
         codex_comments, codex_memory_notes = run_codex_review_with_notes(task, base_ref=codex_base_ref)
         comments.extend(codex_comments)
         pending_memory_notes.extend(codex_memory_notes)
@@ -687,12 +692,17 @@ def render_review_markdown(review: ReviewResult) -> str:
 
 def _diff_review_comments(changed_files: list[str], issues: list[str], diff_text: str) -> list[ReviewComment]:
     comments: list[ReviewComment] = []
-    for path in changed_files[:20]:
+    if changed_files:
+        preview = ", ".join(changed_files[:20])
+        if len(changed_files) > 20:
+            preview += f", ... (+{len(changed_files) - 20} more)"
         comments.append(
             ReviewComment(
                 source="vocr-review",
-                path=path,
-                body="Changed by this task; verify it stays inside scope and supports the acceptance criteria.",
+                body=(
+                    f"{len(changed_files)} file(s) changed; verify they stay inside scope and support the "
+                    f"acceptance criteria: {preview}"
+                ),
             )
         )
     for issue in issues:
