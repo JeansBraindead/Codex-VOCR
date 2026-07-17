@@ -29,10 +29,12 @@ from vocr.models import (
 from vocr.orchestration.worker_advisor import WorkerParallelismAdvisor
 from vocr.ui.normal_mode import (
     NormalModeController,
+    SCENARIO_DROPDOWN_HINT,
     beta_next_test_chain,
     codex_login_status,
     final_all_in_one_labels,
     final_local_test_command_plan,
+    format_all_scenarios_overview,
     launch_console_mode,
     launch_normal_mode,
     lmstudio_reachability_status,
@@ -41,6 +43,9 @@ from vocr.ui.normal_mode import (
     normal_mode_surface_decision,
     open_codex_login_shell,
     open_expert_shell,
+    scenario_code_from_choice,
+    scenario_dropdown_choices,
+    scenario_info_lines,
 )
 
 
@@ -350,6 +355,54 @@ class NormalModeTests(unittest.TestCase):
         self.assertEqual(local_step.only, ("S21", "S22"))
         self.assertEqual(local_step.tier, "local")
         self.assertFalse(local_step.allow_cloud)
+
+    def test_scenario_dropdown_choices_cover_full_catalog(self) -> None:
+        from vocr.beta.catalog import CATALOG
+
+        choices = scenario_dropdown_choices()
+
+        self.assertEqual(len(choices), len(CATALOG))
+        self.assertIn("C01 — cloud-e2e-red-to-green", choices)
+        self.assertIn("S03 — scope-breach", choices)
+
+    def test_scenario_code_from_choice_extracts_bare_code(self) -> None:
+        self.assertEqual(scenario_code_from_choice("C01 — cloud-e2e-red-to-green"), "C01")
+        self.assertEqual(scenario_code_from_choice("S03 — scope-breach"), "S03")
+
+    def test_scenario_info_lines_empty_selection_shows_hint(self) -> None:
+        lines = scenario_info_lines(None)
+
+        self.assertEqual(lines["header"], "")
+        self.assertEqual(lines["what"], SCENARIO_DROPDOWN_HINT)
+
+    def test_scenario_info_lines_render_cost_and_hardness_for_cloud_scenario(self) -> None:
+        from vocr.beta.catalog import CATALOG_BY_CODE
+
+        lines = scenario_info_lines(CATALOG_BY_CODE["C01"])
+
+        self.assertEqual(lines["header"], "Szenario: C01 — cloud-e2e-red-to-green")
+        self.assertIn("Tier: cloud", lines["meta"])
+        self.assertIn("Haerte: hart", lines["meta"])
+        self.assertEqual(lines["cost"], "Kosten: kostet Kontingent")
+        self.assertTrue(lines["what"].startswith("Prueft: "))
+        self.assertTrue(lines["benefit"].startswith("Nutzen: "))
+
+    def test_scenario_info_lines_render_soft_hardness_for_non_hard_scenario(self) -> None:
+        from vocr.beta.catalog import CATALOG_BY_CODE
+
+        lines = scenario_info_lines(CATALOG_BY_CODE["S11"])
+
+        self.assertIn("Haerte: weich", lines["meta"])
+        self.assertEqual(lines["cost"], "Kosten: gratis")
+
+    def test_format_all_scenarios_overview_lists_every_code(self) -> None:
+        from vocr.beta.catalog import CATALOG
+
+        overview = format_all_scenarios_overview()
+
+        for info in CATALOG:
+            self.assertIn(info.code, overview)
+            self.assertIn(info.what, overview)
 
     def test_update_button_plan_uses_fast_forward_pull_and_refreshes_install(self) -> None:
         plan = normal_mode_update_command_plan()

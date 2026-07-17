@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from vocr.beta.catalog import CATALOG, CATALOG_BY_CODE, ScenarioInfo
 from vocr.codex.mcp_client import CodexMcpClient
 from vocr.config.env_file import read_env_file, update_env_file
 from vocr.git.worktrees import GitWorktreeError, GitWorktreeManager
@@ -1248,6 +1249,48 @@ def lmstudio_reachability_status(repo_root: str | Path = ".") -> str:
     return f"LM Studio Ampel: gruen - erreichbar{suffix}"
 
 
+SCENARIO_DROPDOWN_HINT = (
+    "Szenario im Dropdown waehlen oder Codes ins Feld tippen (z. B. S03,S07). "
+    "Leer = ganze Tier-Auswahl."
+)
+
+
+def scenario_dropdown_choices() -> list[str]:
+    """Combobox entries for the beta scenario picker, one per CATALOG entry."""
+    return [f"{info.code} — {info.title}" for info in CATALOG]
+
+
+def scenario_code_from_choice(choice: str) -> str:
+    """Extract the bare scenario code from a 'CODE — title' combobox entry."""
+    return choice.split(" — ", 1)[0].strip()
+
+
+def scenario_info_lines(info: ScenarioInfo | None) -> dict[str, str]:
+    """Build the info-panel line texts for a scenario (or the empty-selection hint)."""
+    if info is None:
+        return {"header": "", "meta": "", "cost": "", "what": SCENARIO_DROPDOWN_HINT, "benefit": ""}
+    hardness = "hart" if info.hard else "weich"
+    return {
+        "header": f"Szenario: {info.code} — {info.title}",
+        "meta": f"Tier: {info.tier}   |   Haerte: {hardness}",
+        "cost": f"Kosten: {info.cost}",
+        "what": f"Prueft: {info.what}",
+        "benefit": f"Nutzen: {info.benefit}",
+    }
+
+
+def format_all_scenarios_overview() -> str:
+    """Full CATALOG listing text for the 'Szenarien erklaeren' overview window."""
+    lines: list[str] = []
+    for info in CATALOG:
+        hardness = "hart" if info.hard else "weich"
+        lines.append(f"{info.code} — {info.title} [{info.tier}, {hardness}, {info.cost}]")
+        lines.append(f"  Prueft: {info.what}")
+        lines.append(f"  Nutzen: {info.benefit}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
 def launch_normal_mode(repo_root: str | Path = ".", session_permission: PermissionGrant | None = None) -> None:
     try:
         import tkinter as tk
@@ -1393,12 +1436,62 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     ttk.Label(beta_controls, text="Szenarien").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=4)
     ttk.Entry(beta_controls, textvariable=beta_only).grid(row=1, column=1, sticky="ew", pady=4)
     ttk.Label(beta_controls, text="z.B. S03,S07; leer = Tier-Auswahl").grid(row=1, column=2, sticky="w", padx=(8, 0), pady=4)
-    ttk.Label(beta_controls, text="Report-Ordner").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=4)
-    ttk.Entry(beta_controls, textvariable=beta_report_dir).grid(row=2, column=1, sticky="ew", pady=4)
-    ttk.Label(beta_controls, text="Tag").grid(row=3, column=0, sticky="w", padx=(0, 8), pady=4)
-    ttk.Entry(beta_controls, textvariable=beta_tag).grid(row=3, column=1, sticky="ew", pady=4)
-    ttk.Label(beta_controls, text="Max Cloud Tasks").grid(row=4, column=0, sticky="w", padx=(0, 8), pady=4)
-    ttk.Spinbox(beta_controls, from_=1, to=20, textvariable=beta_max_cloud_tasks, width=6).grid(row=4, column=1, sticky="w", pady=4)
+
+    scenario_choice = tk.StringVar(value="")
+    ttk.Label(beta_controls, text="Szenario waehlen").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=4)
+    scenario_combo = ttk.Combobox(
+        beta_controls,
+        textvariable=scenario_choice,
+        values=scenario_dropdown_choices(),
+        state="readonly",
+        width=40,
+    )
+    scenario_combo.grid(row=2, column=1, sticky="ew", pady=4)
+
+    scenario_info_header = tk.StringVar()
+    scenario_info_meta = tk.StringVar()
+    scenario_info_cost = tk.StringVar()
+    scenario_info_what = tk.StringVar()
+    scenario_info_benefit = tk.StringVar()
+
+    scenario_info_frame = ttk.Frame(beta_controls, padding=(0, 4, 0, 4))
+    scenario_info_frame.grid(row=3, column=0, columnspan=3, sticky="ew")
+    scenario_info_frame.columnconfigure(0, weight=1)
+    ttk.Label(scenario_info_frame, textvariable=scenario_info_header, font=("Segoe UI", 9, "bold"), wraplength=620).grid(
+        row=0, column=0, sticky="w"
+    )
+    ttk.Label(scenario_info_frame, textvariable=scenario_info_meta, wraplength=620).grid(row=1, column=0, sticky="w", pady=(2, 0))
+    scenario_info_cost_label = ttk.Label(scenario_info_frame, textvariable=scenario_info_cost, wraplength=620)
+    scenario_info_cost_label.grid(row=2, column=0, sticky="w", pady=(2, 0))
+    ttk.Label(scenario_info_frame, textvariable=scenario_info_what, wraplength=620).grid(row=3, column=0, sticky="w", pady=(6, 0))
+    ttk.Label(scenario_info_frame, textvariable=scenario_info_benefit, wraplength=620).grid(row=4, column=0, sticky="w", pady=(2, 0))
+
+    def update_scenario_info(*_: object) -> None:
+        choice = scenario_choice.get()
+        code = scenario_code_from_choice(choice) if choice else ""
+        info = CATALOG_BY_CODE.get(code)
+        lines = scenario_info_lines(info)
+        scenario_info_header.set(lines["header"])
+        scenario_info_meta.set(lines["meta"])
+        scenario_info_cost.set(lines["cost"])
+        scenario_info_what.set(lines["what"])
+        scenario_info_benefit.set(lines["benefit"])
+        if info is not None and info.cost == "kostet Kontingent":
+            scenario_info_cost_label.configure(foreground="#b3261e", font=("Segoe UI", 9, "bold"))
+        else:
+            scenario_info_cost_label.configure(foreground="", font=("Segoe UI", 9, "normal"))
+        if code:
+            beta_only.set(code)
+
+    scenario_choice.trace_add("write", update_scenario_info)
+    update_scenario_info()
+
+    ttk.Label(beta_controls, text="Report-Ordner").grid(row=4, column=0, sticky="w", padx=(0, 8), pady=4)
+    ttk.Entry(beta_controls, textvariable=beta_report_dir).grid(row=4, column=1, sticky="ew", pady=4)
+    ttk.Label(beta_controls, text="Tag").grid(row=5, column=0, sticky="w", padx=(0, 8), pady=4)
+    ttk.Entry(beta_controls, textvariable=beta_tag).grid(row=5, column=1, sticky="ew", pady=4)
+    ttk.Label(beta_controls, text="Max Cloud Tasks").grid(row=6, column=0, sticky="w", padx=(0, 8), pady=4)
+    ttk.Spinbox(beta_controls, from_=1, to=20, textvariable=beta_max_cloud_tasks, width=6).grid(row=6, column=1, sticky="w", pady=4)
 
     beta_checks = ttk.Frame(beta_tab)
     beta_checks.grid(row=5, column=0, sticky="ew", pady=(8, 0))
@@ -1417,6 +1510,8 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     beta_start_button.grid(row=0, column=0, sticky="w")
     beta_list_button = ttk.Button(beta_buttons, text="Szenarien anzeigen")
     beta_list_button.grid(row=0, column=1, sticky="w", padx=(8, 0))
+    beta_explain_button = ttk.Button(beta_buttons, text="Szenarien erklaeren")
+    beta_explain_button.grid(row=0, column=2, sticky="w", padx=(8, 0))
 
     beta_result = scrolledtext.ScrolledText(beta_tab, wrap=tk.WORD, height=14, padx=8, pady=8, state=tk.DISABLED)
     beta_result.grid(row=7, column=0, sticky="nsew", pady=(8, 0))
@@ -1546,6 +1641,17 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
             lines.append(f"{scenario.id} [{scenario.tier}, {hard}] {scenario.title}")
         beta_append("\n".join(lines), replace=True)
         notebook.select(beta_tab)
+
+    def show_scenario_catalog_window() -> None:
+        window = tk.Toplevel(root)
+        window.title("Szenarien erklaeren")
+        window.geometry("720x560")
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(0, weight=1)
+        overview_text = scrolledtext.ScrolledText(window, wrap=tk.WORD, padx=12, pady=12)
+        overview_text.grid(row=0, column=0, sticky="nsew")
+        overview_text.insert(tk.END, format_all_scenarios_overview())
+        overview_text.configure(state=tk.DISABLED)
 
     def start_beta_run(*, recommended: bool = False) -> None:
         tier = "core" if recommended else beta_tier.get()
@@ -2084,6 +2190,7 @@ def launch_normal_mode(repo_root: str | Path = ".", session_permission: Permissi
     beta_start_button.configure(command=start_beta_run)
     beta_chain_button.configure(command=start_beta_chain)
     beta_list_button.configure(command=show_beta_scenarios)
+    beta_explain_button.configure(command=show_scenario_catalog_window)
 
     opening = controller.opening_message()
     append("Visionaer", opening.message)
