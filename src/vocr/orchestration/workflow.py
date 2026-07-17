@@ -8,6 +8,7 @@ import re
 import urllib.error
 import urllib.request
 
+from vocr.guardrails.claims import build_scope_claim, claims_conflict
 from vocr.guardrails.scope_guard import ScopeGuard
 from vocr.guardrails.secrets import scan_diff_for_secrets
 from vocr.git.worktrees import GitWorktreeError, GitWorktreeManager
@@ -60,23 +61,33 @@ def organize_slice(slice_item: VisionSlice, *, vocr_home: str = ".vocr") -> list
     if not task_groups:
         task_groups = [["Implement first scoped slice"]]
 
+    fallback_scope = scope or [
+        "Use only the explicitly requested repo area.",
+        "Keep changes inside the task worktree.",
+    ]
+
     tasks: list[VocrTask] = []
     previous_group_ids: list[str] = []
     index = 0
     for group in task_groups:
         current_group_ids: list[str] = []
+        group_tasks: list[VocrTask] = []
         for task_item in group:
             index += 1
-            context_query = infer_context_query(f"{task_item} {slice_item.goal}")
+            title, explicit_scope = _parse_task_item(task_item)
+            context_query = infer_context_query(f"{title} {slice_item.goal}")
             context_pack = build_context_pack(context_query, vocr_home=vocr_home)
+            if explicit_scope:
+                task_scope = explicit_scope
+            elif len(group) > 1:
+                task_scope = _assign_task_scope(title, slice_item.goal, scope, vocr_home) or fallback_scope
+            else:
+                task_scope = fallback_scope
             task = VocrTask(
                 slice_id=slice_item.id,
-                title=task_item,
+                title=title,
                 summary=f"Implement task {index} for: {slice_item.goal}",
-                scope=scope or [
-                    "Use only the explicitly requested repo area.",
-                    "Keep changes inside the task worktree.",
-                ],
+                scope=task_scope,
                 non_goals=non_goals or ["Do not expand beyond the accepted VisionSlice."],
                 acceptance_criteria=slice_item.acceptance_criteria,
                 tests=tests or ["Run the verification explicitly approved in the VisionSlice."],
@@ -85,9 +96,118 @@ def organize_slice(slice_item: VisionSlice, *, vocr_home: str = ".vocr") -> list
                 context_pack=context_pack,
             )
             tasks.append(task)
+            group_tasks.append(task)
             current_group_ids.append(task.id)
+        if len(group_tasks) > 1:
+            _reorder_group_by_claim_conflicts(group_tasks)
         previous_group_ids = current_group_ids
     return tasks
+
+
+_TASK_SCOPE_SPLIT_RE = re.compile(r"\s+@\s+")
+
+
+def _parse_task_item(raw_item: str) -> tuple[str, list[str] | None]:
+    """Split an optional `Task title @ path/glob[, path/glob...]` suffix off a
+    task item. Explicit per-task scopes override the slice-wide scope."""
+    parts = _TASK_SCOPE_SPLIT_RE.split(raw_item, maxsplit=1)
+    if len(parts) != 2:
+        return raw_item.strip(), None
+    title, scope_text = parts
+    explicit_scope = [item.strip() for item in scope_text.split(",") if item.strip()]
+    return title.strip(), explicit_scope or None
+
+
+def _assign_task_scope(title: str, goal: str, slice_scope: list[str], vocr_home: str) -> list[str] | None:
+    """Best-effort narrowing of a task's scope to a subset of the slice scope,
+    so claim-disjoint tasks in the same group can actually run in parallel.
+    Returns None when nothing matches, so the caller can fall back to the
+    full slice scope unchanged."""
+    if len(slice_scope) > 1:
+        matched_scope_items = _match_scope_items_for_task(title, slice_scope)
+        if matched_scope_items:
+            return matched_scope_items
+    tokens = _identifier_tokens(f"{title} {goal}")
+    matched_graph_paths = _match_graph_paths_for_task(tokens, vocr_home)
+    if matched_graph_paths:
+        return matched_graph_paths
+    return None
+
+
+def _match_scope_items_for_task(title: str, scope: list[str]) -> list[str]:
+    title_lower = title.lower()
+    return [item for item in scope if _scope_item_referenced(item, title_lower)]
+
+
+def _scope_item_referenced(scope_item: str, title_lower: str) -> bool:
+    normalized = scope_item.strip().lower()
+    if not normalized:
+        return False
+    if normalized in title_lower:
+        return True
+    stem = normalized.replace("\\", "/").rstrip("/").split("/")[-1]
+    stem = re.sub(r"[*?\[\]]", "", stem).split(".")[0]
+    return bool(stem) and len(stem) >= 3 and stem in title_lower
+
+
+def _identifier_tokens(text: str) -> set[str]:
+    tokens: set[str] = set()
+    for word in text.split():
+        cleaned = word.strip(".,:;!?()[]{}\"'").lower()
+        if len(cleaned) >= 4:
+            tokens.add(cleaned)
+    return tokens
+
+
+def _match_graph_paths_for_task(tokens: set[str], vocr_home: str, *, max_files: int = 8) -> list[str]:
+    if not tokens:
+        return []
+    store = GraphStore(vocr_home)
+    if not store.exists():
+        return []
+    try:
+        graph = store.load()
+    except (OSError, ValueError):
+        return []
+    matched_files: list[str] = []
+    for node in sorted(graph.nodes, key=lambda item: item.path):
+        path_tokens = {part.lower() for part in re.split(r"[/_.\-]+", node.path) if part}
+        if tokens & path_tokens:
+            matched_files.append(node.path)
+        if len(matched_files) >= max_files:
+            break
+    if not matched_files:
+        return []
+    globs: set[str] = set()
+    for path in matched_files:
+        parent = path.rsplit("/", 1)[0] if "/" in path else ""
+        globs.add(f"{parent}/**" if parent else path)
+    return sorted(globs)
+
+
+def _reorder_group_by_claim_conflicts(group_tasks: list[VocrTask], repo_root: str = ".") -> None:
+    """Split a task group into claim-disjoint sub-waves (pure set logic over
+    the already-assigned scopes, no LLM). Tasks in a later sub-wave depend on
+    every task in the sub-wave(s) they'd otherwise collide with, so whatever
+    remains dependency-free is guaranteed claim-disjoint."""
+    waves: list[list[VocrTask]] = []
+    wave_claims: list[list] = []
+    for task in group_tasks:
+        claim = build_scope_claim(task, repo_root)
+        placed = False
+        for wave, claims in zip(waves, wave_claims):
+            if not any(claims_conflict(claim, existing) for existing in claims):
+                wave.append(task)
+                claims.append(claim)
+                placed = True
+                break
+        if not placed:
+            waves.append([task])
+            wave_claims.append([claim])
+    for previous_wave, current_wave in zip(waves, waves[1:]):
+        previous_ids = [task.id for task in previous_wave]
+        for task in current_wave:
+            task.dependencies = list(dict.fromkeys(task.dependencies + previous_ids))
 
 
 def _split_items(text: str) -> list[str]:

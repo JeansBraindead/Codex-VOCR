@@ -38,7 +38,19 @@ from vocr.models import (
     TokenUsage,
     VocrTask,
 )
-from vocr.orchestration.workflow import create_vision, distill_failure_output, infer_context_query, organize_slice, render_task_template, review_task
+from vocr.orchestration.worker_advisor import WorkerParallelismAdvisor
+from vocr.orchestration.workflow import (
+    _assign_task_scope,
+    _match_graph_paths_for_task,
+    _parse_task_item,
+    _reorder_group_by_claim_conflicts,
+    create_vision,
+    distill_failure_output,
+    infer_context_query,
+    organize_slice,
+    render_task_template,
+    review_task,
+)
 
 GOOD_REQUEST = (
     "Ziel: Baue eine Healthcheck-API im Backend. "
@@ -536,6 +548,146 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(len(tasks), 1)
         self.assertIn("implement first scoped slice", tasks[0].context_query or "")
         self.assertIn("src/slice.py", tasks[0].context_pack or "")
+
+    def test_parse_task_item_splits_explicit_at_scope_syntax(self) -> None:
+        title, scope = _parse_task_item("Implement backend @ src/vocr/backend/**, src/vocr/agents/**")
+
+        self.assertEqual(title, "Implement backend")
+        self.assertEqual(scope, ["src/vocr/backend/**", "src/vocr/agents/**"])
+
+    def test_parse_task_item_without_at_syntax_returns_no_explicit_scope(self) -> None:
+        title, scope = _parse_task_item("Implement backend")
+
+        self.assertEqual(title, "Implement backend")
+        self.assertIsNone(scope)
+
+    def test_organize_slice_explicit_at_scopes_give_disjoint_tasks_and_wave_gt_1(self) -> None:
+        request = (
+            GOOD_REQUEST
+            + " Tasks: Agents Work @ src/vocr/agents/** || Graph Work @ src/vocr/graph/** "
+            "|| Memory Work @ src/vocr/memory/**."
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            store = GraphStore(Path(tmp) / ".vocr")
+            store.save(RepoGraphBuilder(".").build())
+            vision = create_vision(request)
+            tasks = organize_slice(vision, vocr_home=str(Path(tmp) / ".vocr"))
+
+        self.assertEqual(
+            [task.scope for task in tasks],
+            [["src/vocr/agents/**"], ["src/vocr/graph/**"], ["src/vocr/memory/**"]],
+        )
+        self.assertEqual(tasks[0].dependencies, [])
+        self.assertEqual(tasks[1].dependencies, [])
+        self.assertEqual(tasks[2].dependencies, [])
+
+        advisor = WorkerParallelismAdvisor(".")
+        self.assertGreater(advisor.recommended_workers(tasks), 1)
+
+    def test_organize_slice_matches_graph_paths_without_explicit_syntax(self) -> None:
+        request = (
+            "Ziel: Improve project surfaces. "
+            "Arbeitsbereich: src. "
+            "Akzeptanz: Changes are focused. "
+            "Verifikation: Syntax-Check. "
+            "Tasks: Payments API || Install Docs."
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            vocr_home = Path(tmp) / ".vocr"
+            GraphStore(vocr_home).save(
+                RepoGraph(
+                    root=tmp,
+                    nodes=[
+                        GraphNode(
+                            path="src/payments/api.py",
+                            kind="py",
+                            size_bytes=10,
+                            line_count=1,
+                            content_hash="api",
+                            summary="payment api charge refund endpoint",
+                            symbols=["def charge"],
+                        ),
+                        GraphNode(
+                            path="docs/install.md",
+                            kind="md",
+                            size_bytes=10,
+                            line_count=1,
+                            content_hash="docs",
+                            summary="install docs setup guide",
+                        ),
+                    ],
+                )
+            )
+
+            tasks = organize_slice(create_vision(request), vocr_home=str(vocr_home))
+
+        self.assertEqual(tasks[0].scope, ["src/payments/**"])
+        self.assertEqual(tasks[1].scope, ["docs/**"])
+        self.assertEqual(tasks[0].dependencies, [])
+        self.assertEqual(tasks[1].dependencies, [])
+
+    def test_organize_slice_falls_back_to_slice_scope_when_no_match(self) -> None:
+        request = (
+            "Ziel: Improve project surfaces. "
+            "Arbeitsbereich: src. "
+            "Akzeptanz: Changes are focused. "
+            "Verifikation: Syntax-Check. "
+            "Tasks: Do Thing One || Do Thing Two."
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            vocr_home = Path(tmp) / ".vocr"
+            GraphStore(vocr_home).save(RepoGraph(root=tmp, nodes=[]))
+
+            tasks = organize_slice(create_vision(request), vocr_home=str(vocr_home))
+
+        self.assertEqual(tasks[0].scope, ["src"])
+        self.assertEqual(tasks[1].scope, ["src"])
+
+    def test_match_graph_paths_for_task_returns_empty_without_tokens_or_store(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(_match_graph_paths_for_task(set(), str(Path(tmp) / ".vocr")), [])
+            self.assertEqual(_match_graph_paths_for_task({"backend"}, str(Path(tmp) / ".vocr")), [])
+
+    def test_assign_task_scope_prefers_matching_scope_item_over_graph_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vocr_home = Path(tmp) / ".vocr"
+            GraphStore(vocr_home).save(RepoGraph(root=tmp, nodes=[]))
+
+            scope = _assign_task_scope("Write Tests", "Improve reliability", ["FastAPI-App", "Tests"], str(vocr_home))
+
+        self.assertEqual(scope, ["Tests"])
+
+    def test_reorder_group_by_claim_conflicts_chains_overlapping_tasks_into_subwaves(self) -> None:
+        task_a = VocrTask(
+            slice_id="slice-reorder",
+            title="A",
+            summary="s",
+            scope=["src/vocr/agents/**"],
+            acceptance_criteria=[AcceptanceCriterion(text="passes")],
+            tests=["Syntax-Check"],
+        )
+        task_b = VocrTask(
+            slice_id="slice-reorder",
+            title="B",
+            summary="s",
+            scope=["src/vocr/graph/**"],
+            acceptance_criteria=[AcceptanceCriterion(text="passes")],
+            tests=["Syntax-Check"],
+        )
+        task_c = VocrTask(
+            slice_id="slice-reorder",
+            title="C overlaps A",
+            summary="s",
+            scope=["src/vocr/agents/**"],
+            acceptance_criteria=[AcceptanceCriterion(text="passes")],
+            tests=["Syntax-Check"],
+        )
+
+        _reorder_group_by_claim_conflicts([task_a, task_b, task_c])
+
+        self.assertEqual(task_a.dependencies, [])
+        self.assertEqual(task_b.dependencies, [])
+        self.assertEqual(task_c.dependencies, [task_a.id, task_b.id])
 
     def test_codex_manifest_writes_contract_and_separate_context_pack(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
