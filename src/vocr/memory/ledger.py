@@ -28,6 +28,8 @@ from vocr.models import (
 from vocr.guardrails.claims import build_scope_claim, claim_conflicts
 
 
+STALE_LOCK_SECONDS = 30.0
+
 SECRET_KEYWORDS = {"api_key", "apikey", "secret", "token", "password", "credential"}
 SAFE_KEYWORDS = {
     "token_usage",
@@ -258,6 +260,9 @@ class MemoryLedger:
             try:
                 fd = os.open(str(self.lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             except FileExistsError:
+                stale_age = self._lock_age_seconds()
+                if stale_age is not None and stale_age >= STALE_LOCK_SECONDS and self._take_over_stale_lock(stale_age):
+                    continue
                 if time.monotonic() >= deadline:
                     raise TimeoutError(f"Timed out waiting for ledger lock: {self.lock_path}")
                 time.sleep(0.02)
@@ -269,6 +274,28 @@ class MemoryLedger:
                 self.lock_path.unlink()
             except FileNotFoundError:
                 pass
+
+    def _lock_age_seconds(self) -> float | None:
+        try:
+            mtime = self.lock_path.stat().st_mtime
+        except FileNotFoundError:
+            return None
+        return max(0.0, time.time() - mtime)
+
+    def _take_over_stale_lock(self, age_seconds: float) -> bool:
+        try:
+            self.lock_path.unlink()
+        except (FileNotFoundError, PermissionError, OSError):
+            return False
+        self._append_unlocked(
+            LedgerEventType.message,
+            {
+                "message": "Stale ledger lock takeover",
+                "lock_path": str(self.lock_path),
+                "age_seconds": round(age_seconds, 2),
+            },
+        )
+        return True
 
     def dump_json(self) -> str:
         return json.dumps([event.model_dump(mode="json") for event in self.events()], indent=2)

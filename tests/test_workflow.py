@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import time
 import unittest
 import os
 import subprocess
@@ -1233,6 +1234,33 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(any(item.id == task.id for item in tasks_after))
         self.assertTrue(any(claim.task_id == task.id for claim in claims_after))
         self.assertEqual(released, [task.id])
+
+    def test_ledger_lock_takes_over_stale_lock_with_warn_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = MemoryLedger(Path(tmp) / ".vocr")
+            ledger.init()
+            ledger.lock_path.touch()
+            stale_time = time.time() - 40
+            os.utime(ledger.lock_path, (stale_time, stale_time))
+
+            ledger.append(LedgerEventType.message, {"message": "actual event"})
+
+            events = list(ledger.events())
+
+        messages = [event.payload.get("message") for event in events]
+        self.assertIn("Stale ledger lock takeover", messages)
+        self.assertIn("actual event", messages)
+        self.assertFalse(ledger.lock_path.exists())
+
+    def test_ledger_lock_still_respects_fresh_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = MemoryLedger(Path(tmp) / ".vocr")
+            ledger.init()
+            ledger.lock_path.touch()
+
+            with self.assertRaises(TimeoutError):
+                with ledger._ledger_lock(timeout_seconds=0.2):
+                    pass
 
     def test_learning_boosts_graph_context_ranking(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
