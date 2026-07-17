@@ -231,17 +231,50 @@ def _split_task_groups(text: str) -> list[list[str]]:
     return groups
 
 
+_QUERY_STOPWORDS = {
+    # English fillers
+    "this", "that", "with", "from", "have", "will", "shall", "should",
+    "would", "could", "about", "into", "onto", "your", "their", "them",
+    "then", "than", "also", "only", "just", "very", "much", "many",
+    "some", "such", "each", "every", "both", "these", "those", "here",
+    "there", "when", "where", "which", "while", "being", "been", "does",
+    # German fillers
+    "eine", "einer", "eines", "einem", "einen", "sind", "wird", "werden",
+    "wurde", "wurden", "sollte", "sollten", "dass", "nicht", "auch",
+    "noch", "schon", "haben", "hatte", "hatten", "kann", "können",
+    "konnte", "muss", "müssen", "musste", "diese", "dieser", "dieses",
+    "diesem", "diesen", "alle", "alles", "jede", "jeder", "jedes",
+    "aber", "oder", "wenn", "weil", "damit", "dabei", "dazu", "hier",
+    "dort", "dann", "also", "sowie", "sowohl", "ohne", "unter", "über",
+    "zwischen", "während", "gegen", "durch", "für", "vom", "zum", "zur",
+    "beim", "und", "wie", "was", "wer",
+}
+
+_QUERY_PATH_TOKEN_RE = re.compile(r"\w+/\w+|\w+\.[A-Za-z]{1,4}\b")
+
+
+def _looks_like_identifier_or_path(raw_word: str) -> bool:
+    if _QUERY_PATH_TOKEN_RE.search(raw_word):
+        return True
+    if "_" in raw_word:
+        return True
+    return bool(re.search(r"[a-z][A-Z]", raw_word))
+
+
 def infer_context_query(text: str) -> str:
-    terms = [
-        word.strip(".,:;!?()[]{}\"'").lower()
-        for word in text.split()
-        if len(word.strip(".,:;!?()[]{}\"'")) >= 4
-    ]
-    seen: list[str] = []
-    for term in terms:
-        if term not in seen:
-            seen.append(term)
-    base_terms = seen[:5]
+    seen: set[str] = set()
+    preferred: list[str] = []
+    rest: list[str] = []
+    for raw_word in text.split():
+        cleaned = raw_word.strip(".,:;!?()[]{}\"'")
+        if len(cleaned) < 4:
+            continue
+        lowered = cleaned.lower()
+        if lowered in seen or lowered in _QUERY_STOPWORDS:
+            continue
+        seen.add(lowered)
+        (preferred if _looks_like_identifier_or_path(cleaned) else rest).append(lowered)
+    base_terms = (preferred + rest)[:5]
     if _local_assist_enabled():
         for term in _local_query_expansion(text):
             normalized = term.strip().lower()

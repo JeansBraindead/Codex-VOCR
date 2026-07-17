@@ -450,6 +450,29 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(tasks[1].dependencies, [])
         self.assertEqual(set(tasks[2].dependencies), {tasks[0].id, tasks[1].id})
 
+    def test_infer_context_query_drops_german_and_english_filler_words(self) -> None:
+        query = infer_context_query("Wir sollten dass eine neue Payment API haben, damit alles funktioniert")
+
+        terms = query.split()
+        self.assertNotIn("sollten", terms)
+        self.assertNotIn("dass", terms)
+        self.assertNotIn("eine", terms)
+        self.assertNotIn("damit", terms)
+        self.assertNotIn("alles", terms)
+        self.assertIn("payment", terms)
+
+    def test_infer_context_query_prefers_identifier_and_path_tokens(self) -> None:
+        query = infer_context_query("Update something inside src/vocr/workflow.py for reliability")
+
+        terms = query.split()
+        self.assertEqual(terms[0], "src/vocr/workflow.py")
+
+    def test_infer_context_query_prefers_snake_case_identifiers(self) -> None:
+        query = infer_context_query("Fix build_context_pack behavior for reliability testing")
+
+        terms = query.split()
+        self.assertEqual(terms[0], "build_context_pack")
+
     def test_local_assist_flag_off_does_not_call_endpoint(self) -> None:
         with patch.dict(os.environ, {"VOCR_LOCAL_ASSIST": ""}), patch(
             "vocr.orchestration.workflow.urllib.request.urlopen",
