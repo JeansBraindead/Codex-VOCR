@@ -75,7 +75,10 @@ def _fixture_red_check(root: Path) -> Path:
     (repo / "src").mkdir(parents=True)
     (repo / "tests").mkdir()
     (repo / "src" / "core.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
-    (repo / "tests" / "test_core.py").write_text("from src.core import add\nassert add(2, 3) == 5\n", encoding="utf-8")
+    (repo / "tests" / "test_core.py").write_text(
+        "from src.core import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n",
+        encoding="utf-8",
+    )
     _init_repo(repo)
     return repo
 
