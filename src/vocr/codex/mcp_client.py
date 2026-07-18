@@ -3,8 +3,10 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from vocr.codex.config import codex_available
 from vocr.models import BaselineCheck, CodexRunResult, PermissionGrant, PermissionMode, TaskContract, VocrTask
@@ -99,6 +101,7 @@ class CodexMcpClient:
         permission: PermissionGrant | None = None,
         timeout_seconds: int = 3600,
         extra_prompt: str | None = None,
+        on_output: Callable[[str], None] | None = None,
     ) -> CodexRunResult:
         payload = self.build_payload(task, permission=permission, extra_prompt=extra_prompt)
         command = self._resolve_command(payload, permission)
@@ -107,23 +110,72 @@ class CodexMcpClient:
                 "No Codex worker command available. Install Codex CLI or set VOCR_CODEX_COMMAND."
             )
 
-        completed = subprocess.run(
-            command,
-            cwd=payload.worktree_path,
-            input=payload.prompt,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            capture_output=True,
-            timeout=timeout_seconds,
-            check=False,
-        )
+        try:
+            proc = subprocess.Popen(
+                command,
+                cwd=payload.worktree_path,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+            )
+        except OSError as exc:
+            return CodexRunResult(
+                task_id=task.id,
+                command=command,
+                exit_code=1,
+                stdout="",
+                stderr=f"Worker could not be started: {exc}",
+            )
+
+        def _write_stdin() -> None:
+            # Writing on a separate thread avoids a classic pipe deadlock:
+            # a large prompt could fill the stdin buffer before Codex starts
+            # reading it, while Codex's own stdout buffer fills up because we
+            # have not started draining it yet.
+            try:
+                if proc.stdin is not None:
+                    proc.stdin.write(payload.prompt)
+                    proc.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+
+        threading.Thread(target=_write_stdin, daemon=True).start()
+
+        timed_out = threading.Event()
+
+        def _kill_on_timeout() -> None:
+            timed_out.set()
+            proc.kill()
+
+        timer = threading.Timer(timeout_seconds, _kill_on_timeout)
+        timer.start()
+        collected: list[str] = []
+        try:
+            with proc:
+                if proc.stdout is not None:
+                    for line in proc.stdout:
+                        stripped = line.rstrip("\n")
+                        collected.append(stripped)
+                        if on_output:
+                            on_output(stripped)
+                exit_code = proc.wait()
+        finally:
+            timer.cancel()
+
+        if timed_out.is_set():
+            collected.append(f"[vocr] Worker timed out after {timeout_seconds}s and was killed.")
+            exit_code = 124
+
         return CodexRunResult(
             task_id=task.id,
             command=command,
-            exit_code=completed.returncode,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
+            exit_code=exit_code,
+            stdout="\n".join(collected),
+            stderr="",
         )
 
     def _resolve_command(

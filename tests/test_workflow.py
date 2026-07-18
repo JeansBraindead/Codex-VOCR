@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import time
 import unittest
@@ -795,6 +796,78 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(contract.dependencies, ["task-parent"])
         self.assertEqual(context_text, "UNTRUSTED_MARKER: repo context only")
         self.assertNotIn("UNTRUSTED_MARKER", contract_text)
+
+    def _streaming_task(self, worktree: Path) -> VocrTask:
+        return VocrTask(
+            slice_id="slice-stream",
+            title="Stream task",
+            summary="Exercise CodexMcpClient.run_task streaming.",
+            scope=["src"],
+            acceptance_criteria=[AcceptanceCriterion(text="passes")],
+            tests=["manual review"],
+            worktree_path=worktree,
+        )
+
+    def test_run_task_streaming_collects_full_output_without_on_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task = self._streaming_task(Path(tmp))
+            script = "import sys; print('line one'); print('line two'); sys.exit(0)"
+            client = CodexMcpClient()
+            with patch.object(CodexMcpClient, "_resolve_command", return_value=[sys.executable, "-c", script]):
+                result = client.run_task(task)
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("line one", result.stdout)
+        self.assertIn("line two", result.stdout)
+
+    def test_run_task_streams_lines_live_not_only_at_end(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task = self._streaming_task(Path(tmp))
+            script = (
+                "import sys, time\n"
+                "print('first', flush=True)\n"
+                "time.sleep(0.3)\n"
+                "print('second', flush=True)\n"
+            )
+            received: list[tuple[float, str]] = []
+
+            def on_output(line: str) -> None:
+                received.append((time.perf_counter(), line))
+
+            client = CodexMcpClient()
+            start = time.perf_counter()
+            with patch.object(CodexMcpClient, "_resolve_command", return_value=[sys.executable, "-c", script]):
+                client.run_task(task, on_output=on_output)
+
+        self.assertEqual([line for _, line in received], ["first", "second"])
+        self.assertLess(received[0][0] - start, 0.2)
+        self.assertGreaterEqual(received[1][0] - received[0][0], 0.2)
+
+    def test_run_task_kills_process_and_reports_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task = self._streaming_task(Path(tmp))
+            script = "import time; time.sleep(5)"
+            client = CodexMcpClient()
+            with patch.object(CodexMcpClient, "_resolve_command", return_value=[sys.executable, "-c", script]):
+                start = time.perf_counter()
+                result = client.run_task(task, timeout_seconds=1)
+                elapsed = time.perf_counter() - start
+
+        self.assertEqual(result.exit_code, 124)
+        self.assertIn("timed out", result.stdout.lower())
+        self.assertLess(elapsed, 4)
+
+    def test_run_task_merges_stderr_into_stdout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task = self._streaming_task(Path(tmp))
+            script = "import sys; print('to stderr', file=sys.stderr); sys.exit(1)"
+            client = CodexMcpClient()
+            with patch.object(CodexMcpClient, "_resolve_command", return_value=[sys.executable, "-c", script]):
+                result = client.run_task(task)
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("to stderr", result.stdout)
+        self.assertEqual(result.stderr, "")
 
     def test_contract_prompt_mode_is_byte_identical_and_excludes_task_content(self) -> None:
         task_one = VocrTask(

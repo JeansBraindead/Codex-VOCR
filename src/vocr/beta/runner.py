@@ -48,6 +48,7 @@ class BetaContext:
     allow_cloud: bool = False
     max_cloud_tasks: int = 3
     cloud_tasks_used: int = 0
+    on_output: Callable[[str], None] | None = None
 
     @contextmanager
     def env(self, values: dict[str, str | None]):
@@ -98,6 +99,7 @@ def run_beta(
     tag: str | None = None,
     repo_root: Path | str | None = None,
     on_progress: BetaProgressCallback | None = None,
+    on_output: Callable[[str, str], None] | None = None,
 ) -> BetaRun:
     from vocr.beta.report import write_reports
 
@@ -117,6 +119,9 @@ def run_beta(
         for scenario in selected:
             if on_progress:
                 on_progress("start", scenario)
+            if on_output:
+                scenario_id = scenario.id
+                ctx.on_output = lambda line, scenario_id=scenario_id: on_output(scenario_id, line)
             scenario_result = _run_one(scenario, ctx)
             results.append(scenario_result)
             if on_progress:

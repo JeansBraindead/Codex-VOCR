@@ -12,6 +12,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from shutil import which
+from typing import Callable
 
 import typer
 from dotenv import load_dotenv
@@ -1050,6 +1051,7 @@ def execute_worker(
     auto_fix: bool = False,
     max_retries: int = 2,
     workers: str | None = None,
+    on_output: Callable[[str], None] | None = None,
 ) -> None:
     if workers:
         console.print("[yellow]--workers gilt fuer work-ready-Wellen; dieser einzelne Task laeuft mit 1 Worker.[/yellow]")
@@ -1070,6 +1072,7 @@ def execute_worker(
                 permission=permission,
                 timeout_seconds=timeout_seconds,
                 extra_prompt=extra_prompt,
+                on_output=on_output,
             )
             attempt_duration = time.perf_counter() - attempt_started
             final_result = result
