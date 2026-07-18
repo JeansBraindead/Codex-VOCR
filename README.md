@@ -77,16 +77,31 @@ bleiben aktiv; es ist kein Auto-Merge.
 
 ## Beta-Test Im Normalmode
 
-Der Reiter `Beta-Test` ist der aktuelle Standardweg fuer Regressionen.
+Der Reiter `Beta-Test` ist der aktuelle Standardweg fuer Regressionen. Er ist
+vertikal scrollbar und in vier Abschnitte gegliedert:
 
-Wichtige Buttons:
-
-- `Update aus Git holen`: `git pull --ff-only`, editable install, Bootstrap und
-  Startskripte aktualisieren.
-- `Empfohlenen Standardtest starten`: deterministischer Core-Lauf ohne Cloud.
-- `Nur Beta-Testkette starten`: Smoke, Safety, Workflow/Parallelitaet/Memory und
-  Local-Assist-Mocks.
-- `Finale lokale Testsequenz starten`: All-in-One-Handoff vor Cloud.
+- **Was testen?**: `Ganze Testkette` (Default; gestaffelter Core-Lauf --
+  Smoke, Safety, Workflow/Parallelitaet/Memory, Local-Assist-Mocks) oder
+  `Einzelnes Szenario / Auswahl` (Tier-Dropdown, Szenario-Dropdown mit
+  Info-Panel oder freies Szenarien-Feld, z. B. `S03,S07`).
+- **Wie ausfuehren?**: Pause-Verhalten `Nie` (Default, laeuft durch) /
+  `Nur bei Cloud-Szenarien` (sinnvoll fuer laengere Laeufe -- die 20+
+  Core-Mocks sind in Millisekunden durch, nur echte Cloud-Aufrufe kosten
+  Kontingent und verdienen eine Pause) / `Nach jedem Szenario`; dazu Tier,
+  Szenarien-Feld, Szenario-Dropdown (zeigt Tier/Haerte/Kosten/Prueft/Nutzen;
+  Kosten "kostet Kontingent" ist farblich hervorgehoben), Report-Ordner,
+  Tag, Max Cloud Tasks und die Checkboxen fuer Cloud/JSON-only/Debug/
+  Codex-Sandbox.
+- **Steuerung**: genau drei Buttons -- `Start` startet den gewaehlten Modus,
+  `Weiter` ist nur waehrend einer Pause aktiv und zeigt wobei pausiert wurde
+  (z. B. "Weiter (nach C01)"), `Stop` bricht sauber nach dem laufenden
+  Szenario ab (kein Kill mitten im Lauf).
+- **Weitere Funktionen** (sekundaer): `Update aus Git holen`
+  (`git pull --ff-only`, editable install, Bootstrap/Startskripte
+  aktualisieren), `Finale lokale Testsequenz starten` (All-in-One-Handoff vor
+  Cloud), `Szenarien anzeigen`, `Szenarien erklaeren` (Uebersichtsfenster mit
+  Code, Titel, Tier, Haerte, Kosten, Pruef- und Nutzenbeschreibung fuer jedes
+  registrierte Szenario).
 
 Die finale lokale Testsequenz umfasst:
 
