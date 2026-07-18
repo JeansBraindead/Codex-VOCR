@@ -70,41 +70,59 @@ def _task(task_id: str, *, title: str, scope: list[str], tests: list[str]) -> Vo
     )
 
 
+_FIXTURE_GITIGNORE = "__pycache__/\n*.pyc\n*.pyo\n.vocr/\n"
+
+
+def _write_fixture_gitignore(repo: Path) -> None:
+    (repo / ".gitignore").write_text(_FIXTURE_GITIGNORE, encoding="utf-8")
+
+
 def _fixture_red_check(root: Path) -> Path:
     repo = root / "cloud-red"
-    (repo / "src").mkdir(parents=True)
-    (repo / "tests").mkdir()
+    (repo / "src").mkdir(parents=True, exist_ok=True)
+    (repo / "tests").mkdir(parents=True, exist_ok=True)
     (repo / "src" / "core.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
     (repo / "tests" / "test_core.py").write_text(
         "from src.core import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n",
         encoding="utf-8",
     )
+    _write_fixture_gitignore(repo)
     _init_repo(repo)
     return repo
 
 
 def _fixture_scope_trap(root: Path) -> Path:
     repo = root / "cloud-scope"
-    (repo / "src" / "core").mkdir(parents=True)
-    (repo / "src" / "other").mkdir(parents=True)
+    (repo / "src" / "core").mkdir(parents=True, exist_ok=True)
+    (repo / "src" / "other").mkdir(parents=True, exist_ok=True)
     (repo / "src" / "core" / "target.py").write_text("value = 1\n", encoding="utf-8")
     (repo / "src" / "other" / "untouched.py").write_text("do_not_touch = True\n", encoding="utf-8")
+    _write_fixture_gitignore(repo)
     _init_repo(repo)
     return repo
 
 
 def _fixture_secret_trap(root: Path) -> Path:
     repo = root / "cloud-secret"
-    (repo / "src").mkdir(parents=True)
+    (repo / "src").mkdir(parents=True, exist_ok=True)
     (repo / "src" / "core.py").write_text("VALUE = 'safe'\n", encoding="utf-8")
+    _write_fixture_gitignore(repo)
     _init_repo(repo)
     return repo
 
 
 def _fixture_two_checks(root: Path) -> Path:
     repo = root / "cloud-two-checks"
-    (repo / "src").mkdir(parents=True)
+    (repo / "src").mkdir(parents=True, exist_ok=True)
+    (repo / "tests").mkdir(parents=True, exist_ok=True)
     (repo / "src" / "core.py").write_text("OK = True\nBROKEN = False\n", encoding="utf-8")
+    (repo / "tests" / "test_core.py").write_text(
+        "from src.core import OK, BROKEN\n\n\n"
+        "def test_ok():\n    assert OK is True\n\n\n"
+        "def test_broken_fixed():\n    assert BROKEN is True\n",
+        encoding="utf-8",
+    )
+    _write_fixture_gitignore(repo)
     _init_repo(repo)
     return repo
 
@@ -114,6 +132,17 @@ def _init_repo(repo: Path) -> None:
     subprocess.run(["git", "config", "user.email", "beta@example.invalid"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "VOCR Beta"], cwd=repo, check=True)
     subprocess.run(["git", "add", "--all"], cwd=repo, check=True)
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if not status.stdout.strip():
+        return
     subprocess.run(
         ["git", "commit", "-m", "initial cloud fixture"],
         cwd=repo,
@@ -246,7 +275,7 @@ def _c05(scenario: Scenario, ctx: BetaContext):
     guard = _guard(scenario, ctx)
     if guard:
         return guard
-    run = _run_cloud_task(ctx, _fixture_red_check(ctx.temp_root), _task("c05-retry", title="Fix retry fixture within cap", scope=["src/**"], tests=["pytest"]), max_retries=2)
+    run = _run_cloud_task(ctx, _fixture_red_check(ctx.temp_root / "retry"), _task("c05-retry", title="Fix retry fixture within cap", scope=["src/**"], tests=["pytest"]), max_retries=2)
     return result(scenario, [
         step("success within retry cap", run.status == "passed" and run.retries <= 2),
         step("retry prompt distilled", run.retry_prompt_clean),

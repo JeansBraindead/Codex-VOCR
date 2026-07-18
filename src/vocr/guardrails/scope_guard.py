@@ -141,6 +141,8 @@ class ScopeGuard:
         allowed = [item.replace("\\", "/").lstrip("/") for item in policy.allowed_globs]
         for changed in changed_files:
             normalized = changed.replace("\\", "/").lstrip("/")
+            if "__pycache__/" in f"{normalized}/" or normalized.endswith((".pyc", ".pyo")):
+                continue
             for denied_root in denied:
                 if normalized == denied_root or normalized.startswith(f"{denied_root}/"):
                     issues.append(f"Changed file is denied by scope policy: {normalized}")

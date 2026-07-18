@@ -142,6 +142,22 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(guard.validate_changed_files(task, ["docs/guide.md"]), [])
         self.assertTrue(guard.validate_changed_files(task, ["src/vocr/main.py"]))
 
+    def test_scope_guard_ignores_generated_pycache_artifacts(self) -> None:
+        task = VocrTask(
+            slice_id="slice-test",
+            title="Src only",
+            summary="Fix src",
+            scope=["src/**"],
+            acceptance_criteria=[AcceptanceCriterion(text="Fix applied")],
+            tests=["pytest"],
+        )
+
+        guard = ScopeGuard()
+
+        self.assertEqual(guard.validate_changed_files(task, ["tests/__pycache__/x.pyc"]), [])
+        self.assertEqual(guard.validate_changed_files(task, ["tests/nested/__pycache__/y.pyo"]), [])
+        self.assertTrue(guard.validate_changed_files(task, ["tests/real.py"]))
+
     def test_graph_context_uses_bm25_and_import_neighbors(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

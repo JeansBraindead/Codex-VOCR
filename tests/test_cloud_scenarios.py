@@ -1,13 +1,31 @@
 from __future__ import annotations
 
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from vocr.beta.cloud_scenarios import CloudRunResult
+from vocr.beta.cloud_scenarios import (
+    CloudRunResult,
+    _fixture_red_check,
+    _fixture_two_checks,
+)
 from vocr.beta.runner import run_beta
 from vocr.beta.scenarios import SCENARIOS
+
+
+def _git_status(repo: Path) -> str:
+    result = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    return result.stdout.strip()
 
 
 def run_only(identifier: str, *, allow_cloud: bool = True, max_cloud_tasks: int = 6):
@@ -108,6 +126,46 @@ class CloudScenarioTests(unittest.TestCase):
         self.assertEqual(c06.exit_code, 0)
         self.assertEqual(c07.exit_code, 0)
         self.assertIn("measured_speedup_pct", c07.results[0].metrics)
+
+
+class CloudFixtureTests(unittest.TestCase):
+    def test_fixture_init_leaves_worktree_clean(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _fixture_red_check(Path(tmp))
+            self.assertEqual(_git_status(repo), "")
+
+    def test_fixture_builder_is_idempotent_on_same_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            first = _fixture_red_check(Path(tmp))
+            second = _fixture_red_check(Path(tmp))
+            self.assertEqual(first, second)
+            self.assertEqual(_git_status(second), "")
+
+    def test_fixture_two_checks_has_collectible_pytest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _fixture_two_checks(Path(tmp))
+            self.assertEqual(_git_status(repo), "")
+            result = subprocess.run(
+                ["python", "-m", "pytest", "-q"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            self.assertNotIn("no tests ran", result.stdout + result.stderr)
+            self.assertNotEqual(result.returncode, 0, "BROKEN=False should fail test_broken_fixed")
+
+            (repo / "src" / "core.py").write_text("OK = True\nBROKEN = True\n", encoding="utf-8")
+            fixed = subprocess.run(
+                ["python", "-m", "pytest", "-q"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            self.assertEqual(fixed.returncode, 0, fixed.stdout + fixed.stderr)
 
 
 if __name__ == "__main__":
